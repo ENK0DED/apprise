@@ -65,15 +65,14 @@ sha2 = "0.10"
 sha1 = "0.10"
 hex = "0.4"
 
-# MQTT (optional — adds ~400KB; enable with --features mqtt)
-rumqttc = { version = "0.24", features = ["use-rustls"], optional = true }
+# MQTT
+rumqttc = { version = "0.24", features = ["use-rustls"] }
 
 # Desktop notifications (optional, feature-gated)
 notify-rust = { version = "4", optional = true }
 
 [features]
 default = []
-mqtt = ["rumqttc"]
 desktop = ["notify-rust"]
 
 [profile.release]
