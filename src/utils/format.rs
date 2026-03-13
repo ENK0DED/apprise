@@ -17,38 +17,80 @@ pub fn convert_format(body: &str, from: &NotifyFormat, to: &NotifyFormat) -> Str
 }
 
 fn html_to_text(html: &str) -> String {
-    // Simple HTML stripping - remove tags and decode entities
-    let re_tag = regex::Regex::new(r"<[^>]+>").unwrap();
-    let text = re_tag.replace_all(html, "");
-    text.replace("&amp;", "&")
+    // Strip HTML tags with a simple state machine
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out.replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&nbsp;", " ")
-        .replace("<br>", "\n")
-        .replace("<br/>", "\n")
-        .replace("<br />", "\n")
+}
+
+/// Replace `open … close` delimiters, wrapping content with `before`/`after`.
+/// If no closing delimiter is found the opening delimiter is emitted literally.
+fn replace_delimited(s: &str, open: &str, close: &str, before: &str, after: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 32);
+    let mut rest = s;
+    while let Some(start) = rest.find(open) {
+        out.push_str(&rest[..start]);
+        let inner = &rest[start + open.len()..];
+        if let Some(end) = inner.find(close) {
+            out.push_str(before);
+            out.push_str(&inner[..end]);
+            out.push_str(after);
+            rest = &inner[end + close.len()..];
+        } else {
+            out.push_str(open);
+            rest = inner;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn strip_links(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(ob) = rest.find('[') {
+        let after_bracket = &rest[ob + 1..];
+        if let Some(cb) = after_bracket.find(']') {
+            let text = &after_bracket[..cb];
+            let after_cb = &after_bracket[cb + 1..];
+            if after_cb.starts_with('(') {
+                if let Some(cp) = after_cb[1..].find(')') {
+                    out.push_str(&rest[..ob]);
+                    out.push_str(text);
+                    rest = &after_cb[1 + cp + 1..];
+                    continue;
+                }
+            }
+        }
+        out.push_str(&rest[..ob + 1]);
+        rest = &rest[ob + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn markdown_to_text(md: &str) -> String {
-    // Strip markdown formatting
-    let re_bold = regex::Regex::new(r"\*\*(.+?)\*\*").unwrap();
-    let re_italic = regex::Regex::new(r"\*(.+?)\*").unwrap();
-    let re_code = regex::Regex::new(r"`(.+?)`").unwrap();
-    let re_link = regex::Regex::new(r"\[(.+?)\]\(.+?\)").unwrap();
-    let re_heading = regex::Regex::new(r"^#{1,6}\s*").unwrap();
-
-    let text = re_bold.replace_all(md, "$1");
-    let text = re_italic.replace_all(&text, "$1");
-    let text = re_code.replace_all(&text, "$1");
-    let text = re_link.replace_all(&text, "$1");
-    let text = text
-        .lines()
-        .map(|line| re_heading.replace(line, "").to_owned())
+    let s = replace_delimited(md, "**", "**", "", "");
+    let s = replace_delimited(&s, "*", "*", "", "");
+    let s = replace_delimited(&s, "`", "`", "", "");
+    let s = strip_links(&s);
+    s.lines()
+        .map(|line| line.trim_start_matches('#').trim_start())
         .collect::<Vec<_>>()
-        .join("\n");
-    text
+        .join("\n")
 }
 
 fn text_to_html(text: &str) -> String {
@@ -59,17 +101,41 @@ fn text_to_html(text: &str) -> String {
 }
 
 fn markdown_to_html(md: &str) -> String {
-    // Very basic markdown to HTML
-    let re_bold = regex::Regex::new(r"\*\*(.+?)\*\*").unwrap();
-    let re_italic = regex::Regex::new(r"\*(.+?)\*").unwrap();
-    let re_code = regex::Regex::new(r"`(.+?)`").unwrap();
-    let re_link = regex::Regex::new(r"\[(.+?)\]\((.+?)\)").unwrap();
+    let s = replace_delimited(md, "**", "**", "<strong>", "</strong>");
+    let s = replace_delimited(&s, "*", "*", "<em>", "</em>");
+    let s = replace_delimited(&s, "`", "`", "<code>", "</code>");
+    let s = replace_links_html(&s);
+    s.replace('\n', "<br/>")
+}
 
-    let html = re_bold.replace_all(md, "<strong>$1</strong>");
-    let html = re_italic.replace_all(&html, "<em>$1</em>");
-    let html = re_code.replace_all(&html, "<code>$1</code>");
-    let html = re_link.replace_all(&html, "<a href=\"$2\">$1</a>");
-    html.replace('\n', "<br/>").to_owned()
+/// Replace `[text](url)` → `<a href="url">text</a>`
+fn replace_links_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 64);
+    let mut rest = s;
+    while let Some(ob) = rest.find('[') {
+        let after_bracket = &rest[ob + 1..];
+        if let Some(cb) = after_bracket.find(']') {
+            let text = &after_bracket[..cb];
+            let after_cb = &after_bracket[cb + 1..];
+            if after_cb.starts_with('(') {
+                if let Some(cp) = after_cb[1..].find(')') {
+                    let url = &after_cb[1..1 + cp];
+                    out.push_str(&rest[..ob]);
+                    out.push_str("<a href=\"");
+                    out.push_str(url);
+                    out.push_str("\">");
+                    out.push_str(text);
+                    out.push_str("</a>");
+                    rest = &after_cb[1 + cp + 1..];
+                    continue;
+                }
+            }
+        }
+        out.push_str(&rest[..ob + 1]);
+        rest = &rest[ob + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Truncate text to max_len characters (appending "..." if needed)

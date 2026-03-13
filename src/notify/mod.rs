@@ -56,6 +56,7 @@ pub mod matrix;
 pub mod mattermost;
 pub mod messagebird;
 pub mod misskey;
+#[cfg(feature = "mqtt")]
 pub mod mqtt;
 pub mod msg91;
 pub mod msteams;

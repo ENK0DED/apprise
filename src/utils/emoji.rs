@@ -1,8 +1,13 @@
 use std::collections::HashMap;
-use once_cell::sync::Lazy;
+use std::sync::OnceLock;
+
+fn emoji_map() -> &'static HashMap<&'static str, &'static str> {
+    static MAP: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    MAP.get_or_init(build_emoji_map)
+}
 
 /// Map common :emoji_name: codes to unicode characters
-static EMOJI_MAP: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
+fn build_emoji_map() -> HashMap<&'static str, &'static str> {
     let mut m = HashMap::new();
     m.insert("smile", "😊");
     m.insert("grinning", "😀");
@@ -81,17 +86,38 @@ static EMOJI_MAP: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("trophy", "🏆");
     m.insert("medal", "🏅");
     m
-});
+}
 
 /// Replace :emoji_name: patterns with unicode characters
 pub fn interpret_emojis(text: &str) -> String {
-    let re = regex::Regex::new(r":([a-zA-Z0-9_+\-]+):").unwrap();
-    re.replace_all(text, |caps: &regex::Captures| {
-        let name = &caps[1];
-        EMOJI_MAP
-            .get(name)
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| caps[0].to_string())
-    })
-    .into_owned()
+    let map = emoji_map();
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(':') {
+        let after = &rest[start + 1..];
+        if let Some(end) = after.find(':') {
+            let name = &after[..end];
+            // Only treat as emoji if the name contains valid chars and is non-empty
+            if !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'+' || b == b'-')
+            {
+                out.push_str(&rest[..start]);
+                if let Some(emoji) = map.get(name) {
+                    out.push_str(emoji);
+                } else {
+                    out.push(':');
+                    out.push_str(name);
+                    out.push(':');
+                }
+                rest = &after[end + 1..];
+                continue;
+            }
+        }
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+    }
+    out.push_str(rest);
+    out
 }

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use once_cell::sync::Lazy;
+use std::sync::OnceLock;
 
 use crate::utils::parse::ParsedUrl;
 use super::Notify;
@@ -7,7 +7,10 @@ use super::Notify;
 pub type FactoryFn = fn(&ParsedUrl) -> Option<Box<dyn Notify>>;
 
 /// Global schema → factory mapping
-pub static REGISTRY: Lazy<HashMap<String, FactoryFn>> = Lazy::new(build_registry);
+pub fn registry() -> &'static HashMap<String, FactoryFn> {
+    static REGISTRY: OnceLock<HashMap<String, FactoryFn>> = OnceLock::new();
+    REGISTRY.get_or_init(build_registry)
+}
 
 /// All service details, ordered alphabetically by service name
 pub fn all_service_details() -> Vec<super::ServiceDetails> {
@@ -72,6 +75,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
     collect!(mattermost::Mattermost::static_details());
     collect!(messagebird::MessageBird::static_details());
     collect!(misskey::Misskey::static_details());
+    #[cfg(feature = "mqtt")]
     collect!(mqtt::Mqtt::static_details());
     collect!(msg91::Msg91::static_details());
     collect!(msteams::MsTeams::static_details());
@@ -211,6 +215,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
     reg!(mattermost::Mattermost::from_url, "mmost", "mmosts");
     reg!(messagebird::MessageBird::from_url, "msgbird");
     reg!(misskey::Misskey::from_url, "misskey", "misskeys");
+    #[cfg(feature = "mqtt")]
     reg!(mqtt::Mqtt::from_url, "mqtt", "mqtts");
     reg!(msg91::Msg91::from_url, "msg91");
     reg!(msteams::MsTeams::from_url, "msteams");
@@ -293,6 +298,6 @@ fn build_registry() -> HashMap<String, FactoryFn> {
 /// Instantiate a notifier from a URL string
 pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
     let parsed = ParsedUrl::parse(url)?;
-    let factory = REGISTRY.get(&parsed.schema)?;
+    let factory = registry().get(&parsed.schema)?;
     factory(&parsed)
 }
