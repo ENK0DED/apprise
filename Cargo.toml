@@ -22,13 +22,13 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde_yaml = { version = "0.9", optional = true }
 
 # URL parsing
 url = "2"
 
 # Email
-lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls-tls", "builder"] }
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls-tls", "builder"], optional = true }
 
 # Logging
 tracing = "0.1"
@@ -61,15 +61,26 @@ sha2 = "0.10"
 sha1 = "0.10"
 hex = "0.4"
 
-# MQTT
-rumqttc = { version = "0.24", features = ["use-rustls"] }
+# MQTT (optional — omit with --no-default-features or -F without mqtt)
+rumqttc = { version = "0.24", features = ["use-rustls"], optional = true }
 
 # Desktop notifications (optional, feature-gated)
 notify-rust = { version = "4", optional = true }
 
 [features]
-default = []
-desktop = ["notify-rust"]
+default = ["mqtt", "email", "yaml"]
+
+# Pull in the MQTT broker client (rumqttc + its ICU / zerocopy tree)
+mqtt = ["dep:rumqttc"]
+
+# Pull in the SMTP email transport (lettre + nom)
+email = ["dep:lettre"]
+
+# Pull in YAML config-file parsing (serde_yaml / unsafe-libyaml)
+yaml = ["dep:serde_yaml"]
+
+# Desktop pop-up notifications (platform-specific)
+desktop = ["dep:notify-rust"]
 
 [profile.release]
 opt-level = "z"

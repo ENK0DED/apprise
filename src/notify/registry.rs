@@ -75,6 +75,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
     collect!(mattermost::Mattermost::static_details());
     collect!(messagebird::MessageBird::static_details());
     collect!(misskey::Misskey::static_details());
+    #[cfg(feature = "mqtt")]
     collect!(mqtt::Mqtt::static_details());
     collect!(msg91::Msg91::static_details());
     collect!(msteams::MsTeams::static_details());
@@ -149,6 +150,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
     collect!(wxpusher::WxPusher::static_details());
     collect!(xbmc::Xbmc::static_details());
     collect!(zulip::Zulip::static_details());
+    #[cfg(feature = "email")]
     collect!(email::Email::static_details());
 
     details.sort_by(|a, b| a.service_name.cmp(b.service_name));
@@ -214,6 +216,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
     reg!(mattermost::Mattermost::from_url, "mmost", "mmosts");
     reg!(messagebird::MessageBird::from_url, "msgbird");
     reg!(misskey::Misskey::from_url, "misskey", "misskeys");
+    #[cfg(feature = "mqtt")]
     reg!(mqtt::Mqtt::from_url, "mqtt", "mqtts");
     reg!(msg91::Msg91::from_url, "msg91");
     reg!(msteams::MsTeams::from_url, "msteams");
@@ -288,6 +291,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
     reg!(wxpusher::WxPusher::from_url, "wxpusher");
     reg!(xbmc::Xbmc::from_url, "xbmc", "xbmcs", "kodi", "kodis");
     reg!(zulip::Zulip::from_url, "zulip");
+    #[cfg(feature = "email")]
     reg!(email::Email::from_url, "mailto", "mailtos");
 
     m

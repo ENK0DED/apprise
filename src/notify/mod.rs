@@ -56,6 +56,7 @@ pub mod matrix;
 pub mod mattermost;
 pub mod messagebird;
 pub mod misskey;
+#[cfg(feature = "mqtt")]
 pub mod mqtt;
 pub mod msg91;
 pub mod msteams;
@@ -130,6 +131,7 @@ pub mod workflows;
 pub mod wxpusher;
 pub mod xbmc;
 pub mod zulip;
+#[cfg(feature = "email")]
 pub mod email;
 
 // Platform-specific plugins

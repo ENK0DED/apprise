@@ -1,6 +1,7 @@
 pub mod file;
 pub mod http;
 pub mod text;
+#[cfg(feature = "yaml")]
 pub mod yaml;
 
 use crate::error::ConfigError;
