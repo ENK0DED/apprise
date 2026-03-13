@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 # CLI parsing
-clap = { version = "4", features = ["derive", "env", "string", "cargo"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # Async runtime — only the features we actually use
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "fs"] }
@@ -32,17 +32,13 @@ lettre = { version = "0.11", default-features = false, features = ["smtp-transpo
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi"] }
 
 # Error handling
-anyhow = "1"
 thiserror = "2"
 
 # Encoding
 base64 = "0.22"
-
-# MIME types
-mime_guess = "2"
 
 # System paths
 dirs = "5"

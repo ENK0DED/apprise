@@ -42,11 +42,6 @@ pub enum NotifyError {
     Other(String),
 }
 
-impl From<anyhow::Error> for NotifyError {
-    fn from(e: anyhow::Error) -> Self {
-        Self::Other(e.to_string())
-    }
-}
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
