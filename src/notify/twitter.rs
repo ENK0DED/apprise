@@ -14,11 +14,11 @@ impl Twitter {
         let targets: Vec<String> = url.path_parts.iter().skip(2).cloned().collect();
         Some(Self { consumer_key, consumer_secret, access_token, access_token_secret, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Twitter/X", service_url: Some("https://twitter.com"), setup_url: None, protocols: vec!["twitter", "tweet"], description: "Send tweets or DMs via Twitter/X API.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Twitter/X", service_url: Some("https://twitter.com"), setup_url: None, protocols: vec!["twitter", "x", "tweet"], description: "Send tweets or DMs via Twitter/X API.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for Twitter {
-    fn schemas(&self) -> &[&str] { &["twitter", "tweet"] }
+    fn schemas(&self) -> &[&str] { &["twitter", "x", "tweet"] }
     fn service_name(&self) -> &str { "Twitter/X" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

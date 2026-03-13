@@ -10,11 +10,11 @@ impl Streamlabs {
         let access_token = url.host.clone()?;
         Some(Self { access_token, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Streamlabs", service_url: Some("https://streamlabs.com"), setup_url: None, protocols: vec!["streamlabs"], description: "Send alerts via Streamlabs.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Streamlabs", service_url: Some("https://streamlabs.com"), setup_url: None, protocols: vec!["strmlabs"], description: "Send alerts via Streamlabs.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for Streamlabs {
-    fn schemas(&self) -> &[&str] { &["streamlabs"] }
+    fn schemas(&self) -> &[&str] { &["strmlabs"] }
     fn service_name(&self) -> &str { "Streamlabs" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

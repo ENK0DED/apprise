@@ -15,11 +15,11 @@ impl Office365 {
         if targets.is_empty() { return None; }
         Some(Self { tenant, client_id, client_secret, from, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Office365 Email", service_url: Some("https://office.com"), setup_url: None, protocols: vec!["o365"], description: "Send email via Office 365 / Microsoft Graph.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Office365 Email", service_url: Some("https://office.com"), setup_url: None, protocols: vec!["o365", "azure"], description: "Send email via Office 365 / Microsoft Graph.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for Office365 {
-    fn schemas(&self) -> &[&str] { &["o365"] }
+    fn schemas(&self) -> &[&str] { &["o365", "azure"] }
     fn service_name(&self) -> &str { "Office365 Email" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

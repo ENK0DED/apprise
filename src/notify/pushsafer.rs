@@ -5,11 +5,11 @@ use crate::utils::parse::ParsedUrl;
 pub struct Pushsafer { privatekey: String, verify_certificate: bool, tags: Vec<String> }
 impl Pushsafer {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> { Some(Self { privatekey: url.host.clone()?, verify_certificate: url.verify_certificate(), tags: url.tags() }) }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Pushsafer", service_url: Some("https://www.pushsafer.com"), setup_url: None, protocols: vec!["psafer"], description: "Send push notifications via Pushsafer.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Pushsafer", service_url: Some("https://www.pushsafer.com"), setup_url: None, protocols: vec!["psafer", "psafers"], description: "Send push notifications via Pushsafer.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for Pushsafer {
-    fn schemas(&self) -> &[&str] { &["psafer"] }
+    fn schemas(&self) -> &[&str] { &["psafer", "psafers"] }
     fn service_name(&self) -> &str { "Pushsafer" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

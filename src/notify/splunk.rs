@@ -12,11 +12,11 @@ impl Splunk {
         let port = url.port.unwrap_or(8088);
         Some(Self { token, host, port, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Splunk", service_url: Some("https://www.splunk.com"), setup_url: None, protocols: vec!["splunk"], description: "Send events to Splunk HEC.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Splunk", service_url: Some("https://www.splunk.com"), setup_url: None, protocols: vec!["splunk", "victorops"], description: "Send events to Splunk HEC.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for Splunk {
-    fn schemas(&self) -> &[&str] { &["splunk"] }
+    fn schemas(&self) -> &[&str] { &["splunk", "victorops"] }
     fn service_name(&self) -> &str { "Splunk" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

@@ -15,11 +15,11 @@ impl Smpp {
         if targets.is_empty() { return None; }
         Some(Self { host, port, user, password, targets, from, tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "SMPP", service_url: None, setup_url: None, protocols: vec!["smpp"], description: "Send SMS via SMPP protocol.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "SMPP", service_url: None, setup_url: None, protocols: vec!["smpp", "smpps"], description: "Send SMS via SMPP protocol.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for Smpp {
-    fn schemas(&self) -> &[&str] { &["smpp"] }
+    fn schemas(&self) -> &[&str] { &["smpp", "smpps"] }
     fn service_name(&self) -> &str { "SMPP" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

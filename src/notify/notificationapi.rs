@@ -10,11 +10,11 @@ impl NotificationApi {
         let secret = url.password.clone()?;
         Some(Self { client_id, secret, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "NotificationAPI", service_url: Some("https://www.notificationapi.com"), setup_url: None, protocols: vec!["notificationapi"], description: "Send via NotificationAPI.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "NotificationAPI", service_url: Some("https://www.notificationapi.com"), setup_url: None, protocols: vec!["napi", "notificationapi"], description: "Send via NotificationAPI.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for NotificationApi {
-    fn schemas(&self) -> &[&str] { &["notificationapi"] }
+    fn schemas(&self) -> &[&str] { &["napi", "notificationapi"] }
     fn service_name(&self) -> &str { "NotificationAPI" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

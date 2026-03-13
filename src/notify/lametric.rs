@@ -10,11 +10,11 @@ impl LaMetric {
         let app_id = url.path_parts.first().cloned();
         Some(Self { apikey, app_id, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "LaMetric", service_url: Some("https://lametric.com"), setup_url: None, protocols: vec!["lametric"], description: "Send notifications to LaMetric devices.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "LaMetric", service_url: Some("https://lametric.com"), setup_url: None, protocols: vec!["lametric", "lametrics"], description: "Send notifications to LaMetric devices.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for LaMetric {
-    fn schemas(&self) -> &[&str] { &["lametric"] }
+    fn schemas(&self) -> &[&str] { &["lametric", "lametrics"] }
     fn service_name(&self) -> &str { "LaMetric" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

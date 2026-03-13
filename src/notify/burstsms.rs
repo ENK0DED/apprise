@@ -12,11 +12,11 @@ impl BurstSms {
         if targets.is_empty() { return None; }
         Some(Self { apikey, api_secret, from_phone, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Burst SMS", service_url: Some("https://burstsms.com.au"), setup_url: None, protocols: vec!["burst"], description: "Send SMS via Burst SMS.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Burst SMS", service_url: Some("https://burstsms.com.au"), setup_url: None, protocols: vec!["burstsms"], description: "Send SMS via Burst SMS.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for BurstSms {
-    fn schemas(&self) -> &[&str] { &["burst"] }
+    fn schemas(&self) -> &[&str] { &["burstsms"] }
     fn service_name(&self) -> &str { "Burst SMS" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

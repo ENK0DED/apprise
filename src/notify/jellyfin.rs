@@ -8,13 +8,13 @@ impl Jellyfin {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let host = url.host.clone()?;
         let apikey = url.user.clone()?;
-        Some(Self { host, port: url.port, apikey, secure: url.schema == "jellyfinc", verify_certificate: url.verify_certificate(), tags: url.tags() })
+        Some(Self { host, port: url.port, apikey, secure: url.schema == "jellyfins", verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Jellyfin", service_url: Some("https://jellyfin.org"), setup_url: None, protocols: vec!["jellyfin", "jellyfinc"], description: "Send notifications via Jellyfin.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Jellyfin", service_url: Some("https://jellyfin.org"), setup_url: None, protocols: vec!["jellyfin", "jellyfins"], description: "Send notifications via Jellyfin.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for Jellyfin {
-    fn schemas(&self) -> &[&str] { &["jellyfin", "jellyfinc"] }
+    fn schemas(&self) -> &[&str] { &["jellyfin", "jellyfins"] }
     fn service_name(&self) -> &str { "Jellyfin" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

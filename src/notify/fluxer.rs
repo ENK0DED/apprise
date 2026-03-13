@@ -10,11 +10,11 @@ impl Fluxer {
         let token = url.path_parts.first()?.clone();
         Some(Self { webhook_id, token, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Fluxer", service_url: None, setup_url: None, protocols: vec!["fluxer"], description: "Send via Fluxer webhooks.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Fluxer", service_url: None, setup_url: None, protocols: vec!["fluxer", "fluxers"], description: "Send via Fluxer webhooks.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for Fluxer {
-    fn schemas(&self) -> &[&str] { &["fluxer"] }
+    fn schemas(&self) -> &[&str] { &["fluxer", "fluxers"] }
     fn service_name(&self) -> &str { "Fluxer" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

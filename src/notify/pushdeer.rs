@@ -8,11 +8,11 @@ impl PushDeer {
         let token = url.host.clone()?;
         Some(Self { token, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "PushDeer", service_url: Some("https://www.pushdeer.com"), setup_url: None, protocols: vec!["pushdeer"], description: "Send notifications via PushDeer.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "PushDeer", service_url: Some("https://www.pushdeer.com"), setup_url: None, protocols: vec!["pushdeer", "pushdeers"], description: "Send notifications via PushDeer.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for PushDeer {
-    fn schemas(&self) -> &[&str] { &["pushdeer"] }
+    fn schemas(&self) -> &[&str] { &["pushdeer", "pushdeers"] }
     fn service_name(&self) -> &str { "PushDeer" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

@@ -12,11 +12,11 @@ impl Workflows {
         let workflow_url = format!("https://{}{}", host, path);
         Some(Self { workflow_url, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Microsoft Workflows", service_url: Some("https://make.powerautomate.com"), setup_url: None, protocols: vec!["workflows"], description: "Send via Microsoft Power Automate Workflows.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Microsoft Workflows", service_url: Some("https://make.powerautomate.com"), setup_url: None, protocols: vec!["workflow", "workflows"], description: "Send via Microsoft Power Automate Workflows.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for Workflows {
-    fn schemas(&self) -> &[&str] { &["workflows"] }
+    fn schemas(&self) -> &[&str] { &["workflow", "workflows"] }
     fn service_name(&self) -> &str { "Microsoft Workflows" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

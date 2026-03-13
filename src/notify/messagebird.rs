@@ -13,11 +13,11 @@ impl MessageBird {
         if targets.is_empty() { return None; }
         Some(Self { api_key, from, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "MessageBird", service_url: Some("https://www.messagebird.com"), setup_url: None, protocols: vec!["messagebird"], description: "Send SMS via MessageBird.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "MessageBird", service_url: Some("https://www.messagebird.com"), setup_url: None, protocols: vec!["msgbird"], description: "Send SMS via MessageBird.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for MessageBird {
-    fn schemas(&self) -> &[&str] { &["messagebird"] }
+    fn schemas(&self) -> &[&str] { &["msgbird"] }
     fn service_name(&self) -> &str { "MessageBird" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

@@ -12,11 +12,11 @@ impl FortySixElks {
         if targets.is_empty() { return None; }
         Some(Self { user, password, from_phone, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "46elks", service_url: Some("https://46elks.com"), setup_url: None, protocols: vec!["46elks"], description: "Send SMS via 46elks.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "46elks", service_url: Some("https://46elks.com"), setup_url: None, protocols: vec!["46elks", "elks"], description: "Send SMS via 46elks.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for FortySixElks {
-    fn schemas(&self) -> &[&str] { &["46elks"] }
+    fn schemas(&self) -> &[&str] { &["46elks", "elks"] }
     fn service_name(&self) -> &str { "46elks" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }

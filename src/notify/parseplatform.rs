@@ -9,13 +9,13 @@ impl ParsePlatform {
         let host = url.host.clone()?;
         let app_id = url.user.clone()?;
         let master_key = url.password.clone()?;
-        Some(Self { host, port: url.port, app_id, master_key, secure: url.schema == "parses", verify_certificate: url.verify_certificate(), tags: url.tags() })
+        Some(Self { host, port: url.port, app_id, master_key, secure: url.schema == "parseps", verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Parse Platform", service_url: Some("https://parseplatform.org"), setup_url: None, protocols: vec!["parse"], description: "Send push via Parse Platform.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Parse Platform", service_url: Some("https://parseplatform.org"), setup_url: None, protocols: vec!["parsep", "parseps"], description: "Send push via Parse Platform.", attachment_support: false } }
 }
 #[async_trait]
 impl Notify for ParsePlatform {
-    fn schemas(&self) -> &[&str] { &["parse"] }
+    fn schemas(&self) -> &[&str] { &["parsep", "parseps"] }
     fn service_name(&self) -> &str { "Parse Platform" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }
