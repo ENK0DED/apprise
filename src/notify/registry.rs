@@ -47,6 +47,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
     collect!(dot::Dot::static_details());
     collect!(emby::Emby::static_details());
     collect!(enigma2::Enigma2::static_details());
+    collect!(fcm::Fcm::static_details());
     collect!(feishu::FeiShu::static_details());
     collect!(flock::Flock::static_details());
     collect!(fluxer::Fluxer::static_details());
@@ -59,6 +60,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
     collect!(home_assistant::HomeAssistant::static_details());
     collect!(httpsms::HttpSms::static_details());
     collect!(ifttt::Ifttt::static_details());
+    collect!(irc::Irc::static_details());
     collect!(jellyfin::Jellyfin::static_details());
     collect!(join::Join::static_details());
     collect!(custom_json::Json::static_details());
@@ -142,6 +144,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
     collect!(twitter::Twitter::static_details());
     collect!(viber::Viber::static_details());
     collect!(voipms::VoipMs::static_details());
+    collect!(vapid::Vapid::static_details());
     collect!(vonage::Vonage::static_details());
     collect!(webexteams::WebexTeams::static_details());
     collect!(wecombot::WeComBot::static_details());
@@ -149,6 +152,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
     collect!(workflows::Workflows::static_details());
     collect!(wxpusher::WxPusher::static_details());
     collect!(xbmc::Xbmc::static_details());
+    collect!(xmpp::Xmpp::static_details());
     collect!(zulip::Zulip::static_details());
     #[cfg(feature = "email")]
     collect!(email::Email::static_details());
@@ -188,6 +192,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
     reg!(dot::Dot::from_url, "dot");
     reg!(emby::Emby::from_url, "emby", "embys");
     reg!(enigma2::Enigma2::from_url, "enigma2");
+    reg!(fcm::Fcm::from_url, "fcm");
     reg!(feishu::FeiShu::from_url, "feishu");
     reg!(flock::Flock::from_url, "flock");
     reg!(fluxer::Fluxer::from_url, "fluxer", "fluxers");
@@ -200,6 +205,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
     reg!(home_assistant::HomeAssistant::from_url, "hassio", "hassios");
     reg!(httpsms::HttpSms::from_url, "httpsms");
     reg!(ifttt::Ifttt::from_url, "ifttt");
+    reg!(irc::Irc::from_url, "irc", "ircs");
     reg!(jellyfin::Jellyfin::from_url, "jellyfin", "jellyfins");
     reg!(join::Join::from_url, "join");
     reg!(custom_json::Json::from_url, "json", "jsons");
@@ -283,6 +289,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
     reg!(twitter::Twitter::from_url, "twitter", "x", "tweet");
     reg!(viber::Viber::from_url, "viber");
     reg!(voipms::VoipMs::from_url, "voipms");
+    reg!(vapid::Vapid::from_url, "vapid");
     reg!(vonage::Vonage::from_url, "vonage", "nexmo");
     reg!(webexteams::WebexTeams::from_url, "wxteams", "webex");
     reg!(wecombot::WeComBot::from_url, "wecombot");
@@ -290,6 +297,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
     reg!(workflows::Workflows::from_url, "workflow", "workflows");
     reg!(wxpusher::WxPusher::from_url, "wxpusher");
     reg!(xbmc::Xbmc::from_url, "xbmc", "xbmcs", "kodi", "kodis");
+    reg!(xmpp::Xmpp::from_url, "xmpp", "xmpps");
     reg!(zulip::Zulip::from_url, "zulip");
     #[cfg(feature = "email")]
     reg!(email::Email::from_url, "mailto", "mailtos");
