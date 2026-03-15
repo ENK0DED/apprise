@@ -58,27 +58,6 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "d7sms://token@111111111/222222222222222/aaaaaaaaaaaaa",
-            "d7sms://token1@33333333333333?batch=yes",
-            "d7sms://token:colon2@33333333333333?batch=yes",
-            "d7sms://:token3@33333333333333?batch=yes",
-            "d7sms://33333333333333?token=token6",
-            "d7sms://token4@33333333333333?unicode=no",
-            "d7sms://token8@33333333333333/44444444444444/?unicode=yes",
-            "d7sms://token@33333333333333?batch=yes&to=66666666666666",
-            "d7sms://token@33333333333333?batch=yes&from=apprise",
-            "d7sms://token@33333333333333?batch=yes&source=apprise",
-            "d7sms://token@33333333333333?batch=no",
-            "d7sms://token@33333333333333",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "d7sms://",

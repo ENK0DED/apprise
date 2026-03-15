@@ -195,27 +195,51 @@ impl Notify for Ntfy {
                 None => req,
             };
 
-            // Send text message
-            let resp = req.body(ctx.body.clone()).send().await?;
-            if !resp.status().is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                tracing::warn!("Ntfy send to {} failed: {}", topic, body);
-                all_ok = false;
-            }
-
-            // Send attachments via PUT with binary body
-            for att in &ctx.attachments {
-                let att_url = format!("{}/{}", base, topic);
-                let mut att_req = client.put(&att_url)
+            if ctx.attachments.len() == 1 {
+                // Single attachment: send as binary body with message in headers
+                let attach = &ctx.attachments[0];
+                let mut att_req = client.put(&url)
                     .header("User-Agent", APP_ID)
-                    .header("X-Filename", &att.name);
+                    .header("X-Priority", self.priority)
+                    .header("X-Filename", &attach.name);
+                if !ctx.title.is_empty() {
+                    att_req = att_req.header("X-Title", &ctx.title);
+                }
+                att_req = att_req.header("X-Message", &ctx.body);
                 att_req = match &self.auth {
                     Some(NtfyAuth::Basic { user, pass }) => att_req.basic_auth(user, Some(pass)),
                     Some(NtfyAuth::Token(t)) => att_req.header("Authorization", format!("Bearer {}", t)),
                     None => att_req,
                 };
-                let resp = att_req.body(att.data.clone()).send().await?;
-                if !resp.status().is_success() { all_ok = false; }
+                let resp = att_req.body(attach.data.clone()).send().await?;
+                if !resp.status().is_success() {
+                    let body = resp.text().await.unwrap_or_default();
+                    tracing::warn!("Ntfy send to {} failed: {}", topic, body);
+                    all_ok = false;
+                }
+            } else {
+                // No attachments or multiple: send text message first
+                let resp = req.body(ctx.body.clone()).send().await?;
+                if !resp.status().is_success() {
+                    let body = resp.text().await.unwrap_or_default();
+                    tracing::warn!("Ntfy send to {} failed: {}", topic, body);
+                    all_ok = false;
+                }
+
+                // Send each attachment as a separate PUT
+                for att in &ctx.attachments {
+                    let att_url = format!("{}/{}", base, topic);
+                    let mut att_req = client.put(&att_url)
+                        .header("User-Agent", APP_ID)
+                        .header("X-Filename", &att.name);
+                    att_req = match &self.auth {
+                        Some(NtfyAuth::Basic { user, pass }) => att_req.basic_auth(user, Some(pass)),
+                        Some(NtfyAuth::Token(t)) => att_req.header("Authorization", format!("Bearer {}", t)),
+                        None => att_req,
+                    };
+                    let resp = att_req.body(att.data.clone()).send().await?;
+                    if !resp.status().is_success() { all_ok = false; }
+                }
             }
         }
         Ok(all_ok)

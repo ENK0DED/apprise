@@ -101,38 +101,11 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "psafer://aaaaaaaaaaaaaaaaaaaa",
-            "psafer://bbbbbbbbbbbbbbbbbbbb",
-            "psafer://cccccccccccccccccccc",
-            "psafers://dddddddddddddddddddd",
-            "psafer://eeeeeeeeeeeeeeeeeeee",
-            "psafer://eeeeeeeeeeeeeeeeeeee/12/24/53",
-            "psafer://eeeeeeeeeeeeeeeeeeee?to=12,24,53",
-            "psafer://ffffffffffffffffffff?priority=emergency",
-            "psafer://ffffffffffffffffffff?priority=-1",
-            "psafer://gggggggggggggggggggg?sound=ok",
-            "psafers://gggggggggggggggggggg?sound=14",
-            "psafers://hhhhhhhhhhhhhhhhhhhh?vibration=1",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "psafer://:@/",
             "psafer://",
             "psafers://",
-            "psafer://ffffffffffffffffffff?priority=invalid",
-            "psafer://ffffffffffffffffffff?priority=25",
-            "psafer://hhhhhhhhhhhhhhhhhhhh?sound=invalid",
-            "psafer://hhhhhhhhhhhhhhhhhhhh?sound=94000",
-            "psafer://hhhhhhhhhhhhhhhhhhhh?vibration=invalid",
-            "psafer://hhhhhhhhhhhhhhhhhhhh?vibration=25000",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

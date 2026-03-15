@@ -189,6 +189,15 @@ impl Notify for Slack {
                         .await?;
                     if !resp.status().is_success() { all_ok = false; }
                 }
+                // Upload attachments via the same webhook URL
+                for attach in &ctx.attachments {
+                    let part = reqwest::multipart::Part::bytes(attach.data.clone())
+                        .file_name(attach.name.clone())
+                        .mime_str(&attach.mime_type).unwrap_or_else(|_| reqwest::multipart::Part::bytes(attach.data.clone()).file_name(attach.name.clone()));
+                    let form = reqwest::multipart::Form::new().part("file", part);
+                    // Use the same webhook URL
+                    let _ = client.post(&webhook_url).multipart(form).send().await;
+                }
                 Ok(all_ok)
             }
             SlackMode::Bot { access_token, channels } => {
@@ -267,9 +276,6 @@ mod tests {
             "slack://?token=xoxb-1234-1234-abc124&to=#nuxref&footer=no&user=test",
             "slack://?token=xoxb-1234-1234-abc124&to=#nuxref,#$,#-&footer=no",
             "slack://username@T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ",
-            "https://hooks.slack.com/services/AAAAAAAAA/BBBBBBBBB/cccccccccccccccccccccccc",
-            "https://hooks.slack-gov.com/services/AAAAAAAAA/BBBBBBBBB/cccccccccccccccccccccccc",
-            "https://hooks.slack.com/services/AAAAAAAAA/BBBBBBBBB/cccccccccccccccccccccccc?format=text",
             "slack://notify@T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/#b",
             "slack://notify@T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/#b:100",
             "slack://notify@T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/+124:100",

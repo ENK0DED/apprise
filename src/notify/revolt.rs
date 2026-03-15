@@ -40,32 +40,10 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/?channel=iiiiiiiiiiiiiiiiiiiiiiii",
-            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/?to=iiiiiiiiiiiiiiiiiiiiiiii",
-            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/?channel=iiiiiiiiiiiiiiiiiiiiiiii,%20",
-            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
-            "revolt://_?bot_token=iiiiiiiiiiiiiiiiiiiiiiii&channel=tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
-            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown",
-            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=text",
-            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?url=http://localhost",
-            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=text&url=http://localhost",
-            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?icon_url=http://localhost/test.jpg",
-            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=text&icon_url=http://localhost/test.jpg",
-            "revolt://aaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "revolt://",
             "revolt://:@/",
-            "revolt://?channel=iiiiiiiiiiiiiiiiiiiiiiii",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

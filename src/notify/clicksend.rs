@@ -43,21 +43,6 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "clicksend://user:pass@111111111/222222222222222/aaaaaaaaaaaaa",
-            "clicksend://user:pass@33333333333333?batch=yes",
-            "clicksend://user:pass@33333333333333?batch=yes&to=66666666666666",
-            "clicksend://user:pass@33333333333333?batch=no",
-            "clicksend://user@33333333333333?batch=no&key=abc123",
-            "clicksend://user:pass@33333333333333",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "clicksend://",

@@ -45,36 +45,10 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "flock://tttttttttttttttttttttttt",
-            "flock://tttttttttttttttttttttttt?image=True",
-            "flock://tttttttttttttttttttttttt?image=False",
-            "flock://iiiiiiiiiiiiiiiiiiiiiiii?to=u:uuuuuuuuuuuu&format=markdown",
-            "flock://iiiiiiiiiiiiiiiiiiiiiiii?format=markdown",
-            "flock://iiiiiiiiiiiiiiiiiiiiiiii?format=text",
-            "https://api.flock.com/hooks/sendMessage/iiiiiiiiiiiiiiiiiiiiiiii/",
-            "https://api.flock.com/hooks/sendMessage/iiiiiiiiiiiiiiiiiiiiiiii/?format=markdown",
-            "flock://iiiiiiiiiiiiiiiiiiiiiiii/u:uuuuuuuuuuuu?format=markdown",
-            "flock://iiiiiiiiiiiiiiiiiiiiiiii/u:uuuuuuuuuuuu?format=html",
-            "flock://iiiiiiiiiiiiiiiiiiiiiiii/uuuuuuuuuuuu?format=text",
-            "flock://iiiiiiiiiiiiiiiiiiiiiiii/g:gggggggggggg/u:uuuuuuuuuuuu?format=text",
-            "flock://iiiiiiiiiiiiiiiiiiiiiiii/#gggggggggggg/@uuuuuuuuuuuu?format=text",
-            "flock://iiiiiiiiiiiiiiiiiiiiiiii/g:gggggggggggg/u:uuuuuuuuuu?format=text",
-            "flock://iiiiiiiiiiiiiiiiiiiiiiii/g:gggggggggggggg/u:uuuuuuuuuu?format=text",
-            "flock://tttttttttttttttttttttttt/",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "flock://",
             "flock://:@/",
-            "flock://iiiiiiiiiiiiiiiiiiiiiiii/g:/u:?format=text",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

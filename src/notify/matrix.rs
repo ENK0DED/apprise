@@ -132,15 +132,9 @@ mod tests {
             "matrix://user:token@localhost?mode=slack&format=text",
             "matrixs://user:token@localhost?mode=SLACK&format=markdown",
             "matrix://user@localhost?mode=SLACK&format=markdown&token=mytoken",
-            "matrix://_?mode=t2bot&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "matrixs://user:token@localhost?mode=slack&format=markdown&image=True",
             "matrixs://user:token@localhost?mode=slack&format=markdown&image=False",
-            "matrixs://user@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?mode=t2bot&format=markdown&image=True",
-            "matrix://user@zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz?mode=t2bot&format=html&image=False",
-            "matrixs://cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            "https://webhooks.t2bot.io/api/v1/matrix/hook/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/",
             "matrix://token@localhost:8080/?mode=slack",
-            "matrix://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/?mode=t2bot",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

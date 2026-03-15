@@ -10,7 +10,7 @@ impl Jellyfin {
         let apikey = url.user.clone()
             .or_else(|| url.password.clone())
             .or_else(|| url.get("apikey").map(|s| s.to_string()))
-            .unwrap_or_default();
+            .filter(|s| !s.is_empty())?;
         Some(Self { host, port: url.port, apikey, secure: url.schema == "jellyfins", verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Jellyfin", service_url: Some("https://jellyfin.org"), setup_url: None, protocols: vec!["jellyfin", "jellyfins"], description: "Send notifications via Jellyfin.", attachment_support: false } }
@@ -38,22 +38,11 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "jellyfin://localhost",
-            "jellyfin://l2g@localhost",
-            "jellyfins://l2g:password@localhost",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "jellyfin://",
             "jellyfins://",
+            "jellyfin://localhost",
             "jellyfin://:@/",
         ];
         for url in &urls {

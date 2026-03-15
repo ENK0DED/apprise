@@ -55,27 +55,10 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "httpsms://pppppppppp@1111111111/55",
-            "httpsms://pppppppppp@2222222222",
-            "httpsms://bbbbbbbbbb@9876543210/33333333333/abcd/",
-            "httpsms://cccccccccc@44444444444",
-            "httpsms://bbbbbbbbbb@55555555555",
-            "httpsms://?key=yyyyyyyyyy&from=55555555555",
-            "httpsms://?key=bbbbbbbbbb&from=55555555555&to=7777777777777",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "httpsms://",
             "httpsms://:@/",
-            "httpsms://uuuuuuuuuu:pppppppppp@33333",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

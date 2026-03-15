@@ -16,24 +16,175 @@ pub fn convert_format(body: &str, from: &NotifyFormat, to: &NotifyFormat) -> Str
     }
 }
 
+/// Convert HTML to plain text, matching Python apprise's HTMLConverter behavior.
+///
+/// - Block tags (p, h1-h6, div, td, th, code, pre, label, li) produce newlines
+/// - `<br>` produces a newline
+/// - `<hr>` produces `\n---\n`
+/// - `<li>` prepends `- `
+/// - `<blockquote>` prepends ` >`
+/// - Ignore tags (form, input, textarea, select, ul, ol, style, link, meta,
+///   title, html, head, script) suppress their content
+/// - Consecutive whitespace is condensed to a single space
+/// - HTML entities are decoded
 fn html_to_text(html: &str) -> String {
-    // Strip HTML tags with a simple state machine
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(ch),
-            _ => {}
+    const BLOCK_TAGS: &[&str] = &[
+        "p", "h1", "h2", "h3", "h4", "h5", "h6",
+        "div", "td", "th", "code", "pre", "label", "li",
+    ];
+    const IGNORE_TAGS: &[&str] = &[
+        "form", "input", "textarea", "select", "ul", "ol",
+        "style", "link", "meta", "title", "html", "head", "script",
+    ];
+
+    // Token-based approach: collect text fragments and block-end markers
+    enum Token { Text(String), BlockEnd, Newline }
+
+    let mut tokens: Vec<Token> = Vec::new();
+    let mut do_store = true;
+    let mut pos = 0;
+    let bytes = html.as_bytes();
+    let len = bytes.len();
+
+    while pos < len {
+        if bytes[pos] == b'<' {
+            // Parse tag
+            let tag_start = pos;
+            pos += 1;
+            let is_closing = pos < len && bytes[pos] == b'/';
+            if is_closing { pos += 1; }
+
+            // Extract tag name
+            let name_start = pos;
+            while pos < len && bytes[pos] != b'>' && bytes[pos] != b' ' && bytes[pos] != b'/' {
+                pos += 1;
+            }
+            let tag_name = std::str::from_utf8(&bytes[name_start..pos])
+                .unwrap_or("")
+                .to_ascii_lowercase();
+
+            // Skip to end of tag
+            while pos < len && bytes[pos] != b'>' {
+                pos += 1;
+            }
+            if pos < len { pos += 1; } // skip '>'
+
+            if is_closing {
+                // End tag
+                do_store = true;
+                if BLOCK_TAGS.contains(&tag_name.as_str()) {
+                    tokens.push(Token::BlockEnd);
+                }
+            } else {
+                // Start tag
+                if IGNORE_TAGS.contains(&tag_name.as_str()) {
+                    do_store = false;
+                } else {
+                    do_store = true;
+                }
+
+                if BLOCK_TAGS.contains(&tag_name.as_str()) {
+                    tokens.push(Token::BlockEnd);
+                }
+
+                match tag_name.as_str() {
+                    "li" => tokens.push(Token::Text("- ".to_string())),
+                    "br" => tokens.push(Token::Newline),
+                    "hr" => {
+                        // Trim trailing spaces from previous text
+                        if let Some(Token::Text(ref mut s)) = tokens.last_mut() {
+                            *s = s.trim_end_matches(' ').to_string();
+                        }
+                        tokens.push(Token::Text("\n---\n".to_string()));
+                    }
+                    "blockquote" => tokens.push(Token::Text(" >".to_string())),
+                    _ => {}
+                }
+            }
+        } else {
+            // Text content
+            if do_store {
+                let text_start = pos;
+                while pos < len && bytes[pos] != b'<' {
+                    pos += 1;
+                }
+                let raw = std::str::from_utf8(&bytes[text_start..pos]).unwrap_or("");
+                // Condense whitespace (matching Python's WS_TRIM)
+                let condensed = condense_whitespace(raw);
+                if !condensed.is_empty() {
+                    tokens.push(Token::Text(condensed));
+                }
+            } else {
+                // Skip content inside ignored tags
+                while pos < len && bytes[pos] != b'<' {
+                    pos += 1;
+                }
+            }
         }
     }
-    out.replace("&amp;", "&")
+
+    // Finalize: combine tokens, collapsing consecutive BlockEnds into single newlines
+    // This matches Python's _finalize() method
+    let mut result = String::with_capacity(html.len());
+    let mut accum: Option<String> = None;
+
+    for token in tokens {
+        match token {
+            Token::BlockEnd => {
+                if let Some(s) = accum.take() {
+                    result.push_str(s.trim());
+                    result.push('\n');
+                }
+                // If accum is already None, consecutive BlockEnd → skip
+            }
+            Token::Newline => {
+                let s = accum.get_or_insert_with(String::new);
+                s.push('\n');
+            }
+            Token::Text(t) => {
+                let s = accum.get_or_insert_with(String::new);
+                s.push_str(&t);
+            }
+        }
+    }
+
+    if let Some(s) = accum {
+        result.push_str(s.trim());
+    }
+
+    // Decode HTML entities
+    decode_entities(&result).trim().to_string()
+}
+
+/// Condense runs of whitespace into a single space
+fn condense_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_ws = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !last_ws {
+                out.push(' ');
+                last_ws = true;
+            }
+        } else {
+            out.push(ch);
+            last_ws = false;
+        }
+    }
+    out
+}
+
+/// Decode common HTML entities
+fn decode_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&nbsp;", " ")
+        .replace("&#x27;", "'")
+        .replace("&#x2F;", "/")
+        .replace("&apos;", "'")
 }
 
 /// Replace `open … close` delimiters, wrapping content with `before`/`after`.
@@ -355,15 +506,61 @@ mod tests {
 
     #[test]
     fn test_html_to_text_all_entities() {
-        // When entities are adjacent, the replacement chain processes them in order.
-        // &amp; -> &, then & in &lt; also gets decoded, etc.
-        // Test individual entities instead.
-        assert_eq!(html_to_text("&amp;"), "&");
-        assert_eq!(html_to_text("&lt;"), "<");
-        assert_eq!(html_to_text("&gt;"), ">");
-        assert_eq!(html_to_text("&quot;"), "\"");
-        assert_eq!(html_to_text("&#39;"), "'");
-        assert_eq!(html_to_text("&nbsp;"), " ");
+        // Test individual entities (result is trimmed, so wrap in text)
+        assert_eq!(html_to_text("a&amp;b"), "a&b");
+        assert_eq!(html_to_text("a&lt;b"), "a<b");
+        assert_eq!(html_to_text("a&gt;b"), "a>b");
+        assert_eq!(html_to_text("a&quot;b"), "a\"b");
+        assert_eq!(html_to_text("a&#39;b"), "a'b");
+        assert_eq!(html_to_text("a&nbsp;b"), "a b");
+    }
+
+    #[test]
+    fn test_html_to_text_br_tag() {
+        assert_eq!(html_to_text("Hello<br>World"), "Hello\nWorld");
+        assert_eq!(html_to_text("Hello<br/>World"), "Hello\nWorld");
+    }
+
+    #[test]
+    fn test_html_to_text_p_tags() {
+        assert_eq!(html_to_text("<p>First</p><p>Second</p>"), "First\nSecond");
+    }
+
+    #[test]
+    fn test_html_to_text_list_items() {
+        assert_eq!(html_to_text("<ul><li>One</li><li>Two</li></ul>"), "- One\n- Two");
+    }
+
+    #[test]
+    fn test_html_to_text_hr() {
+        assert_eq!(html_to_text("Above<hr>Below"), "Above\n---\nBelow");
+    }
+
+    #[test]
+    fn test_html_to_text_blockquote() {
+        let result = html_to_text("<blockquote>Quote</blockquote>");
+        assert!(result.contains(">"));
+        assert!(result.contains("Quote"));
+    }
+
+    #[test]
+    fn test_html_to_text_ignores_script() {
+        assert_eq!(html_to_text("Hello<script>alert('x')</script>World"), "HelloWorld");
+    }
+
+    #[test]
+    fn test_html_to_text_ignores_style() {
+        assert_eq!(html_to_text("Hello<style>.x{color:red}</style>World"), "HelloWorld");
+    }
+
+    #[test]
+    fn test_html_to_text_heading() {
+        assert_eq!(html_to_text("<h1>Title</h1><p>Body</p>"), "Title\nBody");
+    }
+
+    #[test]
+    fn test_html_to_text_whitespace_condensing() {
+        assert_eq!(html_to_text("Hello   \n  World"), "Hello World");
     }
 
     // ── text_to_html ───────────────────────────────────────────────

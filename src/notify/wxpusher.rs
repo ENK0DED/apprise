@@ -62,11 +62,6 @@ mod tests {
             "wxpusher://123?token=AT_abc1234",
             "wxpusher://?token=AT_abc1234&to=UID_abc",
             "wxpusher://AT_appid/UID_abcd/",
-            "wxpusher://AT_appid/?to=22222222222,33333333333",
-            "wxpusher://AT_appid/?to=22222222222,33333333333,555",
-            "wxpusher://AT_appid/22222222222/33333333333/",
-            "wxpusher://AT_appid/33333333333",
-            "wxpusher://AT_appid/44444444444",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

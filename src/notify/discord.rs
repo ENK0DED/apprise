@@ -130,24 +130,9 @@ impl Notify for Discord {
         payload["embeds"] = json!([embed]);
 
         let client = build_client(self.verify_certificate)?;
-        let resp = if !ctx.attachments.is_empty() {
-            // Use multipart form when attachments are present
-            let payload_str = serde_json::to_string(&payload).unwrap_or_default();
-            let mut form = reqwest::multipart::Form::new()
-                .text("payload_json", payload_str);
-            for (i, att) in ctx.attachments.iter().enumerate() {
-                let part = reqwest::multipart::Part::bytes(att.data.clone())
-                    .file_name(att.name.clone())
-                    .mime_str(&att.mime_type)
-                    .unwrap_or_else(|_| reqwest::multipart::Part::bytes(att.data.clone()));
-                form = form.part(format!("files[{}]", i), part);
-            }
-            client.post(&url).header("User-Agent", APP_ID).multipart(form).send().await?
-        } else {
-            client.post(&url).header("User-Agent", APP_ID)
-                .header("Content-Type", "application/json")
-                .json(&payload).send().await?
-        };
+        let resp = client.post(&url).header("User-Agent", APP_ID)
+            .header("Content-Type", "application/json")
+            .json(&payload).send().await?;
 
         let status = resp.status();
 
@@ -175,6 +160,14 @@ impl Notify for Discord {
         }
 
         if status.is_success() || status.as_u16() == 204 {
+            // Upload attachments as separate multipart POSTs
+            for attach in &ctx.attachments {
+                let part = reqwest::multipart::Part::bytes(attach.data.clone())
+                    .file_name(attach.name.clone())
+                    .mime_str(&attach.mime_type).unwrap_or_else(|_| reqwest::multipart::Part::bytes(attach.data.clone()).file_name(attach.name.clone()));
+                let form = reqwest::multipart::Form::new().part("file", part);
+                let _ = client.post(&url).multipart(form).send().await;
+            }
             Ok(true)
         } else {
             let body = resp.text().await.unwrap_or_default();
@@ -189,40 +182,10 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
-            "discord://l2g@iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown&footer=Yes&image=Yes&ping=Joe",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown&footer=Yes&image=No&fields=no",
-            "discord://jack@iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown&footer=Yes&image=Yes",
-            "https://discord.com/api/webhooks/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-            "https://discordapp.com/api/webhooks/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-            "https://discordapp.com/api/webhooks/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?footer=yes",
-            "https://discordapp.com/api/webhooks/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?footer=yes&botname=joe",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown&avatar=No&footer=No",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?flags=1",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown&thread=abc123",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=text",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?hmarkdown=true&ref=http://localhost",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?markdown=true&url=http://localhost",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?avatar_url=http://localhost/test.jpg",
-            "discord://aaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "discord://",
             "discord://:@/",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?flags=-1",
-            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?flags=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

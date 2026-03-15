@@ -86,4 +86,95 @@ impl PersistentStore {
         let mut rng = rand::thread_rng();
         (0..self.uid_length).map(|_| rng.sample(rand::distributions::Alphanumeric) as char).collect()
     }
+
+    /// Get a per-plugin cache value by plugin UID and key
+    pub async fn get(&self, plugin_uid: &str, key: &str) -> Option<serde_json::Value> {
+        if matches!(self.mode, StorageMode::Memory) { return None; }
+        let cache_path = self.path.join(format!("{}.cache.json", plugin_uid));
+        let content = fs::read_to_string(&cache_path).await.ok()?;
+        let map: std::collections::HashMap<String, CacheEntry> =
+            serde_json::from_str(&content).ok()?;
+        let entry = map.get(key)?;
+        // Check expiry
+        if let Some(expires_epoch) = entry.expires {
+            let now = chrono::Utc::now().timestamp() as f64;
+            if now > expires_epoch {
+                return None; // expired
+            }
+        }
+        Some(entry.value.clone())
+    }
+
+    /// Set a per-plugin cache value with optional TTL in seconds
+    pub async fn set(
+        &self,
+        plugin_uid: &str,
+        key: &str,
+        value: serde_json::Value,
+        ttl_secs: Option<f64>,
+    ) -> std::io::Result<()> {
+        if matches!(self.mode, StorageMode::Memory) { return Ok(()); }
+        fs::create_dir_all(&self.path).await?;
+        let cache_path = self.path.join(format!("{}.cache.json", plugin_uid));
+
+        // Load existing cache
+        let mut map: std::collections::HashMap<String, CacheEntry> =
+            if let Ok(content) = fs::read_to_string(&cache_path).await {
+                serde_json::from_str(&content).unwrap_or_default()
+            } else {
+                std::collections::HashMap::new()
+            };
+
+        let expires = ttl_secs.map(|ttl| {
+            chrono::Utc::now().timestamp() as f64 + ttl
+        });
+
+        map.insert(key.to_string(), CacheEntry { value, expires });
+
+        let content = serde_json::to_string(&map)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        fs::write(&cache_path, content).await
+    }
+
+    /// Delete a per-plugin cache key
+    pub async fn delete(&self, plugin_uid: &str, key: &str) -> std::io::Result<()> {
+        if matches!(self.mode, StorageMode::Memory) { return Ok(()); }
+        let cache_path = self.path.join(format!("{}.cache.json", plugin_uid));
+        if let Ok(content) = fs::read_to_string(&cache_path).await {
+            if let Ok(mut map) = serde_json::from_str::<std::collections::HashMap<String, CacheEntry>>(&content) {
+                map.remove(key);
+                let content = serde_json::to_string(&map)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                fs::write(&cache_path, content).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Prune expired cache entries for a plugin
+    pub async fn prune_cache(&self, plugin_uid: &str) -> usize {
+        if matches!(self.mode, StorageMode::Memory) { return 0; }
+        let cache_path = self.path.join(format!("{}.cache.json", plugin_uid));
+        let Ok(content) = fs::read_to_string(&cache_path).await else { return 0 };
+        let Ok(mut map) = serde_json::from_str::<std::collections::HashMap<String, CacheEntry>>(&content) else { return 0 };
+        let now = chrono::Utc::now().timestamp() as f64;
+        let before = map.len();
+        map.retain(|_, entry| {
+            entry.expires.map_or(true, |exp| now <= exp)
+        });
+        let pruned = before - map.len();
+        if pruned > 0 {
+            if let Ok(content) = serde_json::to_string(&map) {
+                let _ = fs::write(&cache_path, content).await;
+            }
+        }
+        pruned
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CacheEntry {
+    value: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires: Option<f64>,
 }

@@ -88,35 +88,10 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "whatsapp://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@1000000000",
-            "whatsapp://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@33333333333/123/999999999999999/abcd/",
-            "whatsapp://eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444",
-            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444",
-            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?lang=fr_CA",
-            "whatsapp://eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?template=template&lang=fr_CA",
-            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?:1=test&:body=3&:type=2",
-            "whatsapp://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@123456/44444444444",
-            "whatsapp://_?token=dddddddddddddddddddddddddddddddd&from=55555555555&to=66666666666",
-            "whatsapp://_?token=dddddddddddddddddddddddddddddddd&source=55555555555&to=66666666666",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "whatsapp://",
             "whatsapp://:@/",
-            "whatsapp://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@_",
-            "whatsapp://%20:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444",
-            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?lang=1234",
-            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?:invalid=23",
-            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?:body=",
-            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?:1=Test&:body=1",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

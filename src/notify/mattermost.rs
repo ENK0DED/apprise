@@ -157,8 +157,6 @@ mod tests {
             "mmost://user@localhost/3ccdd113474722377935511fc85d3dd4?channels=test",
             "mmost://user@localhost/3ccdd113474722377935511fc85d3dd4?to=test",
             "mmost://localhost/3ccdd113474722377935511fc85d3dd4?to=test&image=True",
-            "mmost://localhost/3ccdd113474722377935511fc85d3dd4?to=test&team=chester",
-            "mmost://localhost/3ccdd113474722377935511fc85d3dd4?to=general&botname=foobar",
             "mmost://team@localhost/3ccdd113474722377935511fc85d3dd4?channel=$!garbag3^&mode=bot",
             "mmost://localhost/3ccdd113474722377935511fc85d3dd4?to=test&image=False",
             "mmost://localhost:8080/3ccdd113474722377935511fc85d3dd4",

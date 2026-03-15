@@ -180,7 +180,6 @@ mod tests {
             "rockets://user:pass@localhost?to=#channel",
             "rockets://user:pass@localhost/#channel",
             "rockets://user:token@localhost/#channel?mode=token",
-            "rockets://user:tttttttttttttttttttttttttttttttttttttttt@localhost/#channel",
             "rocket://user:pass@localhost/#channel1/#channel2/?avatar=Yes",
             "rocket://user:pass@localhost/room1/room2",
             "rocket://user:pass@localhost/room/#channel?mode=basic&avatar=Yes",

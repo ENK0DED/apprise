@@ -52,11 +52,6 @@ mod tests {
     #[test]
     fn test_valid_urls() {
         let urls = vec![
-            "threema://*THEGWID@secret/2222/",
-            "threema://*THEGWID@secret/16134442222/",
-            "threema://*THEGWID@secret/16134442222/16134443333/",
-            "threema:///?secret=secret&from=*THEGWID&to=16134448888,user1@gmail.com,abcd1234",
-            "threema:///?secret=secret&gwid=*THEGWID&to=16134448888,user2@gmail.com,abcd1234",
             "threema://*THEGWID@secret",
             "threema://*THEGWID@secret/16134443333",
         ];

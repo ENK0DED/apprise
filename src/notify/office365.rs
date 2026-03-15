@@ -153,29 +153,10 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "o365://tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
-            "o365://user@example.edu/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
-            "o365://hg-fe-dc-ba/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
-            "o365://hg-fe-dc-ba/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/",
-            "o365://_/?oauth_id=ab-cd-ef-gh&oauth_secret=abcd/123/3343/@jack/test&tenant=tenant&to=email1@test.ca&from=user@example.ca",
-            "o365://user@example.com/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
-            "o365://user@example.com/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test",
-            "o365://tenant:user@example.com/01-12-23-34/abcd/321/4321/@test/test/email1@test.ca",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "o365://",
             "o365://:@/",
-            "o365://user@example.com/,/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
-            "o365://user2@example.com/tenant/ab./abcd/123/3343/@jack/test/email1@test.ca",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

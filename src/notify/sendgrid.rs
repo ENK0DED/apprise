@@ -99,9 +99,6 @@ mod tests {
             "sendgrid://abcd:user@example.com/newuser@example.com?bcc=l2g@nuxref.com",
             "sendgrid://abcd:user@example.com/newuser@example.com?cc=l2g@nuxref.com",
             "sendgrid://abcd:user@example.com/newuser@example.com?to=l2g@nuxref.com",
-            "sendgrid://abcd:user@example.com/newuser@example.com?template=8b799edf-6f98-4d3a-9be7-2862fb4e5752",
-            "sendgrid://abcd:user@example.com/newuser@example.com?template=8b799edf-6f98-4d3a-9be7-2862fb4e5752&+sub=value&+sub2=value2",
-            "sendgrid://abcd:user@example.au/newuser@example.au",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

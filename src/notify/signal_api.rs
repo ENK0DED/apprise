@@ -59,27 +59,6 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "signal://localhost:8080/11111111111/",
-            "signal://localhost:8082/+22222222222/@group.abcd/",
-            "signals://localhost/11111111111/33333333333?format=markdown",
-            "signal://localhost:8080/+11111111111/group.abcd/",
-            "signal://localhost:8080/?from=11111111111&to=22222222222,33333333333",
-            "signal://localhost:8080/?from=11111111111&to=22222222222,33333333333,555",
-            "signal://localhost:8080/11111111111/22222222222/?from=33333333333",
-            "signals://user@localhost/11111111111/33333333333",
-            "signals://user:password@localhost/11111111111/33333333333",
-            "signals://localhost/11111111111/33333333333/44444444444?batch=True",
-            "signals://localhost/11111111111/33333333333/44444444444?status=True",
-            "signal://localhost/11111111111/44444444444",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "signal://",

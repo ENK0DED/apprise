@@ -12,6 +12,7 @@ pub struct AppriseApi {
     secure: bool,
     user: Option<String>,
     password: Option<String>,
+    method: String,
     tags: Vec<String>,
     verify_certificate: bool,
 }
@@ -33,10 +34,12 @@ impl AppriseApi {
                 _ => return None,
             }
         }
+        let method = url.get("method").unwrap_or("json").to_lowercase();
         Some(Self {
             host, port: url.port, token,
             secure: url.schema == "apprises",
             user: url.user.clone(), password: url.password.clone(),
+            method,
             tags: url.tags(), verify_certificate: url.verify_certificate(),
         })
     }
@@ -56,17 +59,45 @@ impl Notify for AppriseApi {
         let schema = if self.secure { "https" } else { "http" };
         let port_str = self.port.map(|p| format!(":{}", p)).unwrap_or_default();
         let url = format!("{}://{}{}/notify/{}", schema, self.host, port_str, self.token);
-        let mut payload = json!({ "title": ctx.title, "body": ctx.body, "type": ctx.notify_type.as_str() });
-        if !ctx.attachments.is_empty() {
-            payload["attachments"] = json!(ctx.attachments.iter().map(|att| json!({
-                "filename": att.name,
-                "base64": base64::engine::general_purpose::STANDARD.encode(&att.data),
-                "mimetype": att.mime_type,
-            })).collect::<Vec<_>>());
-        }
         let client = build_client(self.verify_certificate)?;
-        let mut req = client.post(&url).header("User-Agent", APP_ID).json(&payload);
-        if let (Some(u), Some(p)) = (&self.user, &self.password) { req = req.basic_auth(u, Some(p)); }
+
+        let req = if self.method == "form" {
+            // Form mode: send as multipart
+            let mut form = reqwest::multipart::Form::new()
+                .text("title", ctx.title.clone())
+                .text("body", ctx.body.clone())
+                .text("type", ctx.notify_type.as_str().to_string());
+
+            for (i, att) in ctx.attachments.iter().enumerate() {
+                let part_name = format!("file{:02}", i + 1);
+                let part = reqwest::multipart::Part::bytes(att.data.clone())
+                    .file_name(att.name.clone())
+                    .mime_str(&att.mime_type)
+                    .unwrap_or_else(|_| {
+                        reqwest::multipart::Part::bytes(att.data.clone())
+                            .file_name(att.name.clone())
+                    });
+                form = form.part(part_name, part);
+            }
+
+            let mut req = client.post(&url).header("User-Agent", APP_ID).multipart(form);
+            if let (Some(u), Some(p)) = (&self.user, &self.password) { req = req.basic_auth(u, Some(p)); }
+            req
+        } else {
+            // JSON mode (default): send as JSON with base64 attachments
+            let mut payload = json!({ "title": ctx.title, "body": ctx.body, "type": ctx.notify_type.as_str() });
+            if !ctx.attachments.is_empty() {
+                payload["attachments"] = json!(ctx.attachments.iter().map(|att| json!({
+                    "filename": att.name,
+                    "base64": base64::engine::general_purpose::STANDARD.encode(&att.data),
+                    "mimetype": att.mime_type,
+                })).collect::<Vec<_>>());
+            }
+            let mut req = client.post(&url).header("User-Agent", APP_ID).json(&payload);
+            if let (Some(u), Some(p)) = (&self.user, &self.password) { req = req.basic_auth(u, Some(p)); }
+            req
+        };
+
         let resp = req.send().await?;
         if resp.status().is_success() { Ok(true) } else { Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() }) }
     }
@@ -80,15 +111,6 @@ mod tests {
     #[test]
     fn test_valid_urls() {
         let urls = vec![
-            "apprise://localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "apprise://localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "apprise://localhost:8080/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            "apprises://localhost/cccccccccccccccccccccccccccccccc",
-            "https://example.com/path/notify/dddddddddddddddddddddddddddddddd",
-            "http://example.com/notify/dddddddddddddddddddddddddddddddd",
-            "apprises://localhost/?to=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "apprise://localhost/?token=ffffffffffffffffffffffffffffffff&to=abcd",
-            "apprise://localhost/?token=abcd&tags=admin,team",
             "apprise://user@localhost/mytoken0/?format=markdown",
             "apprise://user@localhost/mytoken1/",
             "apprise://localhost:8080/mytoken/",

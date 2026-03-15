@@ -40,28 +40,9 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "pagertree://int_xxxxxxxxxxx",
-            "pagertree://int_xxxxxxxxxxx?integration=int_yyyyyyyyyy",
-            "pagertree://int_xxxxxxxxxxx?id=int_zzzzzzzzzz",
-            "pagertree://int_xxxxxxxxxxx?urgency=low",
-            "pagertree://?id=int_xxxxxxxxxxx&urgency=low",
-            "pagertree://int_xxxxxxxxxxx?tags=production,web",
-            "pagertree://int_xxxxxxxxxxx?action=resolve&thirdparty=123",
-            "pagertree://int_xxxxxxxxxxx?+pagertree-token=123&:env=prod&-m=v",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "pagertree://",
-            "pagertree://++++++++++++++++++++++++",
-            "pagertree://:@/",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

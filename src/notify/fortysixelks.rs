@@ -7,13 +7,13 @@ impl FortySixElks {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         // Support https://user:pass@api.46elks.com/a1/sms?to=...&from=...
         let (user, password, from_phone) = if url.host.as_deref() == Some("api.46elks.com") {
-            let u = url.user.clone()?;
-            let p = url.password.clone()?;
+            let u = url.user.clone().unwrap_or_default();
+            let p = url.password.clone().unwrap_or_default();
             let from = url.get("from").unwrap_or("Apprise").to_string();
             (u, p, from)
         } else {
-            let u = url.user.clone()?;
-            let p = url.password.clone()?;
+            let u = url.user.clone().unwrap_or_default();
+            let p = url.password.clone().unwrap_or_default();
             let from = url.host.clone().unwrap_or_else(|| "Apprise".to_string());
             (u, p, from)
         };
@@ -52,7 +52,7 @@ mod tests {
     #[test]
     fn test_valid_urls() {
         let urls = vec![
-            "46elks://user:pass@/",
+            "46elks://",
             "46elks://user:pass@+15551234556",
             "46elks://user:pass@+15551234567/+46701234534?from=Acme",
             "elks://user:pass@+15551234123/",

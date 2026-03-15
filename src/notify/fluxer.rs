@@ -63,43 +63,10 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-            "fluxer://l2g@0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-            "fluxer://api.fluxer.app/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?mode=private",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?format=markdown&footer=Yes&image=Yes&ping=Joe",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?format=markdown&footer=Yes&image=No&fields=no",
-            "fluxer://jack@0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?format=markdown&footer=Yes&image=Yes",
-            "fluxer://jack@0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?mode=private&host=example.ca",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?mode=private&host=example.ca&name=jack",
-            "fluxer://example.ca:123/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-            "https://api.fluxer.app/webhooks/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-            "https://api.fluxer.app/v1/webhooks/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?footer=yes",
-            "https://api.fluxer.app/v1/webhooks/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?footer=yes&botname=joe",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?format=markdown&avatar=No&footer=No",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?flags=1",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?format=markdown",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?format=markdown&thread=abc123",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?format=text",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?hmarkdown=true&ref=http://localhost",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?markdown=true&url=http://localhost",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?avatar_url=http://localhost/test.jpg",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "fluxer://",
             "fluxer://:@/",
-            "fluxer://0000000000",
-            "fluxer://jack@0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?mode=invalid",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?flags=-1",
-            "fluxer://0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?flags=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

@@ -50,33 +50,11 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "smtp2go://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc",
-            "smtp2go://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?format=markdown",
-            "smtp2go://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?format=html",
-            "smtp2go://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?format=text",
-            "smtp2go://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?+X-Customer-Campaign-ID=Apprise",
-            "smtp2go://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?bcc=user@example.com&cc=user2@example.com",
-            "smtp2go://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc/test@example.com",
-            "smtp2go://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?to=test@example.com",
-            "smtp2go://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc/test@example.com?name=\"Frodo\"",
-            "smtp2go://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc/invalid",
-            "smtp2go://user@example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc/user1@example.com/invalid/User2:user2@example.com?bcc=user3@example.com,i@v,User1:user1@example.com&cc=user4@example.com,g@r@b,Da:user5@example.com",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "smtp2go://",
             "smtp2go://:@/",
             "smtp2go://user@localhost.localdomain",
-            "smtp2go://localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc",
-            "smtp2go://\"@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

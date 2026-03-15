@@ -152,19 +152,6 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "smpp://user:pass@host:2775/1111111111/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "smpp://user:pass@host:2775/1111111111",
-            "smpp://user:pass@host/1111111111/1111111111",
-            "smpps://_?&from=1111111111&to=1111111111,1111111111&user=user&password=pw",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "smpp://",

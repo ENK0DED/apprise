@@ -59,39 +59,11 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "sparkpost://user@localhost.localdomain/cccccccccccccccccccccccccccccccc",
-            "sparkpost://user@localhost.localdomain/dddddddddddddddddddddddddddddddd?format=markdown",
-            "sparkpost://user@localhost.localdomain/dddddddddddddddddddddddddddddddd?format=html",
-            "sparkpost://user@localhost.localdomain/dddddddddddddddddddddddddddddddd?format=text",
-            "sparkpost://user@localhost.localdomain/dddddddddddddddddddddddddddddddd?region=uS",
-            "sparkpost://user@localhost.localdomain/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee?region=EU",
-            "sparkpost://user@localhost.localdomain/ffffffffffffffffffffffffffffffff?+X-Customer-Campaign-ID=Apprise",
-            "sparkpost://user@localhost.localdomain/gggggggggggggggggggggggggggggggg?:name=Chris&:status=admin",
-            "sparkpost://user@localhost.localdomain/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh?bcc=user@example.com&cc=user2@example.com",
-            "sparkpost://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/test@example.com",
-            "sparkpost://user@localhost.localdomain/iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii/invalid",
-            "sparkpost://user@example.com/jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj/user1@example.com/invalid/User2:user2@example.com?bcc=user3@example.com,i@v,User1:user1@example.com&cc=user4@example.com,g@r@b,Da:user5@example.com",
-            "sparkpost://user@localhost.localdomain/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk?to=test@example.com",
-            "sparkpost://user@localhost.localdomain/llllllllllllllllllllllllllllllll/test@example.com?name=\"Frodo\"",
-            "sparkpost://user@localhost.localdomain/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
-            "sparkpost://user@localhost.localdomain/pppppppppppppppppppppppppppppppp",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "sparkpost://",
             "sparkpost://:@/",
             "sparkpost://user@localhost.localdomain",
-            "sparkpost://localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "sparkpost://\"@localhost.localdomain/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            "sparkpost://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?region=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

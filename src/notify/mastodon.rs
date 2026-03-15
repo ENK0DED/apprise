@@ -69,9 +69,12 @@ impl Notify for Mastodon {
         let base_url = format!("{}://{}{}", schema, self.host, port_str);
         let client = build_client(self.verify_certificate)?;
 
-        // Upload attachments and collect media IDs
+        // Upload attachments and collect media IDs (only image/video/audio supported)
         let mut media_ids: Vec<String> = Vec::new();
         for att in &ctx.attachments {
+            if !(att.mime_type.starts_with("image/") || att.mime_type.starts_with("video/") || att.mime_type.starts_with("audio/")) {
+                continue;
+            }
             let upload_url = format!("{}/api/v1/media", base_url);
             let part = reqwest::multipart::Part::bytes(att.data.clone())
                 .file_name(att.name.clone())

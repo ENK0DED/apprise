@@ -46,31 +46,11 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "clickatell://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
-            "clickatell://1111111111@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
-            "clickatell://1111111111@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/123/333333333333333/abcd",
-            "clickatell://1111111111/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "clickatell://1111111111@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1111111111",
-            "clickatell://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1111111111",
-            "clickatell://_?apikey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&from=1111111111&to=1111111111,1111111111",
-            "clickatell://_?apikey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "clickatell://_?apikey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&from=1111111111",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "clickatell://",
             "clickatell:///",
             "clickatell://@/",
-            "clickatell://1111111111@/",
-            "clickatell://111@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

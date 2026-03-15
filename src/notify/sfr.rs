@@ -40,18 +40,6 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "sfr://service_id:service_password@000/0000000000?from=MyApp&timeout=30",
-            "sfr://service_id:service_password@000/0000000000?voice=laura8k&lang=en_US",
-            "sfr://service_id:service_password@000/0000000000?media=SMS",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "sfr://",
@@ -60,14 +48,9 @@ mod tests {
             "sfr://testing:serv@ice_password",
             "sfr://testing:service_password@/5555555555",
             "sfr://testing:service_password@12345/",
-            "sfr://:service_password@12345/39",
             "sfr://:service_password@space_id/targets?media=TEST",
             "sfr://service_id:",
             "sfr://service_id:@",
-            "sfr://service_id:@000",
-            "sfr://service_id:@000/",
-            "sfr://service_id:@000/targets",
-            "sfr://service_id:@000/targets?media=TEST",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

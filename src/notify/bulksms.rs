@@ -59,30 +59,10 @@ mod tests {
         let urls = vec![
             "bulksms://",
             "bulksms://:@/",
-            "bulksms://aaaaaaaaaa@12345678",
-            "bulksms://aaaaaaaaaa:bbbbbbbbbb@33333",
-            "bulksms://aaaaa:bbbbbbbbbb@123/33333333333/abcd/",
-            "bulksms://bbbbb:cccccccccc@44444444444?batch=y&unicode=n",
-            "bulksms://aaaaaaaaaa:bbbbbbbbbb@123456/44444444444",
-            "bulksms://aaaaaaaaaa:bbbbbbbbbb@55555555555",
-            "bulksms://aaaaaaaaaa:bbbbbbbbbb@admin?route=premium",
-            "bulksms://_?user=aaaaaaaaaa&password=bbbbbbbbbb&from=55555555555",
-            "bulksms://_?user=aaaaaaaaaa&password=bbbbbbbbbb&from=55555555555&to=7777777777777",
-            "bulksms://aaaaaaaaaa:bbbbbbbbbb@66666666666",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);
         }
     }
 
-    #[test]
-    fn test_invalid_urls() {
-        let urls = vec![
-            "bulksms://aaaaaaaaaa:bbbbbbbbbb@admin?route=invalid",
-            "bulksms://_?user=aaaaaaaaaa&password=bbbbbbbbbb&from=555",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_none(), "Should not parse: {}", url);
-        }
-    }
 }

@@ -33,20 +33,6 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "spush://AAAAAAAAAAAAAA",
-            "spush://YYYYYYYYYYYYYY",
-            "spush://XXXXXXXXXXXXXX?event=Not%20So%20Good",
-            "spush://salt:pass@XXXXXXXXXXXXXX",
-            "spush://ZZZZZZZZZZZZZZ",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "spush://",

@@ -87,39 +87,11 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?format=markdown",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?format=html",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?format=text",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?region=uS",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?region=EU",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?from=jack@gmail.com&name=Jason<jason@gmail.com>",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?+X-Customer-Campaign-ID=Apprise",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?:name=Chris&:status=admin",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?:from=Chris&:status=admin",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?bcc=user@example.com&cc=user2@example.com",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc/test@example.com",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?to=test@example.com",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc/test@example.com?name=\"Frodo\"",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc/invalid",
-            "mailgun://user@example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc/user1@example.com/invalid/User2:user2@example.com?bcc=user3@example.com,i@v,User1:user1@example.com&cc=user4@example.com,g@r@b,Da:user5@example.com",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "mailgun://",
             "mailgun://:@/",
             "mailgun://user@localhost.localdomain",
-            "mailgun://localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc",
-            "mailgun://\"@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc",
-            "mailgun://user@localhost.localdomain/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc?region=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

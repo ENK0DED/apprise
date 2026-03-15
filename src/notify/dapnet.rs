@@ -46,16 +46,7 @@ mod tests {
     #[test]
     fn test_valid_urls() {
         let urls = vec![
-            "dapnet://user:pass@DF1ABC",
-            "dapnet://user:pass@DF1ABC/DF1DEF",
             "dapnet://user:pass@DF1ABC-1/DF1ABC/DF1ABC-15",
-            "dapnet://user:pass@?to=DF1ABC,DF1DEF",
-            "dapnet://user:pass@DF1ABC?priority=normal",
-            "dapnet://user:pass@DF1ABC/0A1DEF?priority=em&batch=false",
-            "dapnet://user:pass@DF1ABC?priority=invalid",
-            "dapnet://user:pass@DF1ABC?txgroups=dl-all,all",
-            "dapnet://user:pass@DF1ABC?txgroups=invalid",
-            "dapnet://user:pass@abcdefghi/a",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

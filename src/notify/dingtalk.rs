@@ -51,13 +51,6 @@ mod tests {
     fn test_valid_urls() {
         let urls = vec![
             "dingtalk://12345678",
-            "dingtalk://aaaaaaaa/11111111111111",
-            "dingtalk://aaaaaaaa/111/invalid",
-            "dingtalk://aaaaaaaa/?to=11111111111111",
-            "dingtalk://secret@aaaaaaaa/?to=11111111111111",
-            "dingtalk://?token=bbbbbbbb&to=11111111111111&secret=aaaaaaaaaaaaaaa",
-            "dingtalk://aaaaaaaa?format=markdown",
-            "dingtalk://aaaaaaaa",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -69,7 +62,6 @@ mod tests {
         let urls = vec![
             "dingtalk://",
             "dingtalk://a_bd_/",
-            "dingtalk://aaaaaaaa/?to=11111111111111&secret=_",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

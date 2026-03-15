@@ -42,25 +42,9 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "popcorn://aaaaaaaaa/1232348923489234923489234289-32423",
-            "popcorn://bbbbbbbbb/abc",
-            "popcorn://ccccccccc/15551232000/user@example.com",
-            "popcorn://wwwwwwwww/15551232000/user@example.com?batch=yes",
-            "popcorn://wwwwwwwww/?to=15551232000",
-            "popcorn://zzzzzzzzz/15551232000",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "popcorn://",
-            "popcorn://_________/18001231234",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

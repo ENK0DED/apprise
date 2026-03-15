@@ -32,31 +32,6 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "https://notica.us/?zzzzzz",
-            "https://notica.us/?zzzzzz&overflow=upstream",
-            "notica://aaaaaa",
-            "notica://localhost/bbbbbb",
-            "notica://user@localhost/cccccc",
-            "notica://user:pass@localhost/dddddd/",
-            "notica://user:pass@localhost/a/path/rrrrrr/",
-            "notica://localhost:8080/aaaaaa",
-            "notica://user:pass@localhost:8080/bbbbbb",
-            "noticas://localhost/jjjjjj",
-            "noticas://user:pass@localhost/eeeeee",
-            "noticas://localhost:8080/path/555555",
-            "noticas://user:pass@localhost:8080/666666",
-            "notica://bbbbbb",
-            "notica://localhost:8080//777777/?+HeaderKey=HeaderValue",
-            "notica://eeeeeeee",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "notica://",

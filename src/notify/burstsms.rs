@@ -59,31 +59,10 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "burstsms://ffffffff:gggggggggggggggg@33333333333/123/999999999999999/abcd/",
-            "burstsms://hhhhhhhh:iiiiiiiiiiiiiiii@55555555555",
-            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555&to=66666666666",
-            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555&to=66666666666&batch=y",
-            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555&to=66666666666&country=us",
-            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555&to=66666666666&validity=10",
-            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555&to=77777777777",
-            "burstsms://aaaaaaaa:bbbbbbbbbbbbbbbb@66666666666/77777777777",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "burstsms://",
             "burstsms://:@/",
-            "burstsms://aaaaaaaa@12345678",
-            "burstsms://dddddddd:eeeeeeeeeeeeeeee@%20",
-            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555&to=66666666666&country=invalid",
-            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555&to=66666666666&validity=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

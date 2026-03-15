@@ -136,60 +136,37 @@ impl Notify for Telegram {
 
         let mut all_ok = true;
         for target in &self.targets {
-            // Send attachments first (if any)
-            if !ctx.attachments.is_empty() {
-                for att in &ctx.attachments {
-                    let (method, field_name) = Self::endpoint_for_mime(&att.mime_type);
-                    let url = format!("{}{}/{}", Self::API_BASE, self.bot_token, method);
+            // Always send text message first
+            let url = format!("{}{}/sendMessage", Self::API_BASE, self.bot_token);
+            let payload = json!({
+                "chat_id": target,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_notification": self.silent,
+            });
+            let resp = client
+                .post(&url)
+                .header("User-Agent", APP_ID)
+                .json(&payload)
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                tracing::warn!("Telegram send to {} failed: {}", target, body);
+                all_ok = false;
+            }
 
-                    // Truncate caption to 1024 chars (Telegram limit)
-                    let caption = if text.len() > 1024 { &text[..1024] } else { &text };
-
-                    let part = reqwest::multipart::Part::bytes(att.data.clone())
-                        .file_name(att.name.clone())
-                        .mime_str(&att.mime_type)
-                        .unwrap_or_else(|_| reqwest::multipart::Part::bytes(att.data.clone()));
-
-                    let form = reqwest::multipart::Form::new()
-                        .text("chat_id", target.clone())
-                        .text("caption", caption.to_string())
-                        .text("parse_mode", "HTML")
-                        .text("disable_notification", self.silent.to_string())
-                        .part(field_name, part);
-
-                    let resp = client
-                        .post(&url)
-                        .header("User-Agent", APP_ID)
-                        .multipart(form)
-                        .send()
-                        .await?;
-
-                    if !resp.status().is_success() {
-                        let body = resp.text().await.unwrap_or_default();
-                        tracing::warn!("Telegram {} to {} failed: {}", method, target, body);
-                        all_ok = false;
-                    }
-                }
-            } else {
-                // No attachments — send text message
-                let url = format!("{}{}/sendMessage", Self::API_BASE, self.bot_token);
-                let payload = json!({
-                    "chat_id": target,
-                    "text": text,
-                    "parse_mode": "HTML",
-                    "disable_notification": self.silent,
-                });
-                let resp = client
-                    .post(&url)
-                    .header("User-Agent", APP_ID)
-                    .json(&payload)
-                    .send()
-                    .await?;
-                if !resp.status().is_success() {
-                    let body = resp.text().await.unwrap_or_default();
-                    tracing::warn!("Telegram send to {} failed: {}", target, body);
-                    all_ok = false;
-                }
+            // Upload attachments via sendDocument
+            for attach in &ctx.attachments {
+                let part = reqwest::multipart::Part::bytes(attach.data.clone())
+                    .file_name(attach.name.clone())
+                    .mime_str(&attach.mime_type).unwrap_or_else(|_| reqwest::multipart::Part::bytes(attach.data.clone()).file_name(attach.name.clone()));
+                let form = reqwest::multipart::Form::new()
+                    .text("chat_id", target.clone())
+                    .part("document", part);
+                let _ = client.post(format!("https://api.telegram.org/bot{}/sendDocument", self.bot_token))
+                    .multipart(form)
+                    .send().await;
             }
         }
         Ok(all_ok)

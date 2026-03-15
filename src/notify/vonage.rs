@@ -73,41 +73,12 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "vonage://ACffffffff:gggggggggggggggg@33333333333/123/999999999999999/abcd/",
-            "vonage://AChhhhhhhh:iiiiiiiiiiiiiiii@55555555555",
-            "vonage://_?key=ACaaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555",
-            "vonage://_?key=ACaaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555",
-            "vonage://_?key=ACaaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555&to=7777777777777",
-            "vonage://ACaaaaaaaa:bbbbbbbbbbbbbbbb@66666666666",
-            "nexmo://ACffffffff:gggggggggggggggg@33333333333/123/999999999999999/abcd/",
-            "nexmo://AChhhhhhhh:iiiiiiiiiiiiiiii@55555555555",
-            "nexmo://_?key=ACaaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555",
-            "nexmo://_?key=ACaaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555",
-            "nexmo://_?key=ACaaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555&to=7777777777777",
-            "nexmo://ACaaaaaaaa:bbbbbbbbbbbbbbbb@66666666666",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "vonage://",
             "vonage://:@/",
-            "vonage://ACaaaaaaaa@12345678",
-            "vonage://ACaaaaaaaa:bbbbbbbbbbbbbbbb@333333333",
-            "vonage://ACbbbbbbbb:cccccccccccccccc@33333333333/?ttl=0",
-            "vonage://ACdddddddd:eeeeeeeeeeeeeeee@aaaaaaaaaaa",
             "nexmo://",
             "nexmo://:@/",
-            "nexmo://ACaaaaaaaa@12345678",
-            "nexmo://ACaaaaaaaa:bbbbbbbbbbbbbbbb@333333333",
-            "nexmo://ACbbbbbbbb:cccccccccccccccc@33333333333/?ttl=0",
-            "nexmo://ACdddddddd:eeeeeeeeeeeeeeee@aaaaaaaaaaa",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

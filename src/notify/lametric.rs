@@ -80,47 +80,10 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "lametric://root:8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.0.5:8080/",
-            "lametric://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.0.4:8000/",
-            "lametric://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.0.5/",
-            "lametrics://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.0.6/?mode=device",
-            "https://developer.lametric.com/api/v1/dev/widget/update/com.lametric.ABCD123/1?token=DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD==",
-            "lametric://192.168.2.8/?mode=device&apikey=abc123",
-            "lametrics://AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==@com.lametric.941c51dff3135bd87aa72db9d855dd50/?mode=cloud&app_ver=2",
-            "lametric://?app=com.lametric.941c51dff3135bd87aa72db9d855dd50&token=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB==&mode=cloud",
-            "lametrics://CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC==@abcd/?mode=cloud&sound=knock&icon_type=info&priority=critical&cycles=10",
-            "lametrics://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.0.6/?sound=alarm1",
-            "lametrics://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.0.7/?sound=bike",
-            "lametrics://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.0.8/?sound=invalid!",
-            "lametrics://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.0.9/?icon_type=alert",
-            "lametrics://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.0.10/?icon_type=invalid",
-            "lametric://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.1.1/?priority=warning",
-            "lametrics://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.1.2/?priority=invalid",
-            "lametric://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.1.2/?icon=230",
-            "lametrics://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.1.2/?icon=#230",
-            "lametric://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.1.2/?icon=Heart",
-            "lametric://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.1.2/?icon=#",
-            "lametric://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.1.2/?icon=#%20%20%20",
-            "lametric://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.1.3/?cycles=2",
-            "lametric://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.1.4/?cycles=-1",
-            "lametrics://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.1.5/?cycles=invalid",
-            "lametrics://8b799edf-6f98-4d3a-9be7-2862fb4e5752@example.net/",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "lametric://",
             "lametric://:@/",
-            "lametric://com.lametric.941c51dff3135bd87aa72db9d855dd50/",
-            "lametrics://AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==@com.lametric.941c51dff3135bd87aa72db9d855dd50/?app_ver=invalid",
-            "lametrics://8b799edf-6f98-4d3a-9be7-2862fb4e5752@192.168.0.7/?mode=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

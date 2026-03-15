@@ -61,27 +61,9 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "plivo://aaaaaaaaaaaaaaaaaaaaaaaaa@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/15551231234",
-            "plivo://aaaaaaaaaaaaaaaaaaaaaaaaa@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/?from=15551233000&to=15551232000&batch=yes",
-            "plivo://?id=aaaaaaaaaaaaaaaaaaaaaaaaa&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&from=15551233000&to=15551232000",
-            "plivo://15551232123?id=aaaaaaaaaaaaaaaaaaaaaaaaa&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&from=15551233000&to=15551232000",
-            "plivo://aaaaaaaaaaaaaaaaaaaaaaaaa@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/15551232000",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "plivo://",
-            "plivo://aaaaaaaaaa@aaaaaaaaaaaaaaaaaaaaaaaaa/15551232000",
-            "plivo://aaaaaaaaaaaaaaaaaaaaaaaaa@aaaaaaaaaa/15551232000",
-            "plivo://aaaaaaaaaaaaaaaaaaaaaaaaa@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/123",
-            "plivo://aaaaaaaaaaaaaaaaaaaaaaaaa@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/abc",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

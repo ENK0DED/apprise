@@ -65,12 +65,13 @@ impl Notify for Form {
                 .text("title", ctx.title.clone())
                 .text("message", ctx.body.clone())
                 .text("type", ctx.notify_type.as_str().to_string());
-            for att in &ctx.attachments {
+            for (i, att) in ctx.attachments.iter().enumerate() {
+                let field_name = format!("file{:02}", i + 1);
                 let part = reqwest::multipart::Part::bytes(att.data.clone())
                     .file_name(att.name.clone())
                     .mime_str(&att.mime_type)
-                    .unwrap_or_else(|_| reqwest::multipart::Part::bytes(att.data.clone()));
-                form = form.part("attach", part);
+                    .unwrap_or_else(|_| reqwest::multipart::Part::bytes(att.data.clone()).file_name(att.name.clone()));
+                form = form.part(field_name, part);
             }
             req = req.header("User-Agent", APP_ID).multipart(form);
         } else {

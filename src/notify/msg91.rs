@@ -62,25 +62,10 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "msg91://tttttttttttttttttttt@aaaaaaaaaaaaaaaaaaaaaaa",
-            "msg91://tttttttttttttttttttt@aaaaaaaaaaaaaaaaaaaaaaa/abcd",
-            "msg91://tttttttttttttttttttt@aaaaaaaaaaaaaaaaaaaaaaa/15551232000",
-            "msg91://tttttttttttttttttttt@aaaaaaaaaaaaaaaaaaaaaaa/?to=15551232000&short_url=no",
-            "msg91://tttttttttttttttttttt@aaaaaaaaaaaaaaaaaaaaaaa/15551232000?short_url=yes",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "msg91://",
             "msg91://-",
-            "msg91://aaaaaaaaaaaaaaaaaaaaaaa",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

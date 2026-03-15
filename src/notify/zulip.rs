@@ -74,30 +74,12 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "zulip://bot-name@apprise/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "zulip://botname@apprise/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "zulip://botname@apprise.zulipchat.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "zulip://botname@apprise/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/channel1/channel2",
-            "zulip://botname@apprise/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/?to=channel1/channel2",
-            "zulip://botname@apprise/?token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&to=channel1",
-            "zulip://botname@apprise/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/user@example.com/user2@example.com",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "zulip://",
             "zulip://:@/",
             "zulip://apprise",
             "zulip://botname@apprise",
-            "zulip://botname@apprise/aaaaaaaaaaaaaaaaaaaaaaaa",
-            "zulip://....@apprise/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

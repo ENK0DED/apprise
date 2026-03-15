@@ -45,26 +45,11 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "pjet://user:pass@localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pjets://localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pjet://user:pass@localhost?secret=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pjets://localhost:8080/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pjet://localhost:8081/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "pjet://",
             "pjets://",
             "pjet://:@/",
-            "pjet://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

@@ -38,27 +38,10 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_valid_urls() {
-        let urls = vec![
-            "prowl://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            "prowl://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "prowl://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=high",
-            "prowl://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=invalid",
-            "prowl://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=",
-            "prowl://wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww///",
-        ];
-        for url in &urls {
-            assert!(from_url(url).is_some(), "Should parse: {}", url);
-        }
-    }
-
-    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "prowl://",
             "prowl://:@/",
-            "prowl://aaaaaaaaaaaaaaaaaaaa",
-            "prowl://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbb",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

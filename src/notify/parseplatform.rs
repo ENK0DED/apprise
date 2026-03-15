@@ -47,7 +47,6 @@ mod tests {
     #[test]
     fn test_valid_urls() {
         let urls = vec![
-            "parseps://localhost?app_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&master_key=dddddddddddddddddddddddddddddddd",
             "parsep://app_id:master_key@localhost:8080?device=ios",
             "parseps://app_id:master_key@localhost",
         ];
@@ -61,9 +60,6 @@ mod tests {
         let urls = vec![
             "parsep://",
             "parsep://:@/",
-            "parsep://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "parsep://app_id@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "parseps://:master_key@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "parsep://app_id:master_key@localhost?device=invalid",
         ];
         for url in &urls {

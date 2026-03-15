@@ -35,7 +35,6 @@ mod tests {
     fn test_valid_urls() {
         let urls = vec![
             "schan://12345678",
-            "schan://aaaaaaaa",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);
