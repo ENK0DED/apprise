@@ -1,0 +1,27 @@
+[package]
+name = "apprise-napi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Push notifications that work with everything — Node.js binding"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+apprise-core.workspace = true
+napi = { version = "3", default-features = false, features = ["async", "serde-json"] }
+napi-derive = "3"
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+napi-build = "2"
+
+[features]
+default = ["apprise-core/default"]
+mqtt = ["apprise-core/mqtt"]
+email = ["apprise-core/email"]
+yaml = ["apprise-core/yaml"]

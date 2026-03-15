@@ -1,0 +1,43 @@
+{
+  "name": "apprise",
+  "version": "1.9.8",
+  "description": "Push notifications that work with everything — Node.js native binding",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "apprise",
+    "triples": {
+      "defaults": true,
+      "additional": [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "aarch64-unknown-linux-musl",
+        "x86_64-unknown-linux-musl"
+      ]
+    }
+  },
+  "license": "MIT",
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "test": "node __test__/index.test.mjs"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0.0"
+  },
+  "engines": {
+    "node": ">= 18"
+  },
+  "keywords": [
+    "apprise",
+    "notification",
+    "push",
+    "alert",
+    "slack",
+    "discord",
+    "telegram",
+    "email",
+    "sms",
+    "ntfy"
+  ]
+}
