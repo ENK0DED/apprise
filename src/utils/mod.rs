@@ -5,6 +5,7 @@ pub mod escape;
 pub mod aws;
 pub mod base64;
 pub mod cwe312;
+pub mod disk;
 pub mod locale;
 pub mod pem;
 pub mod pgp;
