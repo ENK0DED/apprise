@@ -92,7 +92,7 @@ fn html_to_text(html: &str) -> String {
                     "br" => tokens.push(Token::Newline),
                     "hr" => {
                         // Trim trailing spaces from previous text
-                        if let Some(Token::Text(ref mut s)) = tokens.last_mut() {
+                        if let Some(Token::Text(s)) = tokens.last_mut() {
                             *s = s.trim_end_matches(' ').to_string();
                         }
                         tokens.push(Token::Text("\n---\n".to_string()));

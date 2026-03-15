@@ -26,7 +26,7 @@ impl Growl {
                 // 2. key = SHA256(password_utf8 + salt)
                 // 3. key_hash = SHA256(key)
                 // 4. Header: "SHA256:<hex(key_hash)>.<hex(salt)>"
-                let salt: Vec<u8> = rand::thread_rng().sample_iter(rand::distributions::Standard).take(16).collect();
+                let salt: Vec<u8> = rand::rng().sample_iter(rand::distr::StandardUniform).take(16).collect();
                 let mut hasher = Sha256::new();
                 hasher.update(pw.as_bytes());
                 hasher.update(&salt);

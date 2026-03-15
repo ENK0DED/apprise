@@ -1,7 +1,8 @@
 [package]
 name = "apprise"
 version = "1.9.8"
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
 description = "Push notifications that work with everything - single Rust binary"
 license = "MIT"
 
@@ -16,8 +17,8 @@ clap = { version = "4", features = ["derive", "env"] }
 # Async runtime — only the features we actually use
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "fs"] }
 
-# HTTP client — drop multipart and stream (unused)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots", "multipart"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -41,10 +42,10 @@ thiserror = "2"
 base64 = "0.22"
 
 # System paths
-dirs = "5"
+dirs = "6"
 
 # Random
-rand = "0.8"
+rand = "0.9"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
@@ -52,7 +53,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # Async trait
 async-trait = "0.1"
 
-# URL / percent encoding (percent-encoding removed — urlencoding covers all uses)
+# URL / percent encoding
 urlencoding = "2"
 
 # Cryptographic primitives (AWS Signature v4, OAuth1)
@@ -61,36 +62,25 @@ sha2 = "0.10"
 sha1 = "0.10"
 hex = "0.4"
 
-# Timezone handling (IANA timezone database)
-chrono-tz = "0.10"
-
 # Platform-specific socket options (keepalive)
 libc = "0.2"
 
 # TLS for raw TCP plugins (IRC, XMPP)
 tokio-rustls = "0.26"
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 webpki-roots = "0.26"
 
-# MQTT (optional — omit with --no-default-features or -F without mqtt)
-rumqttc = { version = "0.24", features = ["use-rustls"], optional = true }
+# MQTT (optional)
+rumqttc = { version = "0.25", features = ["use-rustls"], optional = true }
 
 # Desktop notifications (optional, feature-gated)
 notify-rust = { version = "4", optional = true }
 
 [features]
 default = ["mqtt", "email", "yaml"]
-
-# Pull in the MQTT broker client (rumqttc + its ICU / zerocopy tree)
 mqtt = ["dep:rumqttc"]
-
-# Pull in the SMTP email transport (lettre + nom)
 email = ["dep:lettre"]
-
-# Pull in YAML config-file parsing (serde_yaml / unsafe-libyaml)
 yaml = ["dep:serde_yaml"]
-
-# Desktop pop-up notifications (platform-specific)
 desktop = ["dep:notify-rust"]
 
 [dev-dependencies]

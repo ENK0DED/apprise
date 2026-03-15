@@ -153,7 +153,7 @@ impl Notify for RocketChat {
                 let payload = json!({ "text": text, "channel": channel });
                 let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
                 if !resp.status().is_success() { all_ok = false; }
-            } else if let (Some(ref u), Some(ref p)) = (&self.user, &self.password) {
+            } else if let (Some(u), Some(p)) = (&self.user, &self.password) {
                 let url = format!("{}://{}{}/api/v1/chat.postMessage", schema, self.host, port_str);
                 let payload = json!({ "text": text, "channel": channel });
                 let resp = client.post(&url)

@@ -43,8 +43,8 @@ impl Twitter {
         use base64::Engine;
         use rand::Rng;
 
-        let nonce: String = rand::thread_rng()
-            .sample_iter(&rand::distributions::Alphanumeric)
+        let nonce: String = rand::rng()
+            .sample_iter(&rand::distr::Alphanumeric)
             .take(32)
             .map(char::from)
             .collect();
