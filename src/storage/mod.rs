@@ -82,9 +82,7 @@ impl PersistentStore {
 
     /// Generate a random UID
     pub fn generate_uid(&self) -> String {
-        use rand::Rng;
-        let mut rng = rand::rng();
-        (0..self.uid_length).map(|_| rng.sample(rand::distr::Alphanumeric) as char).collect()
+        (0..self.uid_length).map(|_| { let idx = rand::random::<u8>() % 62; let c = match idx { 0..=9 => b'0' + idx, 10..=35 => b'a' + idx - 10, _ => b'A' + idx - 36 }; c as char }).collect()
     }
 
     /// Get a per-plugin cache value by plugin UID and key

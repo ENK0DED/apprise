@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use crate::error::NotifyError;
 use crate::notify::{Notify, NotifyContext, ServiceDetails};
 use crate::utils::parse::ParsedUrl;
-use rand::Rng;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -26,7 +25,7 @@ impl Growl {
                 // 2. key = SHA256(password_utf8 + salt)
                 // 3. key_hash = SHA256(key)
                 // 4. Header: "SHA256:<hex(key_hash)>.<hex(salt)>"
-                let salt: Vec<u8> = rand::rng().sample_iter(rand::distr::StandardUniform).take(16).collect();
+                let salt: Vec<u8> = (0..16).map(|_| rand::random::<u8>()).collect();
                 let mut hasher = Sha256::new();
                 hasher.update(pw.as_bytes());
                 hasher.update(&salt);

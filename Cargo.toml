@@ -33,7 +33,7 @@ lettre = { version = "0.11", default-features = false, features = ["smtp-transpo
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi"] }
 
 # Error handling
 thiserror = "2"
@@ -45,7 +45,7 @@ base64 = "0.22"
 dirs = "6"
 
 # Random
-rand = "0.9"
+rand = "0.10"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }

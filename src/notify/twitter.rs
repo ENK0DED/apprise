@@ -41,13 +41,14 @@ impl Twitter {
         use hmac::{Hmac, Mac};
         use sha1::Sha1;
         use base64::Engine;
-        use rand::Rng;
-
-        let nonce: String = rand::rng()
-            .sample_iter(&rand::distr::Alphanumeric)
-            .take(32)
-            .map(char::from)
-            .collect();
+        let nonce: String = (0..32).map(|_| {
+            let idx = rand::random::<u8>() % 62;
+            (match idx {
+                0..=9 => b'0' + idx,
+                10..=35 => b'a' + idx - 10,
+                _ => b'A' + idx - 36,
+            }) as char
+        }).collect();
         let timestamp = chrono::Utc::now().timestamp().to_string();
 
         fn pct(s: &str) -> String { urlencoding::encode(s).into_owned() }
