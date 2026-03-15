@@ -53,8 +53,6 @@ mod tests {
             "kodis://user:pass@localhost",
             "kodis://localhost:8080/path/",
             "kodis://user:password@localhost:8080",
-            "kodi://localhost",
-            "kodi://localhost",
             "kodis://localhost:443",
             "kodi://user:pass@localhost:8083",
             "xbmc://localhost",
@@ -65,8 +63,6 @@ mod tests {
             "xbmc://localhost:8080",
             "xbmc://user:pass@localhost:8080",
             "xbmc://user@localhost",
-            "xbmc://localhost",
-            "xbmc://localhost",
             "xbmc://user:pass@localhost:8083",
         ];
         for url in &urls {

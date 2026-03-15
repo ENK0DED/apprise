@@ -157,10 +157,10 @@ mod tests {
             "mmost://user@localhost/3ccdd113474722377935511fc85d3dd4?channels=test",
             "mmost://user@localhost/3ccdd113474722377935511fc85d3dd4?to=test",
             "mmost://localhost/3ccdd113474722377935511fc85d3dd4?to=test&image=True",
+            "mmost://localhost/3ccdd113474722377935511fc85d3dd4?to=test&team=chester",
+            "mmost://localhost/3ccdd113474722377935511fc85d3dd4?to=general&botname=foobar",
             "mmost://team@localhost/3ccdd113474722377935511fc85d3dd4?channel=$!garbag3^&mode=bot",
             "mmost://localhost/3ccdd113474722377935511fc85d3dd4?to=test&image=False",
-            "mmost://localhost/3ccdd113474722377935511fc85d3dd4?to=test&image=True",
-            "mmost://localhost:8080/3ccdd113474722377935511fc85d3dd4",
             "mmost://localhost:8080/3ccdd113474722377935511fc85d3dd4",
             "mmosts://localhost/3ccdd113474722377935511fc85d3dd4",
             "https://mattermost.example.com/hooks/3ccdd113474722377935511fc85d3dd4",
@@ -168,9 +168,6 @@ mod tests {
             "mmosts://localhost/////3ccdd113474722377935511fc85d3dd4///",
             "mmost://localhost/token?mode=w",
             "mmost://localhost/token?mode=b&to=channel-id-1",
-            "mmosts://localhost/a/path/3ccdd113474722377935511fc85d3dd4",
-            "mmosts://localhost/////3ccdd113474722377935511fc85d3dd4///",
-            "mmost://localhost/3ccdd113474722377935511fc85d3dd4",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

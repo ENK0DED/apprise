@@ -6,8 +6,14 @@ use crate::utils::parse::ParsedUrl;
 pub struct Revolt { bot_token: String, channel_id: String, verify_certificate: bool, tags: Vec<String> }
 impl Revolt {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let bot_token = url.user.clone()?;
-        let channel_id = url.host.clone()?;
+        let bot_token = url.get("bot_token").map(|s| s.to_string())
+            .or_else(|| url.host.clone().filter(|h| !h.is_empty() && h != "_"))?;
+        if bot_token.is_empty() { return None; }
+        // Channel from path, ?channel=, or ?to=
+        let channel_id = url.path_parts.first().cloned()
+            .or_else(|| url.get("channel").map(|s| s.split(',').next().unwrap_or("").trim().to_string()))
+            .or_else(|| url.get("to").map(|s| s.split(',').next().unwrap_or("").trim().to_string()))?;
+        if channel_id.is_empty() { return None; }
         Some(Self { bot_token, channel_id, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Revolt", service_url: Some("https://revolt.chat"), setup_url: None, protocols: vec!["revolt"], description: "Send messages via Revolt.", attachment_support: false } }
@@ -34,10 +40,32 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/?channel=iiiiiiiiiiiiiiiiiiiiiiii",
+            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/?to=iiiiiiiiiiiiiiiiiiiiiiii",
+            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/?channel=iiiiiiiiiiiiiiiiiiiiiiii,%20",
+            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+            "revolt://_?bot_token=iiiiiiiiiiiiiiiiiiiiiiii&channel=tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown",
+            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=text",
+            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?url=http://localhost",
+            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=text&url=http://localhost",
+            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?icon_url=http://localhost/test.jpg",
+            "revolt://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=text&icon_url=http://localhost/test.jpg",
+            "revolt://aaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "revolt://",
             "revolt://:@/",
+            "revolt://?channel=iiiiiiiiiiiiiiiiiiiiiiii",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

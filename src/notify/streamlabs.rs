@@ -68,8 +68,8 @@ mod tests {
         let urls = vec![
             "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso",
             "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?name=tt&identifier=pyt&amount=20&currency=USD&call=donations",
-            "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?call=donations",
-            "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?call=alerts",
+            "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?image_href=https://example.org/rms.jpg&sound_href=https://example.org/rms.mp3",
+            "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?duration=1000&image_href=&sound_href=&alert_type=donation&special_text_color=crimson",
             "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?call=alerts",
             "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?call=donations",
         ];

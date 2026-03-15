@@ -84,8 +84,6 @@ mod tests {
             "bluesky://user@app-pw2?cache=no",
             "bluesky://user@app-pw3",
             "bluesky://user.example.ca@app-pw3",
-            "bluesky://user@app-pw3",
-            "bluesky://user@app-pw",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

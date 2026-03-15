@@ -6,7 +6,13 @@ pub struct PopcornNotify { apikey: String, targets: Vec<String>, verify_certific
 impl PopcornNotify {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let apikey = url.host.clone()?;
-        let targets = url.path_parts.clone();
+        if apikey.is_empty() { return None; }
+        // Reject if apikey contains only underscores/non-alphanumeric
+        if !apikey.chars().any(|c| c.is_ascii_alphanumeric()) { return None; }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         if targets.is_empty() { return None; }
         Some(Self { apikey, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
@@ -36,9 +42,25 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "popcorn://aaaaaaaaa/1232348923489234923489234289-32423",
+            "popcorn://bbbbbbbbb/abc",
+            "popcorn://ccccccccc/15551232000/user@example.com",
+            "popcorn://wwwwwwwww/15551232000/user@example.com?batch=yes",
+            "popcorn://wwwwwwwww/?to=15551232000",
+            "popcorn://zzzzzzzzz/15551232000",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "popcorn://",
+            "popcorn://_________/18001231234",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

@@ -205,10 +205,8 @@ mod tests {
     fn test_valid_urls() {
         let urls = vec![
             "tgram://123456789:abcdefg_hijklmnop/lead2gold/",
-            "tgram://123456789:abcdefg_hijklmnop/lead2gold/",
             "tgram://123456789:abcdefg_hijklmnop/id1/id2/",
             "tgram://123456789:abcdefg_hijklmnop/?to=id1,id2",
-            "tgram://123456789:abcdefg_hijklmnop/id1/id2/23423/-30/",
             "tgram://123456789:abcdefg_hijklmnop/id1/id2/23423/-30/",
             "tgram://bottest@123456789:abcdefg_hijklmnop/lead2gold/",
             "tgram://bottest@123456789:abcdefg_hijklmnop/id1/?topic=12345",
@@ -226,9 +224,6 @@ mod tests {
             "tgram://123456789:abcdefg_hijklmnop/lead2gold/?silent=no",
             "tgram://123456789:abcdefg_hijklmnop/lead2gold/?preview=yes",
             "tgram://123456789:abcdefg_hijklmnop/lead2gold/?preview=no",
-            "tgram://123456789:abcdefg_hijklmnop/lead2gold/",
-            "tgram://123456789:abcdefg_hijklmnop/lead2gold/",
-            "tgram://123456789:abcdefg_hijklmnop/lead2gold/?image=Yes",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

@@ -41,17 +41,14 @@ mod tests {
         let urls = vec![
             "pushy://apikey",
             "pushy://apikey/topic",
-            "pushy://apikey/topic",
             "pushy://apikey/%20(",
             "pushy://apikey/@device",
-            "pushy://apikey/topic",
             "pushy://apikey/device/?sound=alarm.aiff",
             "pushy://apikey/device/?badge=100",
             "pushy://apikey/device/?badge=invalid",
             "pushy://apikey/device/?badge=-12",
             "pushy://_/@device/#topic?key=apikey",
             "pushy://apikey/?to=@device",
-            "pushy://_/@device/#topic?key=apikey",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

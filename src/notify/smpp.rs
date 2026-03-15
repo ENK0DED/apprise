@@ -9,12 +9,15 @@ pub struct Smpp { host: String, port: u16, user: String, password: String, targe
 
 impl Smpp {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let host = url.host.clone()?;
-        let user = url.user.clone()?;
-        let password = url.password.clone()?;
+        let host = url.host.clone().unwrap_or_else(|| "localhost".to_string());
+        let user = url.get("user").map(|s| s.to_string()).or_else(|| url.user.clone())?;
+        let password = url.get("password").map(|s| s.to_string()).or_else(|| url.password.clone())?;
         let port = url.port.unwrap_or(2775);
-        let from = url.get("from").unwrap_or("Apprise").to_string();
-        let targets = url.path_parts.clone();
+        let from = url.get("from").or_else(|| url.get("source")).unwrap_or("Apprise").to_string();
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         if targets.is_empty() { return None; }
         let secure = url.schema == "smpps";
         Some(Self { host, port, user, password, targets, from, secure, tags: url.tags() })
@@ -147,6 +150,19 @@ impl Notify for Smpp {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "smpp://user:pass@host:2775/1111111111/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "smpp://user:pass@host:2775/1111111111",
+            "smpp://user:pass@host/1111111111/1111111111",
+            "smpps://_?&from=1111111111&to=1111111111,1111111111&user=user&password=pw",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {

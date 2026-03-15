@@ -118,6 +118,22 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "gotify://hostname/tttttttttttttttt",
+            "gotify://hostname/a/path/ending/in/a/slash/uuuuuuuuuuuuuuuu",
+            "gotify://hostname/tttttttttttttttt?format=markdown",
+            "gotify://hostname/a/path/not/ending/in/a/slash/vvvvvvvvvvvvvvvv",
+            "gotify://hostname/iiiiiiiiiiiiiiii?priority=high",
+            "gotify://hostname:8008/iiiiiiiiiiiiiiii?priority=invalid",
+            "gotify://localhost/tttttttttttttttt/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "gotify://",

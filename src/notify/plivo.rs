@@ -6,11 +6,35 @@ use crate::utils::parse::ParsedUrl;
 pub struct Plivo { auth_id: String, auth_token: String, from_phone: String, targets: Vec<String>, verify_certificate: bool, tags: Vec<String> }
 impl Plivo {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let auth_id = url.user.clone()?;
-        let auth_token = url.password.clone()?;
-        let from_phone = url.host.clone()?;
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        // plivo://auth_id@auth_token/phone or plivo://?id=X&token=Y&from=Z&to=P
+        let (auth_id, auth_token, from_phone) = if let Some(id) = url.get("id") {
+            let token = url.get("token").map(|s| s.to_string())?;
+            let from = url.get("from").or_else(|| url.get("source")).map(|s| s.to_string())
+                .or_else(|| url.host.clone().filter(|h| !h.is_empty() && h != "_"))?;
+            (id.to_string(), token, from)
+        } else if url.password.is_some() {
+            (url.user.clone()?, url.password.clone()?, url.host.clone()?)
+        } else {
+            // plivo://auth_id@auth_token/phone
+            let auth_id = url.user.clone()?;
+            let auth_token = url.host.clone()?;
+            let from = url.get("from").or_else(|| url.get("source")).map(|s| s.to_string())
+                .unwrap_or_default();
+            (auth_id, auth_token, from)
+        };
+        if auth_id.is_empty() || auth_token.is_empty() { return None; }
+        // Validate auth_id (20+ chars) and auth_token (30+ chars)
+        if auth_id.len() < 20 { return None; }
+        if auth_token.len() < 30 { return None; }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
+        // Validate targets - each must have at least 10 digits
+        for t in &targets {
+            let digits: String = t.chars().filter(|c| c.is_ascii_digit()).collect();
+            if digits.len() < 10 { return None; }
+        }
         Some(Self { auth_id, auth_token, from_phone, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Plivo", service_url: Some("https://plivo.com"), setup_url: None, protocols: vec!["plivo"], description: "Send SMS via Plivo.", attachment_support: false } }
@@ -37,9 +61,27 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "plivo://aaaaaaaaaaaaaaaaaaaaaaaaa@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/15551231234",
+            "plivo://aaaaaaaaaaaaaaaaaaaaaaaaa@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/?from=15551233000&to=15551232000&batch=yes",
+            "plivo://?id=aaaaaaaaaaaaaaaaaaaaaaaaa&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&from=15551233000&to=15551232000",
+            "plivo://15551232123?id=aaaaaaaaaaaaaaaaaaaaaaaaa&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&from=15551233000&to=15551232000",
+            "plivo://aaaaaaaaaaaaaaaaaaaaaaaaa@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/15551232000",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "plivo://",
+            "plivo://aaaaaaaaaa@aaaaaaaaaaaaaaaaaaaaaaaaa/15551232000",
+            "plivo://aaaaaaaaaaaaaaaaaaaaaaaaa@aaaaaaaaaa/15551232000",
+            "plivo://aaaaaaaaaaaaaaaaaaaaaaaaa@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/123",
+            "plivo://aaaaaaaaaaaaaaaaaaaaaaaaa@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/abc",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

@@ -243,7 +243,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
     reg!(popcorn_notify::PopcornNotify::from_url, "popcorn");
     reg!(prowl::Prowl::from_url, "prowl");
     reg!(pushbullet::Pushbullet::from_url, "pbul");
-    reg!(pushdeer::PushDeer::from_url, "pushdeer", "pushdeers");
+    reg!(pushdeer::PushDeer::from_url, "pushdeer", "pushdeers", "push");
     reg!(pushed::Pushed::from_url, "pushed");
     reg!(pushjet::PushJet::from_url, "pjet", "pjets");
     reg!(pushme::PushMe::from_url, "pushme");
@@ -271,7 +271,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
     reg!(slack::Slack::from_url, "slack");
     reg!(smpp::Smpp::from_url, "smpp", "smpps");
     reg!(smseagle::SmsEagle::from_url, "smseagle", "smseagles");
-    reg!(smsmanager::SmsManager::from_url, "smsmanager");
+    reg!(smsmanager::SmsManager::from_url, "smsmanager", "smsmgr");
     reg!(smtp2go::Smtp2Go::from_url, "smtp2go");
     reg!(sns::Sns::from_url, "sns");
     reg!(sparkpost::SparkPost::from_url, "sparkpost");
@@ -337,6 +337,20 @@ pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
                 ("n.tkte.ch", "notifico"),
                 ("api.46elks.com", "46elks"),
                 ("maker.ifttt.com", "ifttt"),
+                ("discord.com", "discord"),
+                ("discordapp.com", "discord"),
+                ("media.guilded.gg", "guilded"),
+                ("hooks.slack.com", "slack"),
+                ("hooks.slack-gov.com", "slack"),
+                ("notica.us", "notica"),
+                ("api.fluxer.app", "fluxer"),
+                ("developer.lametric.com", "lametric"),
+                ("api.ciscospark.com", "wxteams"),
+                ("webexapis.com", "wxteams"),
+                ("api.flock.com", "flock"),
+                ("open.larksuite.com", "lark"),
+                ("open.feishu.cn", "feishu"),
+                ("webhooks.t2bot.io", "matrix"),
             ];
 
             for (pattern, schema_key) in host_patterns {
@@ -345,6 +359,33 @@ pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
                         if let Some(notifier) = factory(&parsed) {
                             return Some(notifier);
                         }
+                    }
+                }
+            }
+
+            // MSTeams: outlook.office.com or *.webhook.office.com
+            if host_lower == "outlook.office.com" || host_lower.ends_with(".webhook.office.com") {
+                if let Some(factory) = reg.get("msteams") {
+                    if let Some(notifier) = factory(&parsed) {
+                        return Some(notifier);
+                    }
+                }
+            }
+
+            // Workflows: *.azure.com with /workflows/ in path
+            if host_lower.ends_with(".azure.com") && (parsed.path.contains("workflows/") || parsed.path.starts_with("workflows/")) {
+                if let Some(factory) = reg.get("workflow") {
+                    if let Some(notifier) = factory(&parsed) {
+                        return Some(notifier);
+                    }
+                }
+            }
+
+            // Apprise API: URLs with /notify/ in path
+            if parsed.path.contains("notify/") || parsed.path.starts_with("notify/") {
+                if let Some(factory) = reg.get("apprise") {
+                    if let Some(notifier) = factory(&parsed) {
+                        return Some(notifier);
                     }
                 }
             }

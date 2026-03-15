@@ -46,7 +46,6 @@ mod tests {
             "dot://apikey@device_id/text/?link=https://example.com",
             "dot://apikey@device_id/image/?link=https://example.com&border=1&dither_type=ORDERED&dither_kernel=ATKINSON",
             "dot://apikey@device_id/image/?image=ZmFrZUJhc2U2NA==&link=https://example.com&border=1&dither_type=DIFFUSION&dither_kernel=FLOYD_STEINBERG",
-            "dot://apikey@device_id/text/",
             "dot://apikey@device_id/unknown/",
         ];
         for url in &urls {

@@ -6,10 +6,34 @@ use crate::utils::parse::ParsedUrl;
 pub struct VoipMs { user: String, password: String, did: String, targets: Vec<String>, verify_certificate: bool, tags: Vec<String> }
 impl VoipMs {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let user = url.user.clone()?;
-        let password = url.password.clone()?;
-        let did = url.host.clone()?;
-        let targets = url.path_parts.clone();
+        // voipms://password:user@host/from_did/to1/to2
+        // or voipms://password:user@host/?from=DID&to=PHONE
+        let password = url.user.clone()?;
+        let user = url.password.clone()?;
+        if user.is_empty() || password.is_empty() { return None; }
+        // DID (from) comes from first path part or ?from= query param
+        let did = url.get("from").or_else(|| url.get("source")).map(|s| s.to_string())
+            .or_else(|| url.path_parts.first().cloned())?;
+        if did.is_empty() { return None; }
+        // Validate DID has at least 11 digits
+        let did_digits: String = did.chars().filter(|c| c.is_ascii_digit()).collect();
+        if did_digits.len() < 11 { return None; }
+        // Targets
+        let mut targets: Vec<String> = if url.get("from").is_some() || url.get("source").is_some() {
+            url.path_parts.clone()
+        } else {
+            url.path_parts.get(1..).unwrap_or(&[]).to_vec()
+        };
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
+        // Validate target phone numbers (at least 11 digits each)
+        for t in &targets {
+            let digits: String = t.chars().filter(|c| c.is_ascii_digit()).collect();
+            if digits.len() < 11 { return None; }
+            // Reject international format starting with 011
+            if digits.starts_with("011") { return None; }
+        }
         if targets.is_empty() { return None; }
         Some(Self { user, password, did, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
@@ -41,10 +65,28 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "voipms://password:user@example.com/16138884444/16134442222/",
+            "voipms://password:user@example.com/16138884444/16134442222/16134443333/",
+            "voipms://password:user@example.com/?from=16138884444&to=16134448888",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "voipms://",
             "voipms://@:",
+            "voipms://user@example.com/11111111111",
+            "voipms://:password",
+            "voipms://user@:pass/11111111111",
+            "voipms://password:user@example.com",
+            "voipms://password:user@example.com/1613",
+            "voipms://password:user@example.com/01133122446688",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

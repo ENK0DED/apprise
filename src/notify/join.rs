@@ -33,6 +33,26 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "join://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "join://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?to=dddddddddddddddddddddddddddddddd",
+            "join://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=high",
+            "join://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=invalid",
+            "join://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=",
+            "join://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@dddddddddddddddddddddddddddddddd?image=True",
+            "join://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@dddddddddddddddddddddddddddddddd?image=False",
+            "join://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/My Device",
+            "join://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dddddddddddddddddddddddddddddddd",
+            "join://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "join://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dddddddddddddddddddddddddddddddd/group.chrome",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "join://",

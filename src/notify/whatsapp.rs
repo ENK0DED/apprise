@@ -7,10 +7,57 @@ use crate::utils::parse::ParsedUrl;
 pub struct WhatsApp { token: String, phone_id: String, targets: Vec<String>, verify_certificate: bool, tags: Vec<String> }
 impl WhatsApp {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let token = url.password.clone()?;
-        let phone_id = url.host.clone()?;
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        // whatsapp://token@phone[/to1/to2]
+        // whatsapp://template:token@phone[/to1/to2]
+        // whatsapp://_?token=T&from=F&to=T
+        let (token, phone_id) = if let Some(tok) = url.get("token") {
+            let phone = url.get("from").or_else(|| url.get("source")).map(|s| s.to_string())?;
+            (tok.to_string(), phone)
+        } else if url.password.is_some() {
+            (url.password.clone()?, url.host.clone()?)
+        } else {
+            // whatsapp://token@phone
+            let token = url.user.clone()?;
+            let phone = url.host.clone()?;
+            (token, phone)
+        };
+        if token.is_empty() || phone_id.is_empty() || phone_id == "_" { return None; }
+        // Reject whitespace in token
+        if token.chars().any(|c| c.is_whitespace()) { return None; }
+        // If there's a user (template name), validate it's not all whitespace
+        if let Some(ref user) = url.user {
+            if user.trim().is_empty() { return None; }
+        }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
+        // Validate lang if provided (must be XX_XX format, 5 chars)
+        if let Some(lang) = url.get("lang") {
+            if !lang.is_empty() && (lang.len() != 5 || !lang.contains('_')) { return None; }
+        }
+        // Validate template params (:N=value, :body=N, :type=N)
+        let valid_param_keys = ["body", "type", "header"];
+        let mut param_indices = std::collections::HashSet::new();
+        for (key, val) in &url.qsd {
+            if key.starts_with(':') {
+                let param_key = &key[1..];
+                if param_key.is_empty() { return None; }
+                if val.is_empty() { return None; }
+                // Check for numeric index or named key
+                if let Ok(idx) = param_key.parse::<u32>() {
+                    // Numeric param
+                    if !param_indices.insert(idx) { return None; } // duplicate
+                } else if valid_param_keys.contains(&param_key) {
+                    // Named param - value should be numeric
+                    if let Ok(idx) = val.parse::<u32>() {
+                        if !param_indices.insert(idx) { return None; } // duplicate
+                    }
+                } else {
+                    return None; // invalid param key
+                }
+            }
+        }
         Some(Self { token, phone_id, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "WhatsApp", service_url: Some("https://www.whatsapp.com"), setup_url: None, protocols: vec!["whatsapp"], description: "Send messages via WhatsApp Cloud API.", attachment_support: false } }
@@ -41,10 +88,35 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "whatsapp://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@1000000000",
+            "whatsapp://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@33333333333/123/999999999999999/abcd/",
+            "whatsapp://eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444",
+            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444",
+            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?lang=fr_CA",
+            "whatsapp://eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?template=template&lang=fr_CA",
+            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?:1=test&:body=3&:type=2",
+            "whatsapp://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@123456/44444444444",
+            "whatsapp://_?token=dddddddddddddddddddddddddddddddd&from=55555555555&to=66666666666",
+            "whatsapp://_?token=dddddddddddddddddddddddddddddddd&source=55555555555&to=66666666666",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "whatsapp://",
             "whatsapp://:@/",
+            "whatsapp://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@_",
+            "whatsapp://%20:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444",
+            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?lang=1234",
+            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?:invalid=23",
+            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?:body=",
+            "whatsapp://template:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee@12345/44444444444?:1=Test&:body=1",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

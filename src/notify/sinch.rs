@@ -6,12 +6,27 @@ use crate::utils::parse::ParsedUrl;
 pub struct Sinch { service_plan_id: String, api_token: String, from_phone: String, targets: Vec<String>, region: String, verify_certificate: bool, tags: Vec<String> }
 impl Sinch {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let service_plan_id = url.user.clone()?;
-        let api_token = url.password.clone()?;
-        let from_phone = url.host.clone()?;
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        let service_plan_id = url.get("spi").map(|s| s.to_string()).or_else(|| url.user.clone())?;
+        let api_token = url.get("token").map(|s| s.to_string()).or_else(|| url.password.clone())?;
+        let from_phone = url.get("from").or_else(|| url.get("source"))
+            .map(|s| s.to_string())
+            .or_else(|| {
+                let h = url.host.clone().unwrap_or_default();
+                if h.is_empty() || h == "_" { None } else { Some(h) }
+            })?;
+        // Validate from_phone: must be 5-6 digits (short code) or 11-14 digits (full phone)
+        let digits: String = from_phone.chars().filter(|c| c.is_ascii_digit()).collect();
+        let valid_phone = (digits.len() >= 11 && digits.len() <= 14) || digits.len() == 5 || digits.len() == 6;
+        if !valid_phone { return None; }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         let region = url.get("region").unwrap_or("us").to_string();
+        // Validate region: must be 2 lowercase alpha chars
+        if !region.chars().all(|c| c.is_ascii_alphabetic()) || region.len() != 2 { return None; }
+        let valid_regions = ["us", "eu"];
+        if !valid_regions.contains(&region.to_lowercase().as_str()) { return None; }
         Some(Self { service_plan_id, api_token, from_phone, targets, region, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Sinch", service_url: Some("https://sinch.com"), setup_url: None, protocols: vec!["sinch"], description: "Send SMS via Sinch.", attachment_support: false } }
@@ -42,10 +57,33 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "sinch://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@33333",
+            "sinch://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@33333333333/123/999999999999999/abcd/",
+            "sinch://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@12345/44444444444",
+            "sinch://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@123456/44444444444",
+            "sinch://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@55555555555",
+            "sinch://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@55555555555?region=eu",
+            "sinch://_?spi=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&from=55555555555",
+            "sinch://_?spi=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&source=55555555555",
+            "sinch://_?spi=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&from=55555555555&to=7777777777777",
+            "sinch://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@66666666666",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "sinch://",
             "sinch://:@/",
+            "sinch://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@12345678",
+            "sinch://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@_",
+            "sinch://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@333333333",
+            "sinch://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@55555555555?region=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

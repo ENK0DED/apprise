@@ -7,7 +7,16 @@ pub struct Misskey { host: String, port: Option<u16>, token: String, secure: boo
 impl Misskey {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let host = url.host.clone()?;
-        let token = url.user.clone()?;
+        let token = url.user.clone()
+            .or_else(|| url.get("token").map(|s| s.to_string()))?;
+        if token.is_empty() { return None; }
+        // Validate visibility if provided
+        if let Some(vis) = url.get("visibility") {
+            match vis.to_lowercase().as_str() {
+                "public" | "home" | "followers" | "specified" | "" => {}
+                _ => return None,
+            }
+        }
         Some(Self { host, port: url.port, token, secure: url.schema == "misskeys", verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Misskey", service_url: Some("https://misskey.io"), setup_url: None, protocols: vec!["misskey", "misskeys"], description: "Post to Misskey instances.", attachment_support: false } }
@@ -36,9 +45,26 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "misskey://access_token@hostname",
+            "misskeys://access_token@hostname",
+            "misskey://hostname/?token=abcd123",
+            "misskeys://access_token@hostname:8443",
+            "misskeys://access_token@hostname?visibility=specified",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "misskey://",
+            "misskey://:@/",
+            "misskey://hostname",
+            "misskey://access_token@hostname?visibility=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

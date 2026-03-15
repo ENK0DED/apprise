@@ -8,15 +8,98 @@ use crate::utils::parse::ParsedUrl;
 pub struct Office365 { tenant: String, client_id: String, client_secret: String, from: String, targets: Vec<String>, cc: Vec<String>, bcc: Vec<String>, content_type: String, verify_certificate: bool, tags: Vec<String> }
 impl Office365 {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let client_id = url.user.clone()?;
-        let client_secret = url.password.clone()?;
-        let tenant = url.host.clone()?;
-        let from = url.path_parts.first().cloned()?;
-        let targets: Vec<String> = url.path_parts.iter().skip(1).cloned().collect();
-        if targets.is_empty() { return None; }
+        // Multiple formats:
+        // o365://tenant/oauth_id/oauth_secret/from_email/to1/to2
+        // o365://user@example.com/tenant/oauth_id/oauth_secret/to1
+        // o365://oauth_id:user@example.com/tenant/...
+        // o365://_/?oauth_id=X&oauth_secret=Y&tenant=Z&to=email&from=email
         let cc: Vec<String> = url.get("cc").map(|s| s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
         let bcc: Vec<String> = url.get("bcc").map(|s| s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
         let content_type = url.get("format").unwrap_or("text").to_string();
+
+        // Query param mode
+        if let Some(oauth_id) = url.get("oauth_id") {
+            let oauth_secret = url.get("oauth_secret").map(|s| s.to_string())?;
+            let tenant = url.get("tenant").map(|s| s.to_string())?;
+            let from = url.get("from").map(|s| s.to_string())?;
+            let mut targets: Vec<String> = Vec::new();
+            if let Some(to) = url.get("to") {
+                targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+            }
+            if targets.is_empty() { return None; }
+            return Some(Self { tenant, client_id: oauth_id.to_string(), client_secret: oauth_secret, from, targets, cc, bcc, content_type, verify_certificate: url.verify_certificate(), tags: url.tags() });
+        }
+
+        let host = url.host.clone()?;
+        if host.is_empty() || host == "_" { return None; }
+
+        if let Some(ref user) = url.user {
+            // user@host or user:pass@host form
+            if url.password.is_some() {
+                // o365://tenant:user@example.com/oauth_id/oauth_secret/targets...
+                let from = format!("{}@{}", url.password.as_ref().unwrap(), host);
+                // Actually: o365://tenant:user@example.com/01-12-23-34/abcd/321/4321/@test/test/email1@test.ca
+                // tenant is url.user, from is password@host
+                let tenant = user.clone();
+                let client_id = url.path_parts.first()?.clone();
+                // client_secret is join of remaining path parts that look like secret components
+                let client_secret = url.path_parts.get(1..).unwrap_or(&[]).iter()
+                    .take_while(|s| !s.starts_with('@') && !s.contains('@'))
+                    .cloned().collect::<Vec<_>>().join("/");
+                if client_secret.is_empty() { return None; }
+                let secret_parts = client_secret.split('/').count();
+                let targets: Vec<String> = url.path_parts.get(1 + secret_parts..).unwrap_or(&[]).to_vec();
+                if targets.is_empty() { return None; }
+                return Some(Self { tenant, client_id, client_secret, from, targets, cc, bcc, content_type, verify_certificate: url.verify_certificate(), tags: url.tags() });
+            }
+            // o365://user@example.com/tenant/oauth_id/oauth_secret/targets...
+            let from = format!("{}@{}", user, host);
+            // Validate from address
+            if !from.contains('.') && !from.contains('@') { return None; }
+            let tenant = url.path_parts.first()?.clone();
+            // Validate tenant: reject commas and dots-only
+            if tenant.contains(',') || tenant.chars().all(|c| c == '.') { return None; }
+            let client_id = url.path_parts.get(1)?.clone();
+            // Validate client_id: reject trailing dots
+            if client_id.ends_with('.') { return None; }
+            let client_secret = url.path_parts.get(2..).unwrap_or(&[]).iter()
+                .take_while(|s| !s.starts_with('@') && !s.contains('@'))
+                .cloned().collect::<Vec<_>>().join("/");
+            if client_secret.is_empty() { return None; }
+            let secret_parts = client_secret.split('/').count();
+            let targets: Vec<String> = url.path_parts.get(2 + secret_parts..).unwrap_or(&[]).to_vec();
+            if targets.is_empty() { return None; }
+            return Some(Self { tenant, client_id, client_secret, from, targets, cc, bcc, content_type, verify_certificate: url.verify_certificate(), tags: url.tags() });
+        }
+
+        // o365://tenant/oauth_id/oauth_secret_parts.../from/to1/to2
+        // or o365://host/path1/path2/...
+        let tenant = host;
+        let client_id = url.path_parts.first()?.clone();
+        // Validate tenant: reject commas
+        if tenant.contains(',') { return None; }
+        // Validate client_id: reject trailing dots
+        if client_id.ends_with('.') { return None; }
+        // client_secret is everything until we hit something that looks like a from address or @target
+        let remaining = url.path_parts.get(1..).unwrap_or(&[]);
+        // The secret is composed of parts that don't contain @ and don't start with @
+        let secret_parts: Vec<&String> = remaining.iter()
+            .take_while(|s| !s.starts_with('@') && !s.contains('@'))
+            .collect();
+        if secret_parts.is_empty() { return None; }
+        let client_secret = secret_parts.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("/");
+        // Everything after is targets (from + to addresses)
+        let after_secret: Vec<String> = remaining.iter().skip(secret_parts.len()).cloned().collect();
+        // First target that contains @ is from, rest are targets
+        // Or if there are @-prefixed targets, from is derived
+        let from = after_secret.iter().find(|s| s.contains('@')).cloned()
+            .unwrap_or_else(|| after_secret.first().cloned().unwrap_or_default());
+        let targets = if after_secret.is_empty() {
+            Vec::new()
+        } else {
+            after_secret
+        };
+        if targets.is_empty() { return None; }
         Some(Self { tenant, client_id, client_secret, from, targets, cc, bcc, content_type, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Office365 Email", service_url: Some("https://office.com"), setup_url: None, protocols: vec!["o365", "azure"], description: "Send email via Office 365 / Microsoft Graph.", attachment_support: true } }
@@ -70,10 +153,29 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "o365://tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
+            "o365://user@example.edu/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
+            "o365://hg-fe-dc-ba/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
+            "o365://hg-fe-dc-ba/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/",
+            "o365://_/?oauth_id=ab-cd-ef-gh&oauth_secret=abcd/123/3343/@jack/test&tenant=tenant&to=email1@test.ca&from=user@example.ca",
+            "o365://user@example.com/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
+            "o365://user@example.com/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test",
+            "o365://tenant:user@example.com/01-12-23-34/abcd/321/4321/@test/test/email1@test.ca",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "o365://",
             "o365://:@/",
+            "o365://user@example.com/,/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
+            "o365://user2@example.com/tenant/ab./abcd/123/3343/@jack/test/email1@test.ca",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

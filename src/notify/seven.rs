@@ -7,7 +7,11 @@ pub struct Seven { apikey: String, targets: Vec<String>, verify_certificate: boo
 impl Seven {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let apikey = url.host.clone()?;
-        let targets = url.path_parts.clone();
+        if apikey.is_empty() { return None; }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         if targets.is_empty() { return None; }
         Some(Self { apikey, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
@@ -32,6 +36,23 @@ impl Notify for Seven {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "seven://aaaaaaaaaaaaaaaaaaaaaaaaa/15551232000",
+            "seven://aaaaaaaaaaaaaaaaaaaaaaaaa/?to=15551232000",
+            "seven://aaaaaaaaaaaaaaaaaaaaaaaaa/15551",
+            "seven://33333333333333/15551232000?from=apprise",
+            "seven://33333333333333/15551232000?source=apprise",
+            "seven://33333333333333/15551232000?from=apprise&flash=true",
+            "seven://33333333333333/15551232000?source=apprise&flash=true",
+            "seven://33333333333333/15551232000?source=AR&flash=1&label=123",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {

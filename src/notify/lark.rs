@@ -6,7 +6,14 @@ use crate::utils::parse::ParsedUrl;
 pub struct Lark { token: String, verify_certificate: bool, tags: Vec<String> }
 impl Lark {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let token = url.host.clone()?;
+        let token = if url.schema == "https" || url.schema == "http" {
+            // HTTPS URL: token is the last path part
+            url.path_parts.last().cloned()
+        } else {
+            url.host.clone().filter(|h| !h.is_empty() && h != "_")
+                .or_else(|| url.get("token").map(|s| s.to_string()))
+        }?;
+        if token.is_empty() { return None; }
         Some(Self { token, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Lark", service_url: Some("https://larksuite.com"), setup_url: None, protocols: vec!["lark"], description: "Send via Lark (Feishu international) webhooks.", attachment_support: false } }
@@ -31,6 +38,19 @@ impl Notify for Lark {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "lark://abcd-1234",
+            "lark://?token=abcd-1234",
+            "https://open.larksuite.com/open-apis/bot/v2/hook/abcd-1234",
+            "lark://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {

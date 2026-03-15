@@ -14,12 +14,30 @@ pub struct Vonage {
 
 impl Vonage {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        // vonage://apikey:secret@from_phone/to1/to2
-        let apikey = url.user.clone()?;
-        let api_secret = url.password.clone()?;
-        let from_phone = url.host.clone()?;
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        // vonage://apikey:secret@from_phone[/to1/to2]
+        // or vonage://_?key=K&secret=S&from=F&to=T
+        let (apikey, api_secret, from_phone) = if let Some(key) = url.get("key") {
+            let secret = url.get("secret").map(|s| s.to_string())?;
+            let from = url.get("from").or_else(|| url.get("source")).map(|s| s.to_string())?;
+            (key.to_string(), secret, from)
+        } else {
+            (url.user.clone()?, url.password.clone()?, url.host.clone()?)
+        };
+        if apikey.is_empty() || api_secret.is_empty() || from_phone.is_empty() { return None; }
+        // Validate from_phone: must have at least 11 digits and be all digits
+        let from_digits: String = from_phone.chars().filter(|c| c.is_ascii_digit()).collect();
+        if from_digits.len() < 11 { return None; }
+        // Reject non-digit characters in from phone (except +)
+        if !from_phone.chars().all(|c| c.is_ascii_digit() || c == '+') { return None; }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
+        // Validate ttl if provided
+        if let Some(ttl) = url.get("ttl") {
+            let ttl_val: i64 = ttl.parse().ok()?;
+            if ttl_val <= 0 { return None; }
+        }
         Some(Self { apikey, api_secret, from_phone, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails {
@@ -55,12 +73,41 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "vonage://ACffffffff:gggggggggggggggg@33333333333/123/999999999999999/abcd/",
+            "vonage://AChhhhhhhh:iiiiiiiiiiiiiiii@55555555555",
+            "vonage://_?key=ACaaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555",
+            "vonage://_?key=ACaaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555",
+            "vonage://_?key=ACaaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555&to=7777777777777",
+            "vonage://ACaaaaaaaa:bbbbbbbbbbbbbbbb@66666666666",
+            "nexmo://ACffffffff:gggggggggggggggg@33333333333/123/999999999999999/abcd/",
+            "nexmo://AChhhhhhhh:iiiiiiiiiiiiiiii@55555555555",
+            "nexmo://_?key=ACaaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555",
+            "nexmo://_?key=ACaaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555",
+            "nexmo://_?key=ACaaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555&to=7777777777777",
+            "nexmo://ACaaaaaaaa:bbbbbbbbbbbbbbbb@66666666666",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "vonage://",
             "vonage://:@/",
+            "vonage://ACaaaaaaaa@12345678",
+            "vonage://ACaaaaaaaa:bbbbbbbbbbbbbbbb@333333333",
+            "vonage://ACbbbbbbbb:cccccccccccccccc@33333333333/?ttl=0",
+            "vonage://ACdddddddd:eeeeeeeeeeeeeeee@aaaaaaaaaaa",
             "nexmo://",
             "nexmo://:@/",
+            "nexmo://ACaaaaaaaa@12345678",
+            "nexmo://ACaaaaaaaa:bbbbbbbbbbbbbbbb@333333333",
+            "nexmo://ACbbbbbbbb:cccccccccccccccc@33333333333/?ttl=0",
+            "nexmo://ACdddddddd:eeeeeeeeeeeeeeee@aaaaaaaaaaa",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

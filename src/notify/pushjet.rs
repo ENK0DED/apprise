@@ -5,12 +5,18 @@ use crate::utils::parse::ParsedUrl;
 pub struct PushJet { host: Option<String>, port: Option<u16>, secret: String, secure: bool, user: Option<String>, password: Option<String>, verify_certificate: bool, tags: Vec<String> }
 impl PushJet {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        // pjet://secret  or  pjet://host/secret
-        let (host, secret) = if url.path_parts.is_empty() {
-            (None, url.host.clone()?)
+        // pjet://host/secret or pjet://user:pass@host?secret=X
+        let (host, secret) = if let Some(sec) = url.get("secret") {
+            (url.host.clone(), sec.to_string())
+        } else if !url.path_parts.is_empty() {
+            let sec = url.path_parts.last()?.clone();
+            (url.host.clone(), sec)
         } else {
-            (url.host.clone(), url.path_parts.first()?.clone())
+            return None;
         };
+        if secret.is_empty() { return None; }
+        // Secret must be at least 32 characters
+        if secret.len() < 32 { return None; }
         Some(Self { host, port: url.port, secret, secure: url.schema == "pjets", user: url.user.clone(), password: url.password.clone(), verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Pushjet", service_url: Some("https://pushjet.io"), setup_url: None, protocols: vec!["pjet", "pjets"], description: "Send push notifications via Pushjet.", attachment_support: false } }
@@ -39,11 +45,26 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "pjet://user:pass@localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "pjets://localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "pjet://user:pass@localhost?secret=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "pjets://localhost:8080/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "pjet://localhost:8081/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "pjet://",
             "pjets://",
             "pjet://:@/",
+            "pjet://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

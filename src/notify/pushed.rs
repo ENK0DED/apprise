@@ -6,8 +6,23 @@ use crate::utils::parse::ParsedUrl;
 pub struct Pushed { app_key: String, secret: String, verify_certificate: bool, tags: Vec<String> }
 impl Pushed {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let app_key = url.user.clone()?;
-        let secret = url.password.clone()?;
+        // pushed://appkey/appsecret[/#channel/@alias...] or pushed://user:pass@host
+        let (app_key, secret) = if url.password.is_some() {
+            (url.user.clone()?, url.password.clone()?)
+        } else {
+            let app_key = url.host.clone()?;
+            let secret = url.path_parts.first()?.clone();
+            if secret.is_empty() { return None; }
+            (app_key, secret)
+        };
+        if app_key.is_empty() || secret.is_empty() { return None; }
+        // Validate: remaining path parts after secret must be # or @ prefixed
+        let extra = if url.password.is_some() { &url.path_parts[..] } else { url.path_parts.get(1..).unwrap_or(&[]) };
+        for p in extra {
+            if !p.starts_with('#') && !p.starts_with('@') && !p.starts_with("%23") {
+                return None;
+            }
+        }
         Some(Self { app_key, secret, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Pushed", service_url: Some("https://pushed.co"), setup_url: None, protocols: vec!["pushed"], description: "Send push notifications via Pushed.", attachment_support: false } }
@@ -33,10 +48,28 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "pushed://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "pushed://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/#channel/",
+            "pushed://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?to=channel",
+            "pushed://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/#channel1/#channel2",
+            "pushed://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/@ABCD/",
+            "pushed://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/@ABCD/@DEFG/",
+            "pushed://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/@ABCD/#channel",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "pushed://",
+            "pushed://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "pushed://:@/",
+            "pushed://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dropped_value/",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

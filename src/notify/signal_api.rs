@@ -8,9 +8,22 @@ pub struct SignalApi { host: String, port: Option<u16>, source: String, targets:
 impl SignalApi {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let host = url.host.clone()?;
-        let source = url.path_parts.first()?.clone();
-        let targets = url.path_parts.get(1..).unwrap_or(&[]).to_vec();
-        if targets.is_empty() { return None; }
+        // Source can come from path or ?from= query param
+        let source = url.get("from").or_else(|| url.get("source")).map(|s| s.to_string())
+            .or_else(|| url.path_parts.first().cloned())?;
+        if source.is_empty() { return None; }
+        // Validate source looks like a phone number (at least 10 digits)
+        let source_digits: String = source.chars().filter(|c| c.is_ascii_digit()).collect();
+        if source_digits.len() < 10 { return None; }
+        let mut targets: Vec<String> = if url.get("from").is_some() || url.get("source").is_some() {
+            // If source from query, all path parts are targets
+            url.path_parts.clone()
+        } else {
+            url.path_parts.get(1..).unwrap_or(&[]).to_vec()
+        };
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         Some(Self { host, port: url.port, source, targets, secure: url.schema == "signals", user: url.user.clone(), password: url.password.clone(), verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Signal API", service_url: Some("https://signal.org"), setup_url: None, protocols: vec!["signal", "signals"], description: "Send Signal messages via signal-cli REST API.", attachment_support: true } }
@@ -46,11 +59,31 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "signal://localhost:8080/11111111111/",
+            "signal://localhost:8082/+22222222222/@group.abcd/",
+            "signals://localhost/11111111111/33333333333?format=markdown",
+            "signal://localhost:8080/+11111111111/group.abcd/",
+            "signal://localhost:8080/?from=11111111111&to=22222222222,33333333333",
+            "signal://localhost:8080/?from=11111111111&to=22222222222,33333333333,555",
+            "signal://localhost:8080/11111111111/22222222222/?from=33333333333",
+            "signals://user@localhost/11111111111/33333333333",
+            "signals://user:password@localhost/11111111111/33333333333",
+            "signals://localhost/11111111111/33333333333/44444444444?batch=True",
+            "signals://localhost/11111111111/33333333333/44444444444?status=True",
+            "signal://localhost/11111111111/44444444444",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "signal://",
             "signal://:@/",
-            "signal://localhost",
             "signal://localhost",
             "signal://localhost/123",
         ];

@@ -24,13 +24,31 @@ impl Pushover {
         // pover://userkey@token/device1/device2
         let token = url.host.clone()?;
         let user_key = url.user.clone()?;
-        let priority = url.get("priority").and_then(|p| p.parse().ok()).unwrap_or(0);
+        let priority = url.get("priority").and_then(|p| {
+            if p.is_empty() { return Some(0); }
+            match p.to_lowercase().as_str() {
+                "low" | "-1" => Some(-1),
+                "moderate" | "normal" | "0" => Some(0),
+                "high" | "1" => Some(1),
+                "emergency" | "2" => Some(2),
+                _ => Some(0), // invalid priority defaults to 0
+            }
+        }).unwrap_or(0);
         let sound = url.get("sound").map(|s| s.to_string());
         let retry = url.get("retry").and_then(|p| p.parse().ok());
         let expire = url.get("expire").and_then(|p| p.parse().ok());
         let supplemental_url = url.get("url").map(|s| s.to_string());
         let supplemental_url_title = url.get("url_title").map(|s| s.to_string());
         let targets = url.path_parts.clone();
+        // Validate emergency priority constraints
+        if priority == 2 {
+            let expire_val = expire.unwrap_or(3600);
+            let retry_val = retry.unwrap_or(30);
+            // expire must be <= 86400 (24 hours)
+            if expire_val > 86400 { return None; }
+            // retry must be >= 30
+            if retry_val < 30 { return None; }
+        }
         Some(Self { user_key, token, targets, priority, sound, retry, expire, supplemental_url, supplemental_url_title, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails {
@@ -100,10 +118,39 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?sound=mysound",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?sound=spacealarm",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?url=my-url&url_title=title",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/DEVICE",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?to=DEVICE",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/DEVICE1/Device-with-dash/",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=high",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=high&format=html",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=high&format=markdown",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=invalid",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=emergency",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=2",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=emergency&retry=30&expire=300",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=emergency&retry=invalid&expire=300",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=emergency&retry=30&expire=invalid",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "pover://",
             "pover://:@/",
+            "pover://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=emergency&expire=100000",
+            "pover://uuuuuuuuuuuuuuuuuuuuuuuuuuuuuu@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=emergency&retry=15",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

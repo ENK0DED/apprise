@@ -7,10 +7,29 @@ use crate::utils::parse::ParsedUrl;
 pub struct MessageBird { api_key: String, from: String, targets: Vec<String>, verify_certificate: bool, tags: Vec<String> }
 impl MessageBird {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let api_key = url.password.clone()?;
-        let from = url.host.clone().unwrap_or_else(|| "Apprise".to_string());
-        let targets = url.path_parts.clone();
+        // msgbird://accesskey/phone or msgbird://accesskey/?from=X&to=Y
+        let api_key = url.password.clone()
+            .or_else(|| url.host.clone().filter(|h| !h.is_empty()))?;
+        let from = if url.password.is_some() {
+            url.host.clone().unwrap_or_else(|| "Apprise".to_string())
+        } else {
+            url.get("from").map(|s| s.to_string()).unwrap_or_else(|| "Apprise".to_string())
+        };
+        let mut targets: Vec<String> = if url.password.is_some() {
+            url.path_parts.clone()
+        } else {
+            url.path_parts.clone()
+        };
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         if targets.is_empty() { return None; }
+        // Validate targets contain at least one with 10+ digits
+        let has_valid_phone = targets.iter().any(|t| {
+            let digits: String = t.chars().filter(|c| c.is_ascii_digit()).collect();
+            digits.len() >= 10
+        });
+        if !has_valid_phone { return None; }
         Some(Self { api_key, from, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "MessageBird", service_url: Some("https://www.messagebird.com"), setup_url: None, protocols: vec!["msgbird"], description: "Send SMS via MessageBird.", attachment_support: false } }
@@ -36,9 +55,24 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "msgbird://aaaaaaaaaaaaaaaaaaaaaaaaa/15551232000",
+            "msgbird://aaaaaaaaaaaaaaaaaaaaaaaaa/15551232000/abcd",
+            "msgbird://aaaaaaaaaaaaaaaaaaaaaaaaa/15551232000/123",
+            "msgbird://aaaaaaaaaaaaaaaaaaaaaaaaa/?from=15551233000&to=15551232000",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "msgbird://",
+            "msgbird://aaaaaaaaaaaaaaaaaaaaaaaaa/abcd",
+            "msgbird://aaaaaaaaaaaaaaaaaaaaaaaaa/123",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

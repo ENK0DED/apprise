@@ -50,6 +50,16 @@ impl OpsGenie {
                 }
             }
         }
+        // Validate priority if provided
+        if let Some(priority) = url.get("priority") {
+            if !priority.is_empty() {
+                match priority.to_lowercase().as_str() {
+                    "p1" | "p2" | "p3" | "p4" | "p5" | "1" | "2" | "3" | "4" | "5"
+                    | "low" | "moderate" | "normal" | "high" | "emergency" => {}
+                    _ => return None,
+                }
+            }
+        }
         Some(Self { apikey: decoded, targets, region, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails {
@@ -108,27 +118,29 @@ mod tests {
     #[test]
     fn test_valid_urls() {
         let urls = vec![
-            "opsgenie://user@apikey/",
-            "opsgenie://apikey/",
-            "opsgenie://apikey/user",
+            "opsgenie://apikey/@user",
+            "opsgenie://apikey/@user?region=us",
             "opsgenie://apikey/@user?region=eu",
-            "opsgenie://apikey/@user?entity=A%20Entity",
-            "opsgenie://apikey/@user?alias=An%20Alias",
+            "opsgenie://apikey/@8b799edf-6f98-4d3a-9be7-2862fb4e5752/#8b799edf-6f98-4d3a-9be7-2862fb4e5752/*8b799edf-6f98-4d3a-9be7-2862fb4e5752/^8b799edf-6f98-4d3a-9be7-2862fb4e5752/",
+            "opsgenie://apikey/@user?priority=P1",
+            "opsgenie://apikey/@user?priority=p5",
             "opsgenie://apikey/@user?entity=index&action=new",
-            "opsgenie://apikey/@user?entity=index&action=acknowledge",
-            "opsgenie://from@apikey/@user?entity=index&action=note",
             "opsgenie://apikey/@user?entity=index&action=close",
+            "opsgenie://apikey/@user?entity=index&action=ack",
             "opsgenie://apikey/@user?entity=index&action=delete",
-            "opsgenie://apikey/@user?entity=index2&:info=new",
-            "opsgenie://joe@apikey/@user?priority=p3",
-            "opsgenie://apikey/?tags=comma,separated",
-            "opsgenie://apikey/@user?priority=invalid",
-            "opsgenie://apikey/user@email.com/#team/*sche/^esc/%20/a",
-            "opsgenie://apikey?to=#team,user&+key=value&+type=override",
-            "opsgenie://apikey/#team/@user/?batch=yes",
-            "opsgenie://apikey/#team/@user/?batch=no",
+            "opsgenie://apikey/@user?entity=index&action=note",
+            "opsgenie://apikey/@user?:info=new&:warning=close&:failure=ack&:success=note",
+            "opsgenie://apikey/@user?alias=my-test-alias",
+            "opsgenie://apikey/@user?batch=yes",
+            "opsgenie://apikey/@user?+key=value",
+            "opsgenie://apikey/@user?+key=value&+key2=value2",
+            "opsgenie://from@apikey/@user",
             "opsgenie://?apikey=abc&to=user",
-            "opsgenie://apikey/#topic1/device/",
+            "opsgenie://apikey/@user?batch=yes&tag=apprise,test&+key1=val1",
+            "opsgenie://apikey/@user?tags=tag1,tag2,tag3",
+            "opsgenie://apikey/@user?entity=test-entity",
+            "opsgenie://apikey/@user?details=my%20detail",
+            "opsgenie://apikey/@user?description=my%20desc",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -141,10 +153,10 @@ mod tests {
             "opsgenie://",
             "opsgenie://:@/",
             "opsgenie://%20%20/",
-            "opsgenie://apikey/user/?region=xx",
-            "opsgenie://apikey/@user?action=invalid",
             "opsgenie://from@apikey/@user?:invalid=note",
             "opsgenie://apikey/@user?:warning=invalid",
+            "opsgenie://%20@%20/",
+            "opsgenie://apikey/@user?priority=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

@@ -14,12 +14,38 @@ pub struct Twilio {
 
 impl Twilio {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        // twilio://account_sid:auth_token@from_phone/to1/to2
-        let account_sid = url.user.clone()?;
-        let auth_token = url.password.clone()?;
-        let from_phone = url.host.clone()?;
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        // twilio://SID:token@from_phone[/to1/to2]
+        // or twilio://_?sid=SID&token=TOKEN&from=PHONE&to=PHONE
+        let (account_sid, auth_token, from_phone) = if let Some(sid) = url.get("sid") {
+            let token = url.get("token").map(|s| s.to_string())?;
+            let from = url.get("from").or_else(|| url.get("source")).map(|s| s.to_string())?;
+            (sid.to_string(), token, from)
+        } else {
+            let sid = url.user.clone()?;
+            let token = url.password.clone()?;
+            let from = url.host.clone()?;
+            (sid, token, from)
+        };
+        // Validate from_phone: reject colons (like w:12345), _
+        if from_phone.contains(':') || from_phone == "_" { return None; }
+        // Validate from_phone: short code (5-6 digits) or full number (11+ digits)
+        let from_digits: String = from_phone.chars().filter(|c| c.is_ascii_digit()).collect();
+        if from_digits.is_empty() { return None; }
+        let len = from_digits.len();
+        if !(len >= 5 && len <= 6) && len < 11 { return None; }
+        // Validate method if provided
+        if let Some(method) = url.get("method") {
+            match method.to_lowercase().as_str() {
+                "sms" | "call" | "" => {}
+                _ => return None,
+            }
+            // w: prefix means whatsapp - call method requires non-whatsapp from
+            if method.to_lowercase() == "call" && from_phone.starts_with("w:") { return None; }
+        }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         Some(Self { account_sid, auth_token, from_phone, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails {
@@ -56,10 +82,38 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@33333",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@33333333333/123/999999999999999/abcd/w:88",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@12345/44444444444",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@98765/44444444444/w:55555555555/",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@123456/44444444444",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@55555555555",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@55555555555?method=sms",
+            "twilio://_?sid=ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&from=55555555555",
+            "twilio://_?sid=ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&from=55555555555&to=w:66666666666",
+            "twilio://_?sid=ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&source=55555555555",
+            "twilio://_?sid=ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&from=55555555555&to=7777777777777",
+            "twilio://_?sid=ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&from=55555555555&to=7777777777777method=call",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@66666666666",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "twilio://",
             "twilio://:@/",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@12345678",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@_",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@333333333",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@w:12345/44444444444/55555555555",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@55555555555?method=mms",
+            "twilio://ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@w:55555555555?method=call",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

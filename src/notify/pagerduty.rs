@@ -116,7 +116,6 @@ mod tests {
             "pagerduty://myroutekey@myapikey/mysource/mycomponent",
             "pagerduty://routekey@apikey/ms/mc?group=mygroup&class=myclass",
             "pagerduty://?integrationkey=r&apikey=a&source=s&component=c&group=g&class=c&image=no&click=http://localhost",
-            "pagerduty://myroutekey@myapikey/mysource/mycomponent",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

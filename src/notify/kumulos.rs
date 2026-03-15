@@ -6,9 +6,20 @@ use crate::utils::parse::ParsedUrl;
 pub struct Kumulos { apikey: String, server_key: String, targets: Vec<String>, verify_certificate: bool, tags: Vec<String> }
 impl Kumulos {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let apikey = url.user.clone()?;
-        let server_key = url.password.clone()?;
-        let targets = url.path_parts.clone();
+        // kumulos://UUID/server_key  (UUID is host, server_key is first path part)
+        // or kumulos://user:pass@host format
+        let (apikey, server_key) = if url.password.is_some() {
+            (url.user.clone()?, url.password.clone()?)
+        } else {
+            let apikey = url.host.clone()?;
+            let server_key = url.path_parts.first()?.clone();
+            if server_key.is_empty() { return None; }
+            (apikey, server_key)
+        };
+        if apikey.is_empty() || server_key.is_empty() { return None; }
+        // Server key should be at least 36 chars
+        if server_key.len() < 36 { return None; }
+        let targets = if url.password.is_some() { url.path_parts.clone() } else { url.path_parts.get(1..).unwrap_or(&[]).to_vec() };
         Some(Self { apikey, server_key, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Kumulos", service_url: Some("https://kumulos.com"), setup_url: None, protocols: vec!["kumulos"], description: "Send push notifications via Kumulos.", attachment_support: false } }
@@ -33,10 +44,22 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "kumulos://8b799edf-6f98-4d3a-9be7-2862fb4e5752/wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww/",
+            "kumulos://8b799edf-6f98-4d3a-9be7-2862fb4e5752/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "kumulos://",
             "kumulos://:@/",
+            "kumulos://8b799edf-6f98-4d3a-9be7-2862fb4e5752/",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

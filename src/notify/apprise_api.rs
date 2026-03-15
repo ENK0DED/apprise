@@ -19,7 +19,9 @@ pub struct AppriseApi {
 impl AppriseApi {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let host = url.host.clone()?;
-        let token = url.path_parts.first()?.clone();
+        let token = url.path_parts.first().cloned()
+            .or_else(|| url.get("to").map(|s| s.to_string()))
+            .or_else(|| url.get("token").map(|s| s.to_string()))?;
         // Validate token — reject special chars
         if !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
             return None;
@@ -78,6 +80,15 @@ mod tests {
     #[test]
     fn test_valid_urls() {
         let urls = vec![
+            "apprise://localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "apprise://localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "apprise://localhost:8080/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "apprises://localhost/cccccccccccccccccccccccccccccccc",
+            "https://example.com/path/notify/dddddddddddddddddddddddddddddddd",
+            "http://example.com/notify/dddddddddddddddddddddddddddddddd",
+            "apprises://localhost/?to=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "apprise://localhost/?token=ffffffffffffffffffffffffffffffff&to=abcd",
+            "apprise://localhost/?token=abcd&tags=admin,team",
             "apprise://user@localhost/mytoken0/?format=markdown",
             "apprise://user@localhost/mytoken1/",
             "apprise://localhost:8080/mytoken/",

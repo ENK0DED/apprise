@@ -69,11 +69,22 @@ mod tests {
     fn test_valid_urls() {
         let urls = vec![
             "smseagle://tokenb@localhost/%20/%20/",
+            "smseagle://token@localhost:8080/11111111111/",
+            "smseagle://localhost:8080/11111111111/?token=abc1234",
             "smseagle://token@localhost/@user/?priority=high",
             "smseagle://token@localhost/@user/?priority=1",
             "smseagle://token@localhost:8082/#abcd/",
             "smseagle://token@localhost:8082/@abcd/",
             "smseagles://token@localhost:8081/contact/",
+            "smseagle://token@localhost:8086/?to=22222222222,33333333333",
+            "smseagle://token@localhost:8087/?to=22222222222,33333333333,555",
+            "smseagle://token@localhost:8088/22222222222/33333333333/",
+            "smseagles://token@localhost/33333333333",
+            "smseagles://token@localhost/33333333333/44444444444?batch=True",
+            "smseagles://token@localhost/33333333333/?flash=yes",
+            "smseagles://token@localhost/33333333333/?test=yes",
+            "smseagles://token@localhost/33333333333/44444444444?status=True",
+            "smseagle://token@localhost/44444444444",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

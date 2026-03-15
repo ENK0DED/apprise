@@ -123,6 +123,7 @@ mod tests {
             "fcm://?apikey=abc123&to=device&image_url=http://example.com/interesting.jpg&image=no",
             "fcm://?apikey=abc123&to=device&+key=value&+key2=value2",
             "fcm://apikey/#topic1/device/?mode=legacy",
+            "fcm://projectid/#topic1/device/?mode=oauth2&keyfile=file:///home/eloy/Programmieren/apprise/tests/var/fcm/service_account.json",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

@@ -7,11 +7,16 @@ pub struct Threema { gateway_id: String, secret: String, targets: Vec<String>, v
 impl Threema {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         // threema://gateway_id:secret/target or threema://*GWID@secret/target
-        let gateway_id = url.user.clone()?;
+        // or threema:///?secret=secret&from=*THEGWID&to=...
+        let gateway_id = url.user.clone()
+            .or_else(|| url.get("from").map(|s| s.to_string()))
+            .or_else(|| url.get("gwid").map(|s| s.to_string()))?;
         // Gateway ID must start with *
         if !gateway_id.starts_with('*') { return None; }
         let secret = url.password.clone()
-            .or_else(|| url.host.clone().filter(|h| !h.is_empty()))?;
+            .or_else(|| url.host.clone().filter(|h| !h.is_empty() && h != "_"))
+            .or_else(|| url.get("secret").map(|s| s.to_string()))?;
+        if secret.is_empty() { return None; }
         let mut targets = url.path_parts.clone();
         if let Some(to) = url.get("to") {
             targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
@@ -47,6 +52,11 @@ mod tests {
     #[test]
     fn test_valid_urls() {
         let urls = vec![
+            "threema://*THEGWID@secret/2222/",
+            "threema://*THEGWID@secret/16134442222/",
+            "threema://*THEGWID@secret/16134442222/16134443333/",
+            "threema:///?secret=secret&from=*THEGWID&to=16134448888,user1@gmail.com,abcd1234",
+            "threema:///?secret=secret&gwid=*THEGWID&to=16134448888,user2@gmail.com,abcd1234",
             "threema://*THEGWID@secret",
             "threema://*THEGWID@secret/16134443333",
         ];

@@ -6,6 +6,13 @@ pub struct Prowl { apikey: String, priority: i32, verify_certificate: bool, tags
 impl Prowl {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let apikey = url.host.clone()?;
+        if apikey.is_empty() { return None; }
+        // API key must be 40 characters
+        if apikey.len() != 40 { return None; }
+        // Additional API keys in path must also be 40 chars
+        for key in &url.path_parts {
+            if !key.is_empty() && key.len() != 40 { return None; }
+        }
         let priority = url.get("priority").and_then(|p| p.parse().ok()).unwrap_or(0);
         Some(Self { apikey, priority, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
@@ -31,10 +38,27 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "prowl://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "prowl://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "prowl://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=high",
+            "prowl://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=invalid",
+            "prowl://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?priority=",
+            "prowl://wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww///",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "prowl://",
             "prowl://:@/",
+            "prowl://aaaaaaaaaaaaaaaaaaaa",
+            "prowl://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbb",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

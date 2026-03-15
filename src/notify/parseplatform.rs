@@ -7,8 +7,10 @@ pub struct ParsePlatform { host: String, port: Option<u16>, app_id: String, mast
 impl ParsePlatform {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let host = url.host.clone()?;
-        let app_id = url.user.clone()?;
-        let master_key = url.password.clone()?;
+        let app_id = url.user.clone()
+            .or_else(|| url.get("app_id").map(|s| s.to_string()))?;
+        let master_key = url.password.clone()
+            .or_else(|| url.get("master_key").map(|s| s.to_string()))?;
         // Validate device param if provided
         if let Some(device) = url.get("device") {
             match device.to_lowercase().as_str() {
@@ -45,8 +47,8 @@ mod tests {
     #[test]
     fn test_valid_urls() {
         let urls = vec![
+            "parseps://localhost?app_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&master_key=dddddddddddddddddddddddddddddddd",
             "parsep://app_id:master_key@localhost:8080?device=ios",
-            "parseps://app_id:master_key@localhost",
             "parseps://app_id:master_key@localhost",
         ];
         for url in &urls {
@@ -59,6 +61,9 @@ mod tests {
         let urls = vec![
             "parsep://",
             "parsep://:@/",
+            "parsep://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "parsep://app_id@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "parseps://:master_key@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "parsep://app_id:master_key@localhost?device=invalid",
         ];
         for url in &urls {

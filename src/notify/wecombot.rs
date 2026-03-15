@@ -43,7 +43,6 @@ mod tests {
             "wecombot://?key=botkey",
             "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=BOTKEY",
             "https://qyapi.weixin.qq.com/cgi-bin/webhook/send/?key=BOTKEY&data=123",
-            "wecombot://botkey",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

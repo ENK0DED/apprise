@@ -8,7 +8,14 @@ impl Dapnet {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let user = url.user.clone()?;
         let password = url.password.clone()?;
-        let targets = url.path_parts.clone();
+        let mut targets = Vec::new();
+        if let Some(h) = url.host.as_deref() {
+            if !h.is_empty() && h != "_" { targets.push(h.to_string()); }
+        }
+        targets.extend(url.path_parts.clone());
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         if targets.is_empty() { return None; }
         let txgroups: Vec<String> = url.get("txgroups").map(|s| s.split(',').map(|g| g.trim().to_string()).collect()).unwrap_or_else(|| vec!["dl-all".to_string()]);
         let priority = url.get("priority").and_then(|p| p.parse().ok()).unwrap_or(0);
@@ -39,7 +46,16 @@ mod tests {
     #[test]
     fn test_valid_urls() {
         let urls = vec![
+            "dapnet://user:pass@DF1ABC",
+            "dapnet://user:pass@DF1ABC/DF1DEF",
             "dapnet://user:pass@DF1ABC-1/DF1ABC/DF1ABC-15",
+            "dapnet://user:pass@?to=DF1ABC,DF1DEF",
+            "dapnet://user:pass@DF1ABC?priority=normal",
+            "dapnet://user:pass@DF1ABC/0A1DEF?priority=em&batch=false",
+            "dapnet://user:pass@DF1ABC?priority=invalid",
+            "dapnet://user:pass@DF1ABC?txgroups=dl-all,all",
+            "dapnet://user:pass@DF1ABC?txgroups=invalid",
+            "dapnet://user:pass@abcdefghi/a",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

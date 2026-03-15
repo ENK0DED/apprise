@@ -18,6 +18,7 @@ impl Matrix {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         // matrix://access_token@host/room1/room2
         // matrixs://...
+        // https://webhooks.t2bot.io/api/v1/matrix/hook/TOKEN
         let host = url.host.clone()?;
         // Reject if host contains a colon (invalid port that fell through to fallback parser)
         if host.contains(':') { return None; }
@@ -25,7 +26,22 @@ impl Matrix {
         if let Some(port) = url.port {
             if port == 0 { return None; }
         }
-        let access_token = url.password.clone().or_else(|| url.user.clone())?;
+        let access_token = url.password.clone()
+            .or_else(|| url.user.clone())
+            .or_else(|| url.get("token").map(|s| s.to_string()))
+            .or_else(|| {
+                // For HTTPS t2bot URLs, token is the last path part
+                if (url.schema == "https" || url.schema == "http") && url.path_parts.len() >= 2 {
+                    url.path_parts.last().cloned()
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                // If no user/password/token param, host itself might be the token
+                // (e.g., matrixs://token_value)
+                url.host.clone().filter(|h| h.len() >= 32)
+            })?;
         let rooms = url.path_parts.clone();
         // Validate mode if provided
         if let Some(mode) = url.get("mode") {
@@ -116,9 +132,15 @@ mod tests {
             "matrix://user:token@localhost?mode=slack&format=text",
             "matrixs://user:token@localhost?mode=SLACK&format=markdown",
             "matrix://user@localhost?mode=SLACK&format=markdown&token=mytoken",
+            "matrix://_?mode=t2bot&token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "matrixs://user:token@localhost?mode=slack&format=markdown&image=True",
             "matrixs://user:token@localhost?mode=slack&format=markdown&image=False",
+            "matrixs://user@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?mode=t2bot&format=markdown&image=True",
+            "matrix://user@zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz?mode=t2bot&format=html&image=False",
+            "matrixs://cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "https://webhooks.t2bot.io/api/v1/matrix/hook/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/",
             "matrix://token@localhost:8080/?mode=slack",
+            "matrix://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/?mode=t2bot",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

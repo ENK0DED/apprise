@@ -21,12 +21,29 @@ pub struct Mastodon {
 impl Mastodon {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let host = url.host.clone()?;
-        let token = url.user.clone()?;
+        let token = url.user.clone()
+            .or_else(|| url.get("token").map(|s| s.to_string()))?;
+        if token.is_empty() { return None; }
         let visibility = url.get("visibility").unwrap_or("public").to_string();
+        // Validate visibility
+        match visibility.to_lowercase().as_str() {
+            "public" | "unlisted" | "private" | "direct" => {}
+            _ => return None,
+        }
         let spoiler_text = url.get("spoiler").map(|s| s.to_string());
         let language = url.get("language").or_else(|| url.get("lang")).map(|s| s.to_string());
         let sensitive = url.get("sensitive").map(crate::utils::parse::parse_bool).unwrap_or(false);
-        let targets = url.path_parts.clone();
+        let mut targets: Vec<String> = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
+        // Validate targets - each must start with @
+        for t in &targets {
+            if !t.starts_with('@') { return None; }
+            // Must have valid content after the @
+            let name = &t[1..];
+            if name.is_empty() || name == "-" || name == "%" { return None; }
+        }
         Some(Self {
             host, port: url.port, token,
             secure: url.schema.ends_with('s'),
@@ -103,9 +120,33 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "toot://access_token@hostname",
+            "toots://access_token@hostname",
+            "mastodon://access_token@hostname/@user/@user2",
+            "mastodon://hostname/@user/@user2?token=abcd123",
+            "mastodon://access_token@hostname?to=@user, @user2",
+            "mastodon://access_token@hostname/?cache=no",
+            "mastodon://access_token@hostname/?spoiler=spoiler%20text",
+            "mastodon://access_token@hostname/?language=en",
+            "mastodons://access_token@hostname:8443",
+            "mastodon://access_token@hostname/?key=My%20Idempotency%20Key",
+            "mastodon://access_token@hostname?visibility=direct",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "mastodon://",
+            "mastodon://:@/",
+            "mastodon://hostname",
+            "mastodon://access_token@hostname/-/%/",
+            "mastodon://access_token@hostname?visibility=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

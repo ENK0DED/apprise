@@ -7,11 +7,28 @@ pub struct Zulip { user: String, token: String, org_url: String, targets: Vec<St
 impl Zulip {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let user = url.user.clone()?;
-        let token = url.password.clone()?;
+        if user.is_empty() { return None; }
+        // Validate user (bot name) - must contain at least one alphanumeric
+        if !user.chars().any(|c| c.is_ascii_alphanumeric()) { return None; }
         let host = url.host.clone()?;
         let org_url = format!("https://{}", host);
-        let mut targets = url.path_parts.clone();
-        if targets.is_empty() { targets.push("general".to_string()); }
+        // Token from password, first path part, or ?token= query
+        let token = url.password.clone()
+            .or_else(|| url.get("token").map(|s| s.to_string()))
+            .or_else(|| url.path_parts.first().cloned())?;
+        if token.is_empty() { return None; }
+        // Token must be at least 32 chars
+        if token.len() < 32 { return None; }
+        // Targets are remaining path parts (after token) + ?to=
+        let path_targets: Vec<String> = if url.password.is_some() || url.get("token").is_some() {
+            url.path_parts.clone()
+        } else {
+            url.path_parts.get(1..).unwrap_or(&[]).to_vec()
+        };
+        let mut targets = path_targets;
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         Some(Self { user, token, org_url, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Zulip", service_url: Some("https://zulip.com"), setup_url: None, protocols: vec!["zulip"], description: "Send messages via Zulip.", attachment_support: false } }
@@ -57,12 +74,30 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "zulip://bot-name@apprise/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "zulip://botname@apprise/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "zulip://botname@apprise.zulipchat.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "zulip://botname@apprise/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/channel1/channel2",
+            "zulip://botname@apprise/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/?to=channel1/channel2",
+            "zulip://botname@apprise/?token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&to=channel1",
+            "zulip://botname@apprise/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/user@example.com/user2@example.com",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "zulip://",
             "zulip://:@/",
             "zulip://apprise",
             "zulip://botname@apprise",
+            "zulip://botname@apprise/aaaaaaaaaaaaaaaaaaaaaaaa",
+            "zulip://....@apprise/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

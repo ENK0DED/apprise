@@ -53,14 +53,8 @@ mod tests {
             "notifico://1234/ckhrjW8w672m6HG",
             "notifico://1234/ckhrjW8w672m6HG?prefix=no",
             "notifico://1234/ckhrjW8w672m6HG?color=yes",
-            "notifico://1234/ckhrjW8w672m6HG?color=yes",
-            "notifico://1234/ckhrjW8w672m6HG?color=yes",
-            "notifico://1234/ckhrjW8w672m6HG?color=yes",
-            "notifico://1234/ckhrjW8w672m6HG?color=yes",
             "notifico://1234/ckhrjW8w672m6HG?color=no",
             "https://n.tkte.ch/h/2144/uJmKaBW9WFk42miB146ci3Kj",
-            "notifico://1234/ckhrjW8w672m6HG",
-            "notifico://1234/ckhrjW8w672m6HG",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

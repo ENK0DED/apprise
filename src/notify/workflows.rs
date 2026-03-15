@@ -56,6 +56,8 @@ mod tests {
             "workflows://host:443/workflow1e/signature/?powerautomate=yes",
             "workflows://host:443/workflow1e/signature/?pa=yes&ver=1995-01-01",
             "workflows://host:443/workflow1e/signature/?pa=yes",
+            "https://server.azure.com:443/workflows/643e69f83c8944/triggers/manual/paths/invoke?api-version=2016-06-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=KODuebWbDGYFr0z0eu",
+            "https://server.azure.com:443/powerautomate/automations/direct/workflows/643e69f83c8944/triggers/manual/paths/invoke?api-version=2022-03-01-preview&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=KODuebWbDGYFr0z0eu",
             "workflow://host:443/workflow4/signature/",
         ];
         for url in &urls {

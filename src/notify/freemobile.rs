@@ -41,7 +41,6 @@ mod tests {
         let urls = vec![
             "freemobile://user@password",
             "freemobile://?user=user&pass=password",
-            "freemobile://user@password",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

@@ -47,15 +47,17 @@ impl ParsedUrl {
         }
     }
 
-    /// Encode '#' characters that appear in query string values.
-    /// This prevents the url crate from interpreting them as fragment delimiters.
+    /// Encode special characters that appear in the URL so the `url` crate
+    /// doesn't reject or misinterpret them.
     fn encode_hash_in_query(raw: &str) -> String {
         // Find the query string start
         if let Some(qmark) = raw.find('?') {
             let (before, after) = raw.split_at(qmark);
             // Also handle '#' in path parts (e.g., /path/#channel/)
             let before_encoded = before.replace('#', "%23");
-            let after_encoded = after.replace('#', "%23");
+            let after_encoded = after.replace('#', "%23")
+                .replace('<', "%3C")
+                .replace('>', "%3E");
             format!("{}{}", before_encoded, after_encoded)
         } else {
             // Also handle '#' in path parts

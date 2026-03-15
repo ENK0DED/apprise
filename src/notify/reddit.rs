@@ -110,13 +110,10 @@ mod tests {
         let urls = vec![
             "reddit://user:password@app-id/app-secret/apprise",
             "reddit://user:password@app-id/app-secret",
-            "reddit://user:password@app-id/app-secret/apprise",
-            "reddit://user:password@app-id/app-secret/apprise",
             "reddit://user:password@app-id/app-secret/apprise/subreddit2",
             "reddit://user:pass@id/secret/sub/?ad=yes&nsfw=yes&replies=no&resubmit=yes&spoiler=yes&kind=self",
             "reddit://?user=l2g&pass=pass&app_secret=abc123&app_id=54321&to=sub1,sub2",
             "reddit://user:pass@id/secret/sub7/sub6/sub5/?flair_id=wonder&flair_text=not%20for%20you",
-            "reddit://user:password@app-id/app-secret/apprise",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

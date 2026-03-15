@@ -17,9 +17,13 @@ impl Msg91 {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         // msg91://template_id@authkey/phone1/phone2
         let authkey = url.host.clone()?;
+        if authkey.is_empty() || authkey == "_" || authkey == "-" { return None; }
         let template = url.user.clone()?;
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        if template.is_empty() { return None; }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         let short_url = url.get("short_url").map(crate::utils::parse::parse_bool).unwrap_or(false);
         Some(Self { authkey, template, targets, short_url, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
@@ -58,10 +62,25 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "msg91://tttttttttttttttttttt@aaaaaaaaaaaaaaaaaaaaaaa",
+            "msg91://tttttttttttttttttttt@aaaaaaaaaaaaaaaaaaaaaaa/abcd",
+            "msg91://tttttttttttttttttttt@aaaaaaaaaaaaaaaaaaaaaaa/15551232000",
+            "msg91://tttttttttttttttttttt@aaaaaaaaaaaaaaaaaaaaaaa/?to=15551232000&short_url=no",
+            "msg91://tttttttttttttttttttt@aaaaaaaaaaaaaaaaaaaaaaa/15551232000?short_url=yes",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "msg91://",
             "msg91://-",
+            "msg91://aaaaaaaaaaaaaaaaaaaaaaa",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

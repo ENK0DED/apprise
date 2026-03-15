@@ -67,6 +67,24 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "pbul://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "pbul://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/#channel/",
+            "pbul://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/?to=#channel",
+            "pbul://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/#channel1/#channel2",
+            "pbul://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/device/",
+            "pbul://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/device1/device2/",
+            "pbul://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/user@example.com/",
+            "pbul://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/user@example.com/abc@def.com/",
+            "pbul://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/device/#channel/user@example.com/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "pbul://",

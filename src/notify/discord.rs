@@ -38,6 +38,14 @@ impl Discord {
         let thread_id = url.get("thread").map(|s| s.to_string());
         let href = url.get("href").or_else(|| url.get("url")).map(|s| s.to_string());
 
+        // Validate flags if provided
+        if let Some(flags) = url.get("flags") {
+            if !flags.is_empty() {
+                let val: i64 = flags.parse().ok()?;
+                if val < 0 { return None; }
+            }
+        }
+
         Some(Self {
             webhook_id, webhook_token, tts, avatar_url, username, footer,
             footer_logo, include_image, thread_id, href,
@@ -181,10 +189,40 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+            "discord://l2g@iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown&footer=Yes&image=Yes&ping=Joe",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown&footer=Yes&image=No&fields=no",
+            "discord://jack@iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown&footer=Yes&image=Yes",
+            "https://discord.com/api/webhooks/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "https://discordapp.com/api/webhooks/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "https://discordapp.com/api/webhooks/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?footer=yes",
+            "https://discordapp.com/api/webhooks/0000000000/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB?footer=yes&botname=joe",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown&avatar=No&footer=No",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?flags=1",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=markdown&thread=abc123",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?format=text",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?hmarkdown=true&ref=http://localhost",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?markdown=true&url=http://localhost",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?avatar_url=http://localhost/test.jpg",
+            "discord://aaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "discord://",
             "discord://:@/",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?flags=-1",
+            "discord://iiiiiiiiiiiiiiiiiiiiiiii/tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt?flags=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

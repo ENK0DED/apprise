@@ -6,8 +6,29 @@ use crate::utils::parse::ParsedUrl;
 pub struct D7Networks { token: String, targets: Vec<String>, verify_certificate: bool, tags: Vec<String> }
 impl D7Networks {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let token = url.host.clone()?;
-        let targets = url.path_parts.clone();
+        // Token can come from ?token=, user:password (colon-joined), :password, user, or host
+        let token = if let Some(t) = url.get("token") {
+            t.to_string()
+        } else if let Some(ref u) = url.user {
+            if let Some(ref p) = url.password {
+                format!("{}:{}", u, p)
+            } else {
+                u.clone()
+            }
+        } else if let Some(ref p) = url.password {
+            format!(":{}", p)
+        } else {
+            return None;
+        };
+        if token.is_empty() { return None; }
+        let mut targets = Vec::new();
+        if let Some(h) = url.host.as_deref() {
+            if !h.is_empty() && h != "_" { targets.push(h.to_string()); }
+        }
+        targets.extend(url.path_parts.clone());
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         if targets.is_empty() { return None; }
         Some(Self { token, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
@@ -35,6 +56,27 @@ impl Notify for D7Networks {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "d7sms://token@111111111/222222222222222/aaaaaaaaaaaaa",
+            "d7sms://token1@33333333333333?batch=yes",
+            "d7sms://token:colon2@33333333333333?batch=yes",
+            "d7sms://:token3@33333333333333?batch=yes",
+            "d7sms://33333333333333?token=token6",
+            "d7sms://token4@33333333333333?unicode=no",
+            "d7sms://token8@33333333333333/44444444444444/?unicode=yes",
+            "d7sms://token@33333333333333?batch=yes&to=66666666666666",
+            "d7sms://token@33333333333333?batch=yes&from=apprise",
+            "d7sms://token@33333333333333?batch=yes&source=apprise",
+            "d7sms://token@33333333333333?batch=no",
+            "d7sms://token@33333333333333",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {

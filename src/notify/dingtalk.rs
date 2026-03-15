@@ -6,8 +6,22 @@ use crate::utils::parse::ParsedUrl;
 pub struct DingTalk { token: String, verify_certificate: bool, tags: Vec<String> }
 impl DingTalk {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let token = url.host.clone()?;
+        // Token from ?token= or host
+        let token = url.get("token").map(|s| s.to_string())
+            .or_else(|| url.host.clone())?;
         if token.is_empty() || !token.chars().all(|c| c.is_ascii_alphanumeric()) { return None; }
+        // Validate secret if provided (must be alphanumeric)
+        if let Some(secret) = url.get("secret") {
+            if !secret.is_empty() && !secret.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return None;
+            }
+        }
+        // Also check user-field as secret (dingtalk://secret@token/...)
+        if let Some(ref user_secret) = url.user {
+            if !user_secret.is_empty() && !user_secret.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return None;
+            }
+        }
         Some(Self { token, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "DingTalk", service_url: Some("https://dingtalk.com"), setup_url: None, protocols: vec!["dingtalk"], description: "Send via DingTalk robot webhook.", attachment_support: false } }
@@ -37,6 +51,13 @@ mod tests {
     fn test_valid_urls() {
         let urls = vec![
             "dingtalk://12345678",
+            "dingtalk://aaaaaaaa/11111111111111",
+            "dingtalk://aaaaaaaa/111/invalid",
+            "dingtalk://aaaaaaaa/?to=11111111111111",
+            "dingtalk://secret@aaaaaaaa/?to=11111111111111",
+            "dingtalk://?token=bbbbbbbb&to=11111111111111&secret=aaaaaaaaaaaaaaa",
+            "dingtalk://aaaaaaaa?format=markdown",
+            "dingtalk://aaaaaaaa",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -48,6 +69,7 @@ mod tests {
         let urls = vec![
             "dingtalk://",
             "dingtalk://a_bd_/",
+            "dingtalk://aaaaaaaa/?to=11111111111111&secret=_",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

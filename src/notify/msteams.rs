@@ -44,6 +44,14 @@ impl MsTeams {
             )
         };
 
+        // Validate version if provided
+        if let Some(version) = url.get("version") {
+            match version.to_lowercase().as_str() {
+                "1" | "2" | "3" | "4" | "" => {}
+                _ => return None,
+            }
+        }
+
         Some(Self { webhook_url, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails {
@@ -82,10 +90,34 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "msteams://8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/8b799edf-6f98-4d3a-9be7-2862fb4e5752?t1",
+            "https://outlook.office.com/webhook/8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/IncomingWebhook/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk/8b799edf-6f98-4d3a-9be7-2862fb4e5752",
+            "https://myteam.webhook.office.com/webhookb2/8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/IncomingWebhook/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm/8b799edf-6f98-4d3a-9be7-2862fb4e5752",
+            "https://myteam.webhook.office.com/webhookb2/8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/IncomingWebhook/mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm/8b799edf-6f98-4d3a-9be7-2862fb4e5752/V2-_nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+            "msteams://8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/cccccccccccccccccccccccccccccccc/8b799edf-6f98-4d3a-9be7-2862fb4e5752?t2",
+            "msteams://8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/dddddddddddddddddddddddddddddddd/8b799edf-6f98-4d3a-9be7-2862fb4e5752?image=No",
+            "msteams://apprise/8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/8b799edf-6f98-4d3a-9be7-2862fb4e5752",
+            "msteams://8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/ffffffffffffffffffffffffffffffff/8b799edf-6f98-4d3a-9be7-2862fb4e5752?team=teamname",
+            "msteams://apprise/8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/8b799edf-6f98-4d3a-9be7-2862fb4e5752?version=1",
+            "msteams://8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz/8b799edf-6f98-4d3a-9be7-2862fb4e5752?ta",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "msteams://",
             "msteams://:@/",
+            "msteams://8b799edf-6f98-4d3a-9be7-2862fb4e5752",
+            "msteams://8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/",
+            "msteams://8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "msteams://apprise/8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/8b799edf-6f98-4d3a-9be7-2862fb4e5752?version=999",
+            "msteams://apprise/8b799edf-6f98-4d3a-9be7-2862fb4e5752@8b799edf-6f98-4d3a-9be7-2862fb4e5752/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/8b799edf-6f98-4d3a-9be7-2862fb4e5752?version=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

@@ -66,7 +66,6 @@ mod tests {
             "gchat://?workspace=ws&key=mykey&token=mytoken&threadKey=abc345",
             "https://chat.googleapis.com/v1/spaces/myworkspace/messages?key=mykey&token=mytoken",
             "https://chat.googleapis.com/v1/spaces/myworkspace/messages?key=mykey&token=mytoken&threadKey=mythreadkey",
-            "gchat://workspace/key/token",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

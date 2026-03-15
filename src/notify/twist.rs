@@ -40,7 +40,6 @@ mod tests {
             "twist://user@example.com/password",
             "twist://password:user1@example.com",
             "twist://password:user2@example.com",
-            "twist://password:user2@example.com",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

@@ -6,7 +6,15 @@ use crate::utils::parse::ParsedUrl;
 pub struct PagerTree { integration_id: String, verify_certificate: bool, tags: Vec<String> }
 impl PagerTree {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let integration_id = url.host.clone()?;
+        let integration_id = url.get("id")
+            .or_else(|| url.get("integration"))
+            .map(|s| s.to_string())
+            .or_else(|| url.host.clone().filter(|h| !h.is_empty() && h != "_"))?;
+        if integration_id.is_empty() { return None; }
+        // Reject if all non-alphanumeric (e.g., all plus signs decoded to spaces)
+        let decoded = urlencoding::decode(&integration_id).unwrap_or_default();
+        if decoded.trim().is_empty() { return None; }
+        if !decoded.chars().any(|c| c.is_ascii_alphanumeric()) { return None; }
         Some(Self { integration_id, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "PagerTree", service_url: Some("https://pagertree.com"), setup_url: None, protocols: vec!["pagertree"], description: "Send alerts via PagerTree.", attachment_support: false } }
@@ -32,9 +40,27 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "pagertree://int_xxxxxxxxxxx",
+            "pagertree://int_xxxxxxxxxxx?integration=int_yyyyyyyyyy",
+            "pagertree://int_xxxxxxxxxxx?id=int_zzzzzzzzzz",
+            "pagertree://int_xxxxxxxxxxx?urgency=low",
+            "pagertree://?id=int_xxxxxxxxxxx&urgency=low",
+            "pagertree://int_xxxxxxxxxxx?tags=production,web",
+            "pagertree://int_xxxxxxxxxxx?action=resolve&thirdparty=123",
+            "pagertree://int_xxxxxxxxxxx?+pagertree-token=123&:env=prod&-m=v",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "pagertree://",
+            "pagertree://++++++++++++++++++++++++",
             "pagertree://:@/",
         ];
         for url in &urls {

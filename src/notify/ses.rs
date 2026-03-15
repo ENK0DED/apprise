@@ -10,7 +10,15 @@ impl Ses {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         // ses://user@domain/access_key/secret_key/region
         // or ses://access_key:secret_key@region/to@email
-        let (access_key, secret_key, region, from) = if url.password.is_some() {
+        let (access_key, secret_key, region, from) = if url.get("access").is_some() || url.get("access_key_id").is_some() {
+            // All-query format: ses://?from=X&region=Y&access=Z&secret=W
+            let ak = url.get("access").or_else(|| url.get("access_key_id")).map(|s| s.to_string())?;
+            let sk = url.get("secret").or_else(|| url.get("secret_access_key")).map(|s| s.to_string())?;
+            let region = url.get("region").map(|s| s.to_string())
+                .unwrap_or_else(|| "us-east-1".to_string());
+            let from = url.get("from").unwrap_or("apprise@example.com").to_string();
+            (ak, sk, region, from)
+        } else if url.password.is_some() {
             let ak = url.user.clone()?;
             let sk = url.password.clone()?;
             let region = url.host.clone().unwrap_or_else(|| "us-east-1".to_string());
@@ -131,6 +139,7 @@ mod tests {
             "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcevi7FQ/us-west-2",
             "ses://user@example.com/T1JJ3TD4JD/TIiajkdnlazk7FQ/us-west-2/user2@example.ca/user3@example.eu",
             "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiajkdnlaevi7FQ/us-east-1?to=user2@example.ca",
+            "ses://?from=user@example.com&region=us-west-2&access=T1JJ3T3L2&secret=A1BRTD4JD/TIiajkdnlaevi7FQ&reply=No One <noreply@yahoo.ca>&bcc=user.bcc@example.com,user2.bcc@example.com,invalid-email&cc=user.cc@example.com,user2.cc@example.com,invalid-email&to=user2@example.ca",
             "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiacevi7FQ/us-west-2/?name=From%20Name&to=user2@example.ca,invalid-email",
             "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiacevi7FQ/us-west-2/?format=text",
             "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiacevi7FQ/us-west-2/?to=invalid-email",

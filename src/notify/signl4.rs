@@ -46,7 +46,6 @@ mod tests {
             "signl4://secret/?alerting_scenario=singl4_ack",
             "signl4://secret/?filtering=False",
             "signl4://secret/?external_id=ar1234&status=new",
-            "signl4://secret/",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);

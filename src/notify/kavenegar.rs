@@ -6,9 +6,18 @@ pub struct Kavenegar { apikey: String, targets: Vec<String>, sender: Option<Stri
 impl Kavenegar {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let apikey = url.host.clone()?;
-        let targets = url.path_parts.clone();
+        if apikey.is_empty() || !apikey.chars().all(|c| c.is_ascii_alphanumeric()) { return None; }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         if targets.is_empty() { return None; }
-        let sender = url.get("from").map(|s| s.to_string());
+        // Source from user field or ?from= query param; must be valid phone (10-14 digits)
+        let sender = url.get("from").map(|s| s.to_string()).or_else(|| url.user.clone());
+        if let Some(ref s) = sender {
+            let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+            if digits.len() < 10 || digits.len() > 14 { return None; }
+        }
         Some(Self { apikey, targets, sender, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Kavenegar", service_url: Some("https://kavenegar.com"), setup_url: None, protocols: vec!["kavenegar"], description: "Send SMS via Kavenegar.", attachment_support: false } }
@@ -36,10 +45,27 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "kavenegar://1111111111/222222222222222/aaaaaaaaaaaaa",
+            "kavenegar://aaaaaaaaaaaaaaaaaaaaaaaa/33333333333333",
+            "kavenegar://aaaaaaaaaaaaaaaaaaaaaaaa?to=33333333333333",
+            "kavenegar://11111111111111@bbbbbbbbbbbbbbbbbbbbbbbb/33333333333333",
+            "kavenegar://bbbbbbbbbbbbbbbbbbbbbbbb/33333333333333?from=11111111111111",
+            "kavenegar://cccccccccccccccccccccccc/55555555555555",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "kavenegar://",
             "kavenegar://:@/",
+            "kavenegar://aaaaaaaaaaaaaa@bbbbbbbbbbbbbbbbbbbbbbbb/33333333333333",
+            "kavenegar://3333@bbbbbbbbbbbbbbbbbbbbbbbb/33333333333333",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);

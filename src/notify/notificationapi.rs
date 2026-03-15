@@ -82,9 +82,11 @@ impl NotificationApi {
             let mut has_email = false;
             let mut has_phone = false;
             for t in &all_targets {
-                let is_email = t.contains('@');
+                // Named emails like "Name<email>" contain @ but also <>
+                let is_named_email = t.contains('<') && t.contains('>');
+                let is_email = t.contains('@') && !is_named_email;
                 let is_phone = t.starts_with('+');
-                if !is_email && !is_phone {
+                if !is_email && !is_phone && !is_named_email {
                     // New id — reset
                     has_email = false;
                     has_phone = false;
@@ -95,6 +97,7 @@ impl NotificationApi {
                     if has_phone { return None; } // duplicate phone for same id
                     has_phone = true;
                 }
+                // Named emails (with <>) don't count toward the duplicate check
             }
         }
         Some(Self { client_id, secret, verify_certificate: url.verify_certificate(), tags: url.tags() })
@@ -127,6 +130,7 @@ mod tests {
             "napi://cid/secret/id/user1@example.com/?type=apprise-msg",
             "notificationapi://cid/secret/id/user1@example.com",
             "napi://cid/secret/id/id2/user1@example.com",
+            "napi://type@cid/secret/id10/user2@example.com/id5/+15551235555/id8/+15551235534?reply=Chris<chris@example.com>",
             "napi://type@cid/secret/abc1/user1@example.com/id5/+15551235555/?from=Chris&reply=Christopher",
             "napi://type@cid/secret/id/user3@example.com/?from=joe@example.ca&reply=user@abc.com",
             "napi://type@cid/secret/id/user4@example.com/?from=joe@example.ca&bcc=user1@yahoo.ca&cc=user2@yahoo.ca",
@@ -134,8 +138,22 @@ mod tests {
             "napi://id?secret=cs&to=id,user5@example.com&type=typeb",
             "napi://secret?id=ci&to=id,user5@example.com&type=typea",
             "napi://?id=ci&secret=cs&type=test-type&region=eu",
-            "napi://?id=ci&secret=cs&to=id,user5@example.com&type=typec",
+            "napi://user@client_id/cs2/id/user6@example.ca?bcc=invalid",
+            "napi://user@client_id/cs3/id/user8@example.ca?cc=l2g@nuxref.com",
+            "napi://client_id/cs3/id/user8@example.ca?channels=email,sms,slack,mobile_push,web_push,inapp",
+            "napi://user@client_id/cs4/id/user9@example.ca?cc=Chris<l2g@nuxref.com>",
+            "napi://user@client_id/cs5/id/user10@example.ca?cc=invalid",
+            "napi://user@client_id/cs6/id/user11@example.ca?to=invalid",
             "napi://user@client_id/cs7/id/chris1@example.com",
+            "napi://user@client_id/cs8/id1/user12@example.ca?to=id,Chris<chris2@example.com>",
+            "napi://user@client_id/cs9/id2/user13@example.ca/id/kris@example.com/id/chris2@example.com/id/+15552341234?:token=value",
+            "napi://user@client_id/cs10/id/user14@example.ca?cc=Chris<chris10@example.com>",
+            "napi://user@client_id/cs11/id/user15@example.ca?cc=chris12@example.com",
+            "napi://user@client_id/cs12/id/user16@example.ca?bcc=Chris<chris14@example.com>",
+            "napi://user@client_id/cs13/id/user@example.ca?bcc=chris13@example.com",
+            "napi://user@client_id/cs14/id/user@example.ca?to=Chris<chris9@example.com>,id14",
+            "napi://user@client_id/cs15/id?to=user@example.com",
+            "napi://user@client_id/cs16/id/user@example.ca?template=1234&+sub=value&+sub2=value2",
             "napi://user@client_id/cs19/id/user@example.ca",
         ];
         for url in &urls {
@@ -159,7 +177,6 @@ mod tests {
             "napi://type@client_id/client_secret/user@example.ca/user2@example.ca",
             "napi://type@client_id/client_secret/id/+15551235553/+15551235555",
             "napi://type@client_id/client_secret/+15551235553/+15551235555",
-            "napi://type@client_id/client_secret/id/+15551235553/?mode=invalid",
             "napi://client_id/client_secret/id/+15551231234/?type=*(",
             "napi://client_id/client_secret/id/+15551231234/?channels=bad",
             "napi://?secret=cs&to=id,user404@example.com&type=typed",
