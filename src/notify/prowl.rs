@@ -35,16 +35,84 @@ impl Notify for Prowl {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_invalid_urls() {
+    fn test_valid_urls() {
+        let a40 = "a".repeat(40);
+        let b40 = "b".repeat(40);
+        let w40 = "w".repeat(40);
         let urls = vec![
+            // API key + provider key
+            format!("prowl://{}/{}", a40, b40),
+            // API key only
+            format!("prowl://{}", a40),
+            // API key + priority
+            format!("prowl://{}?priority=high", a40),
+            // API key + invalid priority (defaults)
+            format!("prowl://{}?priority=invalid", a40),
+            // API key + empty priority
+            format!("prowl://{}?priority=", a40),
+            // API key with trailing slashes (empty provider key parts filtered)
+            format!("prowl://{}///", w40),
+            // API key + provider key
+            format!("prowl://{}/{}", a40, b40),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let short_key = format!("prowl://{}", "a".repeat(20));
+        let bad_provider = format!("prowl://{}/{}", "a".repeat(40), "b".repeat(20));
+        let urls: Vec<&str> = vec![
             "prowl://",
             "prowl://:@/",
+            &short_key,
+            &bad_provider,
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_basic_fields() {
+        let a40 = "a".repeat(40);
+        let url = format!("prowl://{}", a40);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+        let obj = Prowl::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, a40);
+        assert_eq!(obj.priority, 0);
+    }
+
+    #[test]
+    fn test_from_url_with_priority() {
+        let a40 = "a".repeat(40);
+        let url = format!("prowl://{}?priority=2", a40);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+        let obj = Prowl::from_url(&parsed).unwrap();
+        assert_eq!(obj.priority, 2);
+    }
+
+    #[test]
+    fn test_from_url_with_provider_key() {
+        let a40 = "a".repeat(40);
+        let b40 = "b".repeat(40);
+        let url = format!("prowl://{}/{}", a40, b40);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+        let obj = Prowl::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, a40);
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Prowl::static_details();
+        assert_eq!(details.service_name, "Prowl");
+        assert!(details.protocols.contains(&"prowl"));
+        assert_eq!(details.service_url, Some("https://www.prowlapp.com"));
     }
 }

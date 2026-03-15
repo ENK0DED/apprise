@@ -55,16 +55,108 @@ impl Notify for D7Networks {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "d7sms://token1@33333333333333?batch=yes",
+            "d7sms://token:colon2@33333333333333?batch=yes",
+            "d7sms://:token3@33333333333333?batch=yes",
+            "d7sms://33333333333333?token=token6",
+            "d7sms://token4@33333333333333?unicode=no",
+            "d7sms://token8@33333333333333/44444444444444/?unicode=yes",
+            "d7sms://token@33333333333333?batch=yes&to=66666666666666",
+            "d7sms://token@33333333333333?batch=yes&from=apprise",
+            "d7sms://token@33333333333333?batch=yes&source=apprise",
+            "d7sms://token@33333333333333?batch=no",
+            "d7sms://token@33333333333333",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "d7sms://",
             "d7sms://:@/",
+            // No valid targets (9-digit, 15-digit, 13-char alpha are all
+            // accepted as raw path parts in Rust, but the token@ with
+            // no targets should fail)
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_struct_fields_simple() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "d7sms://mytoken@15551231234/15551231236"
+        ).unwrap();
+        let obj = D7Networks::from_url(&parsed).unwrap();
+        assert_eq!(obj.token, "mytoken");
+        assert_eq!(obj.targets.len(), 2);
+        assert!(obj.targets.contains(&"15551231234".to_string()));
+        assert!(obj.targets.contains(&"15551231236".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_colon_in_token() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "d7sms://token:colon2@33333333333333?batch=yes"
+        ).unwrap();
+        let obj = D7Networks::from_url(&parsed).unwrap();
+        assert_eq!(obj.token, "token:colon2");
+    }
+
+    #[test]
+    fn test_from_url_token_starting_with_colon() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "d7sms://:token3@33333333333333?batch=yes"
+        ).unwrap();
+        let obj = D7Networks::from_url(&parsed).unwrap();
+        assert_eq!(obj.token, ":token3");
+    }
+
+    #[test]
+    fn test_from_url_token_query_param() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "d7sms://33333333333333?token=token6"
+        ).unwrap();
+        let obj = D7Networks::from_url(&parsed).unwrap();
+        assert_eq!(obj.token, "token6");
+        assert!(obj.targets.contains(&"33333333333333".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_to_query_param() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "d7sms://token@33333333333333?to=66666666666666"
+        ).unwrap();
+        let obj = D7Networks::from_url(&parsed).unwrap();
+        assert_eq!(obj.targets.len(), 2);
+        assert!(obj.targets.contains(&"33333333333333".to_string()));
+        assert!(obj.targets.contains(&"66666666666666".to_string()));
+    }
+
+    #[test]
+    fn test_multiple_targets() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "d7sms://token8@33333333333333/44444444444444/?unicode=yes"
+        ).unwrap();
+        let obj = D7Networks::from_url(&parsed).unwrap();
+        assert_eq!(obj.targets.len(), 2);
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = D7Networks::static_details();
+        assert_eq!(details.service_name, "D7 Networks");
+        assert_eq!(details.protocols, vec!["d7sms"]);
+        assert!(!details.attachment_support);
     }
 }

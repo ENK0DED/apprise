@@ -48,7 +48,11 @@ impl Notify for Nextcloud {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::notify::NotifyContext;
+    use wiremock::matchers::{method, path, header};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_valid_urls() {
@@ -88,5 +92,190 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    /// Build a Nextcloud instance pointing at the mock server.
+    fn nextcloud_for_mock(server: &MockServer, user: &str, pass: &str, targets: &[&str]) -> Nextcloud {
+        let addr = server.address();
+        let target_path = targets.iter().map(|t| format!("/{}", t)).collect::<String>();
+        let url_str = format!(
+            "ncloud://{}:{}@{}:{}{}",
+            user, pass, addr.ip(), addr.port(), target_path
+        );
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        Nextcloud::from_url(&parsed).unwrap()
+    }
+
+    fn default_ctx() -> NotifyContext {
+        NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_single_target_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/notifications/api/v2/admin_notifications/admin"))
+            .and(header("User-Agent", APP_ID))
+            .and(header("OCS-APIREQUEST", "true"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let nc = nextcloud_for_mock(&server, "user", "pass", &["admin"]);
+        let result = nc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_with_basic_auth() {
+        let server = MockServer::start().await;
+
+        // base64("myuser:mypass") = "bXl1c2VyOm15cGFzcw=="
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/notifications/api/v2/admin_notifications/target1"))
+            .and(header("Authorization", "Basic bXl1c2VyOm15cGFzcw=="))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let nc = nextcloud_for_mock(&server, "myuser", "mypass", &["target1"]);
+        let result = nc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_multiple_targets() {
+        let server = MockServer::start().await;
+
+        // Each target should get its own POST request
+        for target in &["user1", "user2", "user3"] {
+            let p = format!("/ocs/v2.php/apps/notifications/api/v2/admin_notifications/{}", target);
+            Mock::given(method("POST"))
+                .and(path(p))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .named(&format!("target {}", target))
+                .mount(&server)
+                .await;
+        }
+
+        let nc = nextcloud_for_mock(&server, "user", "pass", &["user1", "user2", "user3"]);
+        let result = nc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_error_500_returns_false() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/notifications/api/v2/admin_notifications/admin"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let nc = nextcloud_for_mock(&server, "user", "pass", &["admin"]);
+        let result = nc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_send_multiple_targets_one_fails() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/notifications/api/v2/admin_notifications/good"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .named("good target")
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/notifications/api/v2/admin_notifications/bad"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .named("bad target")
+            .mount(&server)
+            .await;
+
+        let nc = nextcloud_for_mock(&server, "user", "pass", &["good", "bad"]);
+        let result = nc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_send_no_targets_returns_true() {
+        // With no targets, the loop body never executes, so all_ok stays true
+        let server = MockServer::start().await;
+        let addr = server.address();
+        let url_str = format!("ncloud://{}:{}", addr.ip(), addr.port());
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let nc = Nextcloud::from_url(&parsed).unwrap();
+
+        let result = nc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_connection_failure() {
+        // Point at a port nothing listens on
+        let url_str = "ncloud://user:pass@127.0.0.1:1/admin";
+        let parsed = crate::utils::parse::ParsedUrl::parse(url_str).unwrap();
+        let nc = Nextcloud::from_url(&parsed).unwrap();
+
+        let result = nc.send(&default_ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_send_form_params() {
+        // Verify the form body contains shortMessage and longMessage
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/notifications/api/v2/admin_notifications/user1"))
+            .and(wiremock::matchers::body_string_contains("shortMessage=Test+Title"))
+            .and(wiremock::matchers::body_string_contains("longMessage=Test+Body"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let nc = nextcloud_for_mock(&server, "user", "pass", &["user1"]);
+        let result = nc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_bizarre_status_code() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/notifications/api/v2/admin_notifications/admin"))
+            .respond_with(ResponseTemplate::new(418))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let nc = nextcloud_for_mock(&server, "user", "pass", &["admin"]);
+        let result = nc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
     }
 }

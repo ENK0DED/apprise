@@ -45,12 +45,19 @@ impl Notify for DingTalk {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
     fn test_valid_urls() {
         let urls = vec![
             "dingtalk://12345678",
+            "dingtalk://aaaaaaaa/11111111111111",
+            "dingtalk://aaaaaaaa/111/invalid",
+            "dingtalk://aaaaaaaa/?to=11111111111111",
+            "dingtalk://secret@aaaaaaaa/?to=11111111111111",
+            "dingtalk://?token=bbbbbbbb&to=11111111111111&secret=aaaaaaaaaaaaaaa",
+            "dingtalk://aaaaaaaa?format=markdown",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -62,9 +69,42 @@ mod tests {
         let urls = vec![
             "dingtalk://",
             "dingtalk://a_bd_/",
+            // Invalid secret (underscore)
+            "dingtalk://aaaaaaaa/?to=11111111111111&secret=_",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    fn parse_dingtalk(url: &str) -> DingTalk {
+        let parsed = crate::utils::parse::ParsedUrl::parse(url).unwrap();
+        DingTalk::from_url(&parsed).unwrap()
+    }
+
+    #[test]
+    fn test_from_url_token_from_host() {
+        let d = parse_dingtalk("dingtalk://12345678");
+        assert_eq!(d.token, "12345678");
+    }
+
+    #[test]
+    fn test_from_url_token_from_query() {
+        let d = parse_dingtalk("dingtalk://?token=bbbbbbbb&to=11111111111111");
+        assert_eq!(d.token, "bbbbbbbb");
+    }
+
+    #[test]
+    fn test_from_url_secret_in_user_field() {
+        let d = parse_dingtalk("dingtalk://secret@aaaaaaaa");
+        assert_eq!(d.token, "aaaaaaaa");
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = DingTalk::static_details();
+        assert_eq!(details.service_name, "DingTalk");
+        assert_eq!(details.protocols, vec!["dingtalk"]);
+        assert!(!details.attachment_support);
     }
 }

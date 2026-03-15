@@ -70,6 +70,7 @@ impl Notify for Sns {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -97,5 +98,69 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_path_form_fields() {
+        // sns://ACCESS_KEY/SECRET_KEY/REGION/TARGET
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sns://AHIAJGNT76XIMXDBIJYA/bu1dHSdO22pfaaVy/us-east-2/12223334444"
+        ).unwrap();
+        let sns = Sns::from_url(&parsed).unwrap();
+        assert_eq!(sns.access_key, "AHIAJGNT76XIMXDBIJYA");
+        assert_eq!(sns.secret_key, "bu1dHSdO22pfaaVy");
+        assert_eq!(sns.region, "us-east-2");
+        assert_eq!(sns.targets.len(), 1);
+        assert!(sns.targets.contains(&"12223334444".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_query_form_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sns://?access=MYKEY&secret=MYSECRET&region=us-west-2&to=12223334444"
+        ).unwrap();
+        let sns = Sns::from_url(&parsed).unwrap();
+        assert_eq!(sns.access_key, "MYKEY");
+        assert_eq!(sns.secret_key, "MYSECRET");
+        assert_eq!(sns.region, "us-west-2");
+        assert_eq!(sns.targets, vec!["12223334444"]);
+    }
+
+    #[test]
+    fn test_from_url_multiple_targets() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sns://T1JJ3TD4JD/TIiajkdnlazk7FQ/us-west-2/12223334444/12223334445"
+        ).unwrap();
+        let sns = Sns::from_url(&parsed).unwrap();
+        assert_eq!(sns.targets.len(), 2);
+        assert!(sns.targets.contains(&"12223334444".to_string()));
+        assert!(sns.targets.contains(&"12223334445".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_with_to_param() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sns://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/us-east-1?to=12223334444"
+        ).unwrap();
+        let sns = Sns::from_url(&parsed).unwrap();
+        assert!(sns.targets.contains(&"12223334444".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_no_recipients() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sns://AHIAJGNT76XIMXDBIJYA/bu1dHSdO22pfaaVy/us-east-2/"
+        ).unwrap();
+        let sns = Sns::from_url(&parsed).unwrap();
+        assert!(sns.targets.is_empty());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Sns::static_details();
+        assert_eq!(details.service_name, "AWS SNS");
+        assert_eq!(details.service_url, Some("https://aws.amazon.com/sns/"));
+        assert!(details.protocols.contains(&"sns"));
+        assert!(!details.attachment_support);
     }
 }

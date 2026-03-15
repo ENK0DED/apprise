@@ -85,16 +85,92 @@ impl Notify for Mailgun {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+    use super::*;
 
     #[test]
     fn test_invalid_urls() {
-        let urls = vec![
+        let no_user = format!("mailgun://localhost.localdomain/{}-{}-{}", "a".repeat(32), "b".repeat(8), "c".repeat(8));
+        let bad_from = format!("mailgun://\"@localhost.localdomain/{}-{}-{}", "a".repeat(32), "b".repeat(8), "c".repeat(8));
+        let bad_region = format!("mailgun://user@localhost.localdomain/{}-{}-{}?region=invalid", "a".repeat(32), "b".repeat(8), "c".repeat(8));
+        let urls: Vec<&str> = vec![
             "mailgun://",
             "mailgun://:@/",
             "mailgun://user@localhost.localdomain",
+            // Token valid but no user
+            &no_user,
+            // Invalid from email (quote in user)
+            &bad_from,
+            // Invalid region
+            &bad_region,
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let token = format!("{}-{}-{}", "a".repeat(32), "b".repeat(8), "c".repeat(8));
+        let urls = vec![
+            format!("mailgun://user@localhost.localdomain/{}", token),
+            format!("mailgun://user@localhost.localdomain/{}?format=markdown", token),
+            format!("mailgun://user@localhost.localdomain/{}?format=html", token),
+            format!("mailgun://user@localhost.localdomain/{}?format=text", token),
+            format!("mailgun://user@localhost.localdomain/{}?region=uS", token),
+            format!("mailgun://user@localhost.localdomain/{}?region=EU", token),
+            format!("mailgun://user@localhost.localdomain/{}/test@example.com", token),
+            format!("mailgun://user@localhost.localdomain/{}?to=test@example.com", token),
+            format!("mailgun://user@localhost.localdomain/{}/test@example.com?name=\"Frodo\"", token),
+            format!("mailgun://user@example.com/{}/user1@example.com?bcc=user3@example.com&cc=user4@example.com", token),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let url_str = format!(
+            "mailgun://user@localhost.localdomain/{}-{}-{}/test@example.com?region=eu&cc=cc@example.com&bcc=bcc@example.com",
+            "a".repeat(32), "b".repeat(8), "c".repeat(8)
+        );
+        let parsed = ParsedUrl::parse(&url_str).expect("parse");
+        let mg = Mailgun::from_url(&parsed).expect("from_url");
+        assert_eq!(mg.domain, "localhost.localdomain");
+        assert_eq!(mg.from, "user@localhost.localdomain");
+        assert_eq!(mg.region, "eu");
+        assert_eq!(mg.to, vec!["test@example.com"]);
+        assert_eq!(mg.cc, vec!["cc@example.com"]);
+        assert_eq!(mg.bcc, vec!["bcc@example.com"]);
+    }
+
+    #[test]
+    fn test_us_region_api_endpoint() {
+        let url_str = format!(
+            "mailgun://user@example.com/{}-{}-{}?region=us",
+            "a".repeat(32), "b".repeat(8), "c".repeat(8)
+        );
+        let parsed = ParsedUrl::parse(&url_str).expect("parse");
+        let mg = Mailgun::from_url(&parsed).expect("from_url");
+        assert_eq!(mg.region.to_lowercase(), "us");
+    }
+
+    #[test]
+    fn test_eu_region_api_endpoint() {
+        let url_str = format!(
+            "mailgun://user@example.com/{}-{}-{}?region=EU",
+            "a".repeat(32), "b".repeat(8), "c".repeat(8)
+        );
+        let parsed = ParsedUrl::parse(&url_str).expect("parse");
+        let mg = Mailgun::from_url(&parsed).expect("from_url");
+        assert_eq!(mg.region.to_lowercase(), "eu");
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Mailgun::static_details();
+        assert_eq!(details.service_name, "Mailgun");
+        assert!(details.protocols.contains(&"mailgun"));
+        assert!(details.attachment_support);
     }
 }

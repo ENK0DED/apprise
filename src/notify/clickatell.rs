@@ -43,7 +43,26 @@ impl Notify for Clickatell {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "clickatell://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+            "clickatell://1111111111@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+            "clickatell://1111111111@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/123/333333333333333/abcd",
+            "clickatell://1111111111/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "clickatell://1111111111@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1111111111",
+            "clickatell://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1111111111",
+            "clickatell://_?apikey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&from=1111111111&to=1111111111,1111111111",
+            "clickatell://_?apikey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "clickatell://_?apikey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&from=1111111111",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
@@ -51,9 +70,53 @@ mod tests {
             "clickatell://",
             "clickatell:///",
             "clickatell://@/",
+            // no apikey (only 10-digit number as host, no path)
+            "clickatell://1111111111@/",
+            // invalid from/source (too short)
+            "clickatell://111@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_struct_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "clickatell://1111111111@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/2222222222"
+        ).unwrap();
+        let obj = Clickatell::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(obj.targets, vec!["2222222222"]);
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "clickatell://_?apikey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&from=1111111111&to=2222222222,3333333333"
+        ).unwrap();
+        let obj = Clickatell::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(obj.targets.len(), 2);
+        assert!(obj.targets.contains(&"2222222222".to_string()));
+        assert!(obj.targets.contains(&"3333333333".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_no_source() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "clickatell://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1111111111"
+        ).unwrap();
+        let obj = Clickatell::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(obj.targets, vec!["1111111111"]);
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Clickatell::static_details();
+        assert_eq!(details.service_name, "Clickatell");
+        assert_eq!(details.protocols, vec!["clickatell"]);
+        assert!(!details.attachment_support);
     }
 }

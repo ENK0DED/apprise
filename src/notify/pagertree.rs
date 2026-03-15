@@ -37,15 +37,72 @@ impl Notify for PagerTree {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_invalid_urls() {
+    fn test_valid_urls() {
         let urls = vec![
+            "pagertree://int_xxxxxxxxxxx",
+            "pagertree://int_xxxxxxxxxxx?integration=int_yyyyyyyyyy",
+            "pagertree://int_xxxxxxxxxxx?id=int_zzzzzzzzzz",
+            "pagertree://int_xxxxxxxxxxx?urgency=low",
+            "pagertree://?id=int_xxxxxxxxxxx&urgency=low",
+            "pagertree://int_xxxxxxxxxxx?tags=production,web",
+            "pagertree://int_xxxxxxxxxxx?action=resolve&thirdparty=123",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let plus_url = format!("pagertree://{}", "+".repeat(24));
+        let urls: Vec<&str> = vec![
             "pagertree://",
+            "pagertree://:@/",
+            // All plus signs (decoded to spaces)
+            &plus_url,
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_basic_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "pagertree://int_xxxxxxxxxxx",
+        ).unwrap();
+        let obj = PagerTree::from_url(&parsed).unwrap();
+        assert_eq!(obj.integration_id, "int_xxxxxxxxxxx");
+    }
+
+    #[test]
+    fn test_from_url_id_override() {
+        // id= query param overrides host
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "pagertree://int_xxxxxxxxxxx?id=int_zzzzzzzzzz",
+        ).unwrap();
+        let obj = PagerTree::from_url(&parsed).unwrap();
+        assert_eq!(obj.integration_id, "int_zzzzzzzzzz");
+    }
+
+    #[test]
+    fn test_from_url_integration_override() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "pagertree://int_xxxxxxxxxxx?integration=int_yyyyyyyyyy",
+        ).unwrap();
+        let obj = PagerTree::from_url(&parsed).unwrap();
+        assert_eq!(obj.integration_id, "int_yyyyyyyyyy");
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = PagerTree::static_details();
+        assert_eq!(details.service_name, "PagerTree");
+        assert!(details.protocols.contains(&"pagertree"));
+        assert_eq!(details.service_url, Some("https://pagertree.com"));
     }
 }

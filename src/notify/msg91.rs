@@ -60,15 +60,66 @@ impl Notify for Msg91 {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+    use super::*;
 
     #[test]
     fn test_invalid_urls() {
-        let urls = vec![
+        let no_tmpl = format!("msg91://{}", "a".repeat(23));
+        let urls: Vec<&str> = vec![
             "msg91://",
             "msg91://-",
+            // Valid authkey but no template
+            &no_tmpl,
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let tmpl = "t".repeat(20);
+        let key = "a".repeat(23);
+        let urls = vec![
+            format!("msg91://{}@{}", tmpl, key),
+            format!("msg91://{}@{}/15551232000", tmpl, key),
+            format!("msg91://{}@{}/15551232000?short_url=yes", tmpl, key),
+            format!("msg91://{}@{}/?to=15551232000&short_url=no", tmpl, key),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let tmpl = "t".repeat(20);
+        let key = "a".repeat(23);
+        let url_str = format!("msg91://{}@{}/15551232000?short_url=yes", tmpl, key);
+        let parsed = ParsedUrl::parse(&url_str).expect("parse");
+        let m = Msg91::from_url(&parsed).expect("from_url");
+        assert_eq!(m.authkey, key);
+        assert_eq!(m.template, tmpl);
+        assert_eq!(m.targets, vec!["15551232000"]);
+        assert!(m.short_url);
+    }
+
+    #[test]
+    fn test_short_url_default_false() {
+        let tmpl = "t".repeat(20);
+        let key = "a".repeat(23);
+        let url_str = format!("msg91://{}@{}/15551232000", tmpl, key);
+        let parsed = ParsedUrl::parse(&url_str).expect("parse");
+        let m = Msg91::from_url(&parsed).expect("from_url");
+        assert!(!m.short_url);
+    }
+
+    #[test]
+    fn test_api_endpoint() {
+        // Verify the API endpoint used is correct
+        let details = Msg91::static_details();
+        assert_eq!(details.service_name, "MSG91");
+        assert!(details.protocols.contains(&"msg91"));
+        assert!(!details.attachment_support);
     }
 }

@@ -39,15 +39,61 @@ impl Notify for PopcornNotify {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            format!("popcorn://{}/15551232000/user@example.com", "c".repeat(9)),
+            format!("popcorn://{}/15551232000/user@example.com?batch=yes", "w".repeat(9)),
+            format!("popcorn://{}/?to=15551232000", "w".repeat(9)),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
         let urls = vec![
-            "popcorn://",
+            "popcorn://".to_string(),
+            // invalid apikey (underscores only)
+            format!("popcorn://{}/18001231234", "_".repeat(9)),
+            // no targets
+            format!("popcorn://{}/", "a".repeat(9)),
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_basic_fields() {
+        let apikey = "c".repeat(9);
+        let url = format!("popcorn://{}/15551232000/user@example.com", apikey);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+        let obj = PopcornNotify::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, apikey);
+        assert_eq!(obj.targets.len(), 2);
+        assert!(obj.targets.contains(&"15551232000".to_string()));
+        assert!(obj.targets.contains(&"user@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_to_param() {
+        let apikey = "w".repeat(9);
+        let url = format!("popcorn://{}/?to=15551232000", apikey);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+        let obj = PopcornNotify::from_url(&parsed).unwrap();
+        assert!(obj.targets.contains(&"15551232000".to_string()));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = PopcornNotify::static_details();
+        assert_eq!(details.service_name, "Popcorn Notify");
+        assert!(details.protocols.contains(&"popcorn"));
+        assert_eq!(details.service_url, Some("https://popcornnotify.com"));
     }
 }

@@ -38,6 +38,7 @@ impl Notify for SpugPush {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -62,5 +63,49 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_host_form() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "spugpush://abc123def456ghi789jkl012mno345pq"
+        ).unwrap();
+        let sp = SpugPush::from_url(&parsed).unwrap();
+        assert_eq!(sp.token, "abc123def456ghi789jkl012mno345pq");
+    }
+
+    #[test]
+    fn test_from_url_token_param() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "spugpush://?token=abc123def456ghi789jkl012mno345pq"
+        ).unwrap();
+        let sp = SpugPush::from_url(&parsed).unwrap();
+        assert_eq!(sp.token, "abc123def456ghi789jkl012mno345pq");
+    }
+
+    #[test]
+    fn test_from_url_https_form() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "https://push.spug.dev/send/abc123def456ghi789jkl012mno345pq"
+        ).unwrap();
+        let sp = SpugPush::from_url(&parsed).unwrap();
+        assert_eq!(sp.token, "abc123def456ghi789jkl012mno345pq");
+    }
+
+    #[test]
+    fn test_rejects_exclamation_mark() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "spugpush://invalid!"
+        ).unwrap();
+        assert!(SpugPush::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = SpugPush::static_details();
+        assert_eq!(details.service_name, "SpugPush");
+        assert_eq!(details.service_url, Some("https://spug.cc"));
+        assert!(details.protocols.contains(&"spugpush"));
+        assert!(!details.attachment_support);
     }
 }

@@ -33,6 +33,7 @@ impl Notify for Signl4 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -62,5 +63,33 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_host_secret() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("signl4://mysecret/").unwrap();
+        let s = Signl4::from_url(&parsed).unwrap();
+        assert_eq!(s.secret, "mysecret");
+    }
+
+    #[test]
+    fn test_from_url_query_secret() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("signl4://?secret=mysecret").unwrap();
+        let s = Signl4::from_url(&parsed).unwrap();
+        assert_eq!(s.secret, "mysecret");
+    }
+
+    #[test]
+    fn test_whitespace_only_secret_rejected() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("signl4://%20%20/").unwrap();
+        assert!(Signl4::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let d = Signl4::static_details();
+        assert_eq!(d.service_name, "SIGNL4");
+        assert!(d.protocols.contains(&"signl4"));
+        assert!(!d.attachment_support);
     }
 }

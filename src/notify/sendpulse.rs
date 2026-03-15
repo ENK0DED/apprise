@@ -92,6 +92,7 @@ impl Notify for SendPulse {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -144,5 +145,56 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields_user_at_domain() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sendpulse://user@example.com/client_id/cs1/",
+        ).unwrap();
+        let sp = SendPulse::from_url(&parsed).unwrap();
+        assert_eq!(sp.client_id, "client_id");
+        assert_eq!(sp.client_secret, "cs1");
+        assert_eq!(sp.from_email, "user@example.com");
+        assert!(sp.to.is_empty());
+    }
+
+    #[test]
+    fn test_from_url_fields_with_targets() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sendpulse://user@example.com/client_id/cs7/chris@example.com",
+        ).unwrap();
+        let sp = SendPulse::from_url(&parsed).unwrap();
+        assert_eq!(sp.client_id, "client_id");
+        assert_eq!(sp.client_secret, "cs7");
+        assert!(sp.to.contains(&"chris@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_query_format() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sendpulse://?id=ci&secret=cs&user=chris@example.com",
+        ).unwrap();
+        let sp = SendPulse::from_url(&parsed).unwrap();
+        assert_eq!(sp.client_id, "ci");
+        assert_eq!(sp.client_secret, "cs");
+        assert!(sp.from_email.contains("chris@example.com"));
+    }
+
+    #[test]
+    fn test_from_url_client_id_host_format() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sendpulse://client_id/cs1/?user=chris@example.ca",
+        ).unwrap();
+        let sp = SendPulse::from_url(&parsed).unwrap();
+        assert!(sp.from_email.contains("chris@example.ca"));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let d = SendPulse::static_details();
+        assert_eq!(d.service_name, "SendPulse");
+        assert!(d.protocols.contains(&"sendpulse"));
+        assert!(d.attachment_support);
     }
 }

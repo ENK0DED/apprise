@@ -30,7 +30,21 @@ impl Notify for SimplePush {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            format!("spush://{}", "A".repeat(14)),
+            format!("spush://{}", "Y".repeat(14)),
+            format!("spush://{}?event=Not%20So%20Good", "X".repeat(14)),
+            format!("spush://salt:pass@{}", "X".repeat(14)),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
@@ -40,5 +54,42 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let apikey = "Y".repeat(14);
+        let url_str = format!("spush://{}", apikey);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let sp = SimplePush::from_url(&parsed).unwrap();
+        assert_eq!(sp.apikey, apikey);
+        assert!(sp.event.is_none());
+    }
+
+    #[test]
+    fn test_from_url_with_event() {
+        let apikey = "X".repeat(14);
+        let url_str = format!("spush://{}?event=MyEvent", apikey);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let sp = SimplePush::from_url(&parsed).unwrap();
+        assert_eq!(sp.apikey, apikey);
+        assert_eq!(sp.event.as_deref(), Some("MyEvent"));
+    }
+
+    #[test]
+    fn test_from_url_with_salt_and_password() {
+        let apikey = "X".repeat(14);
+        let url_str = format!("spush://salt:pass@{}", apikey);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let sp = SimplePush::from_url(&parsed).unwrap();
+        assert_eq!(sp.apikey, apikey);
+    }
+
+    #[test]
+    fn test_service_details() {
+        let d = SimplePush::static_details();
+        assert_eq!(d.service_name, "SimplePush");
+        assert!(d.protocols.contains(&"spush"));
+        assert!(!d.attachment_support);
     }
 }

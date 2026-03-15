@@ -97,7 +97,9 @@ impl Notify for Resend {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
 
     #[test]
     fn test_valid_urls() {
@@ -132,5 +134,71 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_basic_fields() {
+        let parsed = ParsedUrl::parse(
+            "resend://abcd:user@example.com/newuser1@example.com"
+        ).unwrap();
+        let r = Resend::from_url(&parsed).unwrap();
+        assert_eq!(r.apikey, "abcd");
+        assert_eq!(r.from_email, "user@example.com");
+        assert!(r.to.contains(&"newuser1@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_no_target_uses_from() {
+        let parsed = ParsedUrl::parse("resend://abcd:user@example.com").unwrap();
+        let r = Resend::from_url(&parsed).unwrap();
+        assert_eq!(r.apikey, "abcd");
+        assert_eq!(r.from_email, "user@example.com");
+    }
+
+    #[test]
+    fn test_from_url_apikey_param() {
+        let parsed = ParsedUrl::parse(
+            "resend://?apikey=abcd&from=Joe<user@example.com>&to=newuser5@example.com"
+        ).unwrap();
+        let r = Resend::from_url(&parsed).unwrap();
+        assert_eq!(r.apikey, "abcd");
+        assert!(r.to.contains(&"newuser5@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_cc_bcc() {
+        let parsed = ParsedUrl::parse(
+            "resend://abcd:user@example.com/target@example.com?cc=a@b.com&bcc=c@d.com"
+        ).unwrap();
+        let r = Resend::from_url(&parsed).unwrap();
+        assert!(r.cc.contains(&"a@b.com".to_string()));
+        assert!(r.bcc.contains(&"c@d.com".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_reply_to() {
+        let parsed = ParsedUrl::parse(
+            "resend://?apikey=abcd&from=user@example.com&reply=John<reply@example.com>"
+        ).unwrap();
+        let r = Resend::from_url(&parsed).unwrap();
+        assert!(r.reply_to.is_some());
+        assert!(r.reply_to.unwrap().contains("reply@example.com"));
+    }
+
+    #[test]
+    fn test_invalid_apikey_chars() {
+        let parsed = ParsedUrl::parse(
+            "resend://invalid-api-key+*-d:user@example.com"
+        ).unwrap();
+        assert!(Resend::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Resend::static_details();
+        assert_eq!(details.service_name, "Resend");
+        assert_eq!(details.service_url, Some("https://resend.com"));
+        assert!(details.protocols.contains(&"resend"));
+        assert!(details.attachment_support);
     }
 }

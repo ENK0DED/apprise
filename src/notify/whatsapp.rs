@@ -85,16 +85,116 @@ impl Notify for WhatsApp {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
     fn test_invalid_urls() {
-        let urls = vec![
-            "whatsapp://",
-            "whatsapp://:@/",
+        let urls: Vec<String> = vec![
+            "whatsapp://".into(),
+            "whatsapp://:@/".into(),
+            // Token but invalid from (_)
+            format!("whatsapp://{}@_", "a".repeat(32)),
+            // Invalid template (whitespace user)
+            format!("whatsapp://%20:{}@12345/{}", "e".repeat(32), "4".repeat(11)),
+            // Invalid lang (not XX_XX format)
+            format!("whatsapp://template:{}@12345/{}?lang=1234", "e".repeat(32), "4".repeat(11)),
+            // Invalid template param key
+            format!("whatsapp://template:{}@12345/{}?:invalid=23", "e".repeat(32), "4".repeat(11)),
+            // Empty body assignment
+            format!("whatsapp://template:{}@12345/{}?:body=", "e".repeat(32), "4".repeat(11)),
+            // Duplicate param index
+            format!("whatsapp://template:{}@12345/{}?:1=Test&:body=1", "e".repeat(32), "4".repeat(11)),
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls: Vec<String> = vec![
+            // Token and from, no targets (valid instance, send would fail)
+            format!("whatsapp://{}@{}", "b".repeat(32), 10u64.pow(9)),
+            // Simple message
+            format!("whatsapp://{}@12345/{}", "e".repeat(32), "4".repeat(11)),
+            // Template prefix
+            format!("whatsapp://template:{}@12345/{}", "e".repeat(32), "4".repeat(11)),
+            // Template with lang
+            format!("whatsapp://template:{}@12345/{}?lang=fr_CA", "e".repeat(32), "4".repeat(11)),
+            // Template kwarg via query
+            format!("whatsapp://{}@12345/{}?template=template&lang=fr_CA", "e".repeat(32), "4".repeat(11)),
+            // Template with param assignments
+            format!("whatsapp://template:{}@12345/{}?:1=test&:body=3&:type=2",
+                "e".repeat(32), "4".repeat(11)),
+            // Password form (token:password@host)
+            format!("whatsapp://{}:{}@123456/{}", "a".repeat(32), "b".repeat(32), "4".repeat(11)),
+            // Query param form
+            format!("whatsapp://_?token={}&from={}&to={}",
+                "d".repeat(32), "5".repeat(11), "6".repeat(11)),
+            // source= alias
+            format!("whatsapp://_?token={}&source={}&to={}",
+                "d".repeat(32), "5".repeat(11), "6".repeat(11)),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_token_at_form() {
+        // whatsapp://token@phone_id/target
+        let token = "e".repeat(32);
+        let parsed = ParsedUrl::parse(
+            &format!("whatsapp://{}@12345/{}", token, "4".repeat(11))
+        ).unwrap();
+        let w = WhatsApp::from_url(&parsed).unwrap();
+        assert_eq!(w.token, token);
+        assert_eq!(w.phone_id, "12345");
+        assert_eq!(w.targets.len(), 1);
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let token = "d".repeat(32);
+        let from = "5".repeat(11);
+        let to = "6".repeat(11);
+        let parsed = ParsedUrl::parse(
+            &format!("whatsapp://_?token={}&from={}&to={}", token, from, to)
+        ).unwrap();
+        let w = WhatsApp::from_url(&parsed).unwrap();
+        assert_eq!(w.token, token);
+        assert_eq!(w.phone_id, from);
+        assert!(w.targets.contains(&to));
+    }
+
+    #[test]
+    fn test_from_url_password_form() {
+        let user = "a".repeat(32);
+        let password = "b".repeat(32);
+        let parsed = ParsedUrl::parse(
+            &format!("whatsapp://{}:{}@123456/{}", user, password, "4".repeat(11))
+        ).unwrap();
+        let w = WhatsApp::from_url(&parsed).unwrap();
+        assert_eq!(w.phone_id, "123456");
+    }
+
+    #[test]
+    fn test_from_url_template_with_lang() {
+        let token = "e".repeat(32);
+        let parsed = ParsedUrl::parse(
+            &format!("whatsapp://template:{}@12345/{}?lang=fr_CA", token, "4".repeat(11))
+        ).unwrap();
+        let w = WhatsApp::from_url(&parsed);
+        assert!(w.is_some());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = WhatsApp::static_details();
+        assert_eq!(details.service_name, "WhatsApp");
+        assert_eq!(details.service_url, Some("https://www.whatsapp.com"));
+        assert!(details.protocols.contains(&"whatsapp"));
+        assert!(!details.attachment_support);
     }
 }

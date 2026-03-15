@@ -82,4 +82,57 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_mqtt_default_port() {
+        let parsed = ParsedUrl::parse("mqtt://localhost").unwrap();
+        let m = Mqtt::from_url(&parsed).unwrap();
+        assert_eq!(m.host, "localhost");
+        assert_eq!(m.port, 1883);
+    }
+
+    #[test]
+    fn test_mqtt_custom_port() {
+        let parsed = ParsedUrl::parse("mqtt://localhost:1234").unwrap();
+        let m = Mqtt::from_url(&parsed).unwrap();
+        assert_eq!(m.port, 1234);
+    }
+
+    #[test]
+    fn test_mqtt_topic_from_path() {
+        let parsed = ParsedUrl::parse("mqtt://localhost/my_topic").unwrap();
+        let m = Mqtt::from_url(&parsed).unwrap();
+        assert_eq!(m.topic, "my_topic");
+    }
+
+    #[test]
+    fn test_mqtt_default_topic() {
+        let parsed = ParsedUrl::parse("mqtt://localhost").unwrap();
+        let m = Mqtt::from_url(&parsed).unwrap();
+        assert_eq!(m.topic, "apprise");
+    }
+
+    #[test]
+    fn test_mqtt_user_password() {
+        let parsed = ParsedUrl::parse("mqtt://myuser:mypass@localhost/topic").unwrap();
+        let m = Mqtt::from_url(&parsed).unwrap();
+        assert_eq!(m.user.as_deref(), Some("myuser"));
+        assert_eq!(m.password.as_deref(), Some("mypass"));
+    }
+
+    #[test]
+    fn test_mqtt_no_auth() {
+        let parsed = ParsedUrl::parse("mqtt://localhost/topic").unwrap();
+        let m = Mqtt::from_url(&parsed).unwrap();
+        assert!(m.user.is_none());
+        assert!(m.password.is_none());
+    }
+
+    #[test]
+    fn test_mqtt_static_details() {
+        let details = Mqtt::static_details();
+        assert_eq!(details.service_name, "MQTT");
+        assert_eq!(details.protocols, vec!["mqtt", "mqtts"]);
+        assert!(!details.attachment_support);
+    }
 }

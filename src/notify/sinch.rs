@@ -54,16 +54,111 @@ impl Notify for Sinch {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_invalid_urls() {
+    fn test_valid_urls() {
+        let spi = "a".repeat(32);
+        let token = "b".repeat(32);
         let urls = vec![
-            "sinch://",
-            "sinch://:@/",
+            format!("sinch://{}:{}@{}", spi, token, "3".repeat(5)),
+            format!("sinch://{}:{}@{}/123/{}/abcd/", spi, token, "3".repeat(11), "9".repeat(15)),
+            format!("sinch://{}:{}@12345/{}", spi, token, "4".repeat(11)),
+            format!("sinch://{}:{}@123456/{}", spi, token, "4".repeat(11)),
+            format!("sinch://{}:{}@{}", spi, token, "5".repeat(11)),
+            format!("sinch://{}:{}@{}?region=eu", spi, token, "5".repeat(11)),
+            format!("sinch://_?spi={}&token={}&from={}", spi, token, "5".repeat(11)),
+            format!("sinch://_?spi={}&token={}&source={}", spi, token, "5".repeat(11)),
+            format!("sinch://_?spi={}&token={}&from={}&to={}", spi, token, "5".repeat(11), "7".repeat(13)),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let spi = "a".repeat(32);
+        let token = "b".repeat(32);
+        let urls = vec![
+            "sinch://".to_string(),
+            "sinch://:@/".to_string(),
+            format!("sinch://{}@12345678", spi),
+            format!("sinch://{}:{}@_", spi, token),
+            format!("sinch://{}:{}@{}", spi, token, "3".repeat(9)),
+            format!("sinch://{}:{}@{}?region=invalid", spi, token, "5".repeat(11)),
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields_basic() {
+        let spi = "a".repeat(32);
+        let token = "b".repeat(32);
+        let from_phone = "5".repeat(11);
+        let url_str = format!("sinch://{}:{}@{}", spi, token, from_phone);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let s = Sinch::from_url(&parsed).unwrap();
+        assert_eq!(s.service_plan_id, spi);
+        assert_eq!(s.api_token, token);
+        assert_eq!(s.from_phone, from_phone);
+        assert_eq!(s.region, "us"); // default
+    }
+
+    #[test]
+    fn test_from_url_shortcode() {
+        let spi = "a".repeat(32);
+        let token = "b".repeat(32);
+        let target = "4".repeat(11);
+        let url_str = format!("sinch://{}:{}@12345/{}", spi, token, target);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let s = Sinch::from_url(&parsed).unwrap();
+        assert_eq!(s.from_phone, "12345");
+        assert!(s.targets.contains(&target));
+    }
+
+    #[test]
+    fn test_from_url_eu_region() {
+        let spi = "a".repeat(32);
+        let token = "b".repeat(32);
+        let url_str = format!("sinch://{}:{}@{}?region=eu", spi, token, "5".repeat(11));
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let s = Sinch::from_url(&parsed).unwrap();
+        assert_eq!(s.region, "eu");
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let spi = "a".repeat(32);
+        let token = "b".repeat(32);
+        let from = "5".repeat(11);
+        let to = "7".repeat(13);
+        let url_str = format!("sinch://_?spi={}&token={}&from={}&to={}", spi, token, from, to);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let s = Sinch::from_url(&parsed).unwrap();
+        assert_eq!(s.service_plan_id, spi);
+        assert_eq!(s.api_token, token);
+        assert_eq!(s.from_phone, from);
+        assert!(s.targets.contains(&to));
+    }
+
+    #[test]
+    fn test_invalid_region() {
+        let spi = "a".repeat(32);
+        let token = "b".repeat(32);
+        let url_str = format!("sinch://{}:{}@{}?region=invalid", spi, token, "5".repeat(11));
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        assert!(Sinch::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let d = Sinch::static_details();
+        assert_eq!(d.service_name, "Sinch");
+        assert!(d.protocols.contains(&"sinch"));
+        assert!(!d.attachment_support);
     }
 }

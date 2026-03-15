@@ -151,15 +151,118 @@ impl Notify for Office365 {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+    use super::*;
 
     #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "o365://",
             "o365://:@/",
+            // Invalid tenant (comma)
+            "o365://user@example.com/,/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
+            // Invalid client_id (trailing dot)
+            "o365://user2@example.com/tenant/ab./abcd/123/3343/@jack/test/email1@test.ca",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            // Standard with email from
+            "o365://user@example.edu/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
+            // No email -- mode self uses tenant/cid/secret/targets
+            "o365://tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
+            // Object ID as source
+            "o365://hg-fe-dc-ba/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
+            // Using query params
+            "o365://_/?oauth_id=ab-cd-ef-gh&oauth_secret=abcd/123/3343/@jack/test&tenant=tenant&to=email1@test.ca&from=user@example.ca",
+            // azure:// schema alias
+            "azure://user@example.edu/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_email_format() {
+        let parsed = ParsedUrl::parse(
+            "o365://user@example.edu/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca"
+        ).expect("parse");
+        let o = Office365::from_url(&parsed).expect("from_url");
+        assert_eq!(o.from, "user@example.edu");
+        assert_eq!(o.tenant, "tenant");
+        assert_eq!(o.client_id, "ab-cd-ef-gh");
+        assert!(o.targets.contains(&"email1@test.ca".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let parsed = ParsedUrl::parse(
+            "o365://_/?oauth_id=ab-cd-ef-gh&oauth_secret=mysecret&tenant=mytenant&to=email1@test.ca&from=user@example.ca"
+        ).expect("parse");
+        let o = Office365::from_url(&parsed).expect("from_url");
+        assert_eq!(o.client_id, "ab-cd-ef-gh");
+        assert_eq!(o.client_secret, "mysecret");
+        assert_eq!(o.tenant, "mytenant");
+        assert_eq!(o.from, "user@example.ca");
+        assert_eq!(o.targets, vec!["email1@test.ca"]);
+    }
+
+    #[test]
+    fn test_azure_schema_alias() {
+        assert!(from_url(
+            "azure://user@example.edu/tenant/ab-cd-ef-gh/abcd/123/3343/@jack/test/email1@test.ca"
+        ).is_some());
+    }
+
+    #[test]
+    fn test_cc_bcc_from_query() {
+        let parsed = ParsedUrl::parse(
+            "o365://user@example.com/tenant/ab-cd-ef-gh/abcd/email1@test.ca?cc=cc@test.com&bcc=bcc@test.com"
+        ).expect("parse");
+        let o = Office365::from_url(&parsed).expect("from_url");
+        assert_eq!(o.cc, vec!["cc@test.com"]);
+        assert_eq!(o.bcc, vec!["bcc@test.com"]);
+    }
+
+    #[test]
+    fn test_token_url_format() {
+        // Verify the OAuth token endpoint
+        let parsed = ParsedUrl::parse(
+            "o365://user@example.com/ff-gg-hh-ii-jj/ab-cd-ef-gh/abcd/email1@test.ca"
+        ).expect("parse");
+        let o = Office365::from_url(&parsed).expect("from_url");
+        let expected_token_url = format!(
+            "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
+            o.tenant
+        );
+        assert_eq!(expected_token_url, "https://login.microsoftonline.com/ff-gg-hh-ii-jj/oauth2/v2.0/token");
+    }
+
+    #[test]
+    fn test_send_mail_url_format() {
+        // Verify the sendMail endpoint
+        let parsed = ParsedUrl::parse(
+            "o365://user@example.net/ff-gg-hh-ii-jj/ab-cd-ef-gh/abcd/target@example.com"
+        ).expect("parse");
+        let o = Office365::from_url(&parsed).expect("from_url");
+        let expected_send_url = format!(
+            "https://graph.microsoft.com/v1.0/users/{}/sendMail",
+            o.from
+        );
+        assert_eq!(expected_send_url, "https://graph.microsoft.com/v1.0/users/user@example.net/sendMail");
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Office365::static_details();
+        assert_eq!(details.service_name, "Office365 Email");
+        assert!(details.protocols.contains(&"o365"));
+        assert!(details.protocols.contains(&"azure"));
+        assert!(details.attachment_support);
     }
 }

@@ -101,20 +101,40 @@ mod tests {
     use super::*;
     use crate::utils::parse::ParsedUrl;
 
+    fn parse_growl(url: &str) -> Option<Growl> {
+        ParsedUrl::parse(url).and_then(|p| Growl::from_url(&p))
+    }
+
     #[test]
     fn test_valid_urls() {
         let valid_urls = vec![
+            "growl://pass@growl.server",
+            "growl://ignored:pass@growl.server",
+            "growl://growl.server",
+            "growl://growl.server?version=1",
+            "growl://growl.server?sticky=yes",
+            "growl://growl.server?sticky=no",
+            "growl://growl.server?version=2",
+            "growl://pass@growl.server?priority=low",
+            "growl://pass@growl.server?priority=moderate",
+            "growl://pass@growl.server?priority=normal",
+            "growl://pass@growl.server?priority=high",
+            "growl://pass@growl.server?priority=emergency",
+            "growl://pass@growl.server?priority=invalid",
+            "growl://pass@growl.server?priority=",
+            "growl://growl.server?version=",
+            "growl://growl.server?version=crap",
+            "growl://growl.changeport:2000",
+            "growl://growl.garbageport:garbage",
+            "growl://growl.colon:",
             "growl://localhost",
             "growl://192.168.1.1",
             "growl://user:pass@localhost",
             "growl://localhost:23053",
         ];
         for url in &valid_urls {
-            let parsed = ParsedUrl::parse(url);
-            assert!(parsed.is_some(), "ParsedUrl::parse failed for: {}", url);
-            let parsed = parsed.unwrap();
             assert!(
-                Growl::from_url(&parsed).is_some(),
+                parse_growl(url).is_some(),
                 "Growl::from_url returned None for valid URL: {}",
                 url,
             );
@@ -125,15 +145,73 @@ mod tests {
     fn test_invalid_urls() {
         let invalid_urls = vec![
             "growl://",
+            "growl://:@/",
         ];
         for url in &invalid_urls {
-            let result = ParsedUrl::parse(url)
-                .and_then(|p| Growl::from_url(&p));
             assert!(
-                result.is_none(),
+                parse_growl(url).is_none(),
                 "Growl::from_url should return None for: {}",
                 url,
             );
         }
+    }
+
+    #[test]
+    fn test_default_port() {
+        let g = parse_growl("growl://growl.server").unwrap();
+        assert_eq!(g.host, "growl.server");
+        assert_eq!(g.port, 23053);
+        assert!(g.password.is_none());
+    }
+
+    #[test]
+    fn test_custom_port() {
+        let g = parse_growl("growl://growl.changeport:2000").unwrap();
+        assert_eq!(g.host, "growl.changeport");
+        assert_eq!(g.port, 2000);
+    }
+
+    #[test]
+    fn test_password_from_url() {
+        // growl://user:pass@host -- password is in the password field
+        let g = parse_growl("growl://ignored:pass@growl.server").unwrap();
+        assert_eq!(g.password.as_deref(), Some("pass"));
+    }
+
+    #[test]
+    fn test_user_only_no_password() {
+        // growl://pass@host -- "pass" is the user field, password is None
+        let g = parse_growl("growl://pass@growl.server").unwrap();
+        assert!(g.password.is_none());
+    }
+
+    #[test]
+    fn test_no_password() {
+        let g = parse_growl("growl://growl.server").unwrap();
+        assert!(g.password.is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Growl::static_details();
+        assert_eq!(details.service_name, "Growl");
+        assert_eq!(details.protocols, vec!["growl"]);
+        assert!(!details.attachment_support);
+    }
+
+    #[test]
+    fn test_gntp_auth_header_no_password() {
+        let g = parse_growl("growl://growl.server").unwrap();
+        assert_eq!(g.gntp_auth_header(), "NONE");
+    }
+
+    #[test]
+    fn test_gntp_auth_header_with_password() {
+        // Use user:pass form so password is set
+        let g = parse_growl("growl://user:mypass@growl.server").unwrap();
+        let header = g.gntp_auth_header();
+        assert!(header.starts_with("SHA256:"), "Expected SHA256 auth header, got: {}", header);
+        // Should contain hex(key_hash).hex(salt)
+        assert!(header.contains('.'), "Auth header should have dot separator");
     }
 }

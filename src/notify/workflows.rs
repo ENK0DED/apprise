@@ -77,4 +77,119 @@ mod tests {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
     }
+
+    // ── Behavioral tests using wiremock ──────────────────────────────────
+
+    use super::*;
+    use crate::asset::AppriseAsset;
+    use crate::notify::{Notify, NotifyContext};
+    use crate::types::{NotifyFormat, NotifyType};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn ctx(title: &str, body: &str) -> NotifyContext {
+        NotifyContext {
+            body: body.to_string(),
+            title: title.to_string(),
+            notify_type: NotifyType::Info,
+            body_format: NotifyFormat::Text,
+            attachments: vec![],
+            interpret_escapes: false,
+            interpret_emojis: false,
+            tags: vec![],
+            asset: AppriseAsset::default(),
+        }
+    }
+
+    fn make_workflows(server: &MockServer) -> Workflows {
+        let addr = server.address();
+        let base = format!("http://127.0.0.1:{}", addr.port());
+        Workflows {
+            workflow_url: format!("{}/workflows/wf1/triggers/manual/paths/invoke", base),
+            verify_certificate: false,
+            tags: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_workflows_basic_send_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/workflows/wf1/triggers/manual/paths/invoke"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let wf = make_workflows(&server);
+        let result = wf.send(&ctx("title", "body")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap(), "Workflows POST should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_workflows_http_500_returns_false() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/workflows/wf1/triggers/manual/paths/invoke"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("error"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let wf = make_workflows(&server);
+        let result = wf.send(&ctx("title", "body")).await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap(), "HTTP 500 should return false");
+    }
+
+    #[tokio::test]
+    async fn test_workflows_connection_refused_returns_error() {
+        let wf = Workflows {
+            workflow_url: "http://127.0.0.1:19999/workflows/wf1/invoke".to_string(),
+            verify_certificate: false,
+            tags: vec![],
+        };
+        let result = wf.send(&ctx("title", "body")).await;
+        assert!(result.is_err(), "Connection refused should return Err");
+    }
+
+    #[tokio::test]
+    async fn test_workflows_payload_contains_title_and_body() {
+        use wiremock::matchers::body_json;
+        let server = MockServer::start().await;
+        let expected = serde_json::json!({
+            "title": "test title",
+            "text": "test body",
+            "type": "info",
+        });
+        Mock::given(method("POST"))
+            .and(path("/workflows/wf1/triggers/manual/paths/invoke"))
+            .and(body_json(&expected))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let wf = make_workflows(&server);
+        let result = wf.send(&ctx("test title", "test body")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_workflows_from_url_struct_fields() {
+        let parsed = ParsedUrl::parse("workflow://host:443/workflow1a/signature/?image=no").unwrap();
+        let wf = Workflows::from_url(&parsed).unwrap();
+        assert!(wf.workflow_url.contains("host"));
+        assert!(wf.workflow_url.contains("workflow1a"));
+    }
+
+    #[test]
+    fn test_workflows_static_details() {
+        let details = Workflows::static_details();
+        assert_eq!(details.service_name, "Microsoft Workflows");
+        assert_eq!(details.protocols, vec!["workflow", "workflows"]);
+        assert!(!details.attachment_support);
+    }
 }

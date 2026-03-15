@@ -33,6 +33,7 @@ impl Notify for FeiShu {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -57,5 +58,42 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    fn parse_feishu(url: &str) -> FeiShu {
+        let parsed = crate::utils::parse::ParsedUrl::parse(url).unwrap();
+        FeiShu::from_url(&parsed).unwrap()
+    }
+
+    #[test]
+    fn test_from_url_token_from_host() {
+        let f = parse_feishu("feishu://abc123");
+        assert_eq!(f.token, "abc123");
+    }
+
+    #[test]
+    fn test_from_url_token_from_query() {
+        let f = parse_feishu("feishu://?token=abc123");
+        assert_eq!(f.token, "abc123");
+    }
+
+    #[test]
+    fn test_from_url_bad_token_with_percent_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("feishu://%badtoken%").unwrap();
+        assert!(FeiShu::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_from_url_empty_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("feishu://").unwrap();
+        assert!(FeiShu::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = FeiShu::static_details();
+        assert_eq!(details.service_name, "FeiShu");
+        assert_eq!(details.protocols, vec!["feishu"]);
+        assert!(!details.attachment_support);
     }
 }

@@ -34,6 +34,7 @@ impl Notify for Dot {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -63,5 +64,37 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    fn parse_dot(url: &str) -> Dot {
+        let parsed = crate::utils::parse::ParsedUrl::parse(url).unwrap();
+        Dot::from_url(&parsed).unwrap()
+    }
+
+    #[test]
+    fn test_from_url_basic() {
+        // The Rust Dot struct uses host as token (device_id is the host)
+        let d = parse_dot("dot://apikey@device_id/text/");
+        assert_eq!(d.token, "device_id");
+    }
+
+    #[test]
+    fn test_from_url_without_apikey() {
+        let d = parse_dot("dot://@device_id");
+        assert_eq!(d.token, "device_id");
+    }
+
+    #[test]
+    fn test_from_url_no_host_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("dot://apikey@").unwrap();
+        assert!(Dot::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Dot::static_details();
+        assert_eq!(details.service_name, "Dot");
+        assert_eq!(details.protocols, vec!["dot"]);
+        assert!(details.attachment_support);
     }
 }

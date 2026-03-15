@@ -105,6 +105,7 @@ impl Notify for Fcm {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -142,5 +143,78 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    fn parse_fcm(url: &str) -> Fcm {
+        let parsed = crate::utils::parse::ParsedUrl::parse(url).unwrap();
+        Fcm::from_url(&parsed).unwrap()
+    }
+
+    #[test]
+    fn test_from_url_apikey_from_host() {
+        let f = parse_fcm("fcm://apikey/device");
+        assert_eq!(f.api_key, "apikey");
+        assert_eq!(f.targets, vec!["device"]);
+        assert_eq!(f.priority, "normal");
+    }
+
+    #[test]
+    fn test_from_url_apikey_from_query() {
+        let f = parse_fcm("fcm://?apikey=abc123&to=device");
+        assert_eq!(f.api_key, "abc123");
+        assert!(f.targets.contains(&"device".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_topic_target() {
+        let f = parse_fcm("fcm://apikey/#topic");
+        assert_eq!(f.targets, vec!["#topic"]);
+    }
+
+    #[test]
+    fn test_from_url_multiple_targets() {
+        let f = parse_fcm("fcm://apikey?to=#topic1,device");
+        assert!(f.targets.contains(&"#topic1".to_string()));
+        assert!(f.targets.contains(&"device".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_legacy_mode() {
+        let f = parse_fcm("fcm://apikey/#topic1/device/?mode=legacy");
+        assert_eq!(f.api_key, "apikey");
+        assert!(f.targets.contains(&"#topic1".to_string()));
+        assert!(f.targets.contains(&"device".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_invalid_mode_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("fcm://apikey/device?mode=invalid").unwrap();
+        assert!(Fcm::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_from_url_oauth2_without_keyfile_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("fcm://project_id?to=device&mode=oauth2").unwrap();
+        assert!(Fcm::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_from_url_project_param() {
+        let f = parse_fcm("fcm://?apikey=abc123&to=device&project=myproject");
+        assert_eq!(f.project, Some("myproject".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_no_project() {
+        let f = parse_fcm("fcm://apikey/device");
+        assert_eq!(f.project, None);
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Fcm::static_details();
+        assert_eq!(details.service_name, "Firebase Cloud Messaging");
+        assert_eq!(details.protocols, vec!["fcm"]);
+        assert!(!details.attachment_support);
     }
 }

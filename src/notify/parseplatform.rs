@@ -42,13 +42,20 @@ impl Notify for ParsePlatform {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::notify::NotifyContext;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_valid_urls() {
-        let urls = vec![
+        let kwargs_url = format!("parseps://localhost?app_id={}&master_key={}", "a".repeat(32), "d".repeat(32));
+        let urls: Vec<&str> = vec![
             "parsep://app_id:master_key@localhost:8080?device=ios",
             "parseps://app_id:master_key@localhost",
+            &kwargs_url,
+            "parsep://app_id:master_key@localhost:8080?device=android",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -57,13 +64,151 @@ mod tests {
 
     #[test]
     fn test_invalid_urls() {
-        let urls = vec![
+        let no_master = format!("parsep://app_id@{}", "a".repeat(32));
+        let no_appid = format!("parseps://:master_key@{}", "a".repeat(32));
+        let urls: Vec<&str> = vec![
             "parsep://",
             "parsep://:@/",
             "parsep://app_id:master_key@localhost?device=invalid",
+            &no_master,
+            &no_appid,
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_basic_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "parsep://app_id:master_key@localhost:8080",
+        ).unwrap();
+        let obj = ParsePlatform::from_url(&parsed).unwrap();
+        assert_eq!(obj.host, "localhost");
+        assert_eq!(obj.port, Some(8080));
+        assert_eq!(obj.app_id, "app_id");
+        assert_eq!(obj.master_key, "master_key");
+        assert!(!obj.secure);
+    }
+
+    #[test]
+    fn test_from_url_secure() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "parseps://app_id:master_key@localhost",
+        ).unwrap();
+        let obj = ParsePlatform::from_url(&parsed).unwrap();
+        assert!(obj.secure);
+    }
+
+    #[test]
+    fn test_from_url_kwargs() {
+        let url = format!(
+            "parseps://localhost?app_id={}&master_key={}",
+            "a".repeat(32), "d".repeat(32)
+        );
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+        let obj = ParsePlatform::from_url(&parsed).unwrap();
+        assert_eq!(obj.app_id, "a".repeat(32));
+        assert_eq!(obj.master_key, "d".repeat(32));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = ParsePlatform::static_details();
+        assert_eq!(details.service_name, "Parse Platform");
+        assert!(details.protocols.contains(&"parsep"));
+        assert!(details.protocols.contains(&"parseps"));
+    }
+
+    fn default_ctx() -> NotifyContext {
+        NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/parse/push/"))
+            .and(header("X-Parse-Application-Id", "myapp"))
+            .and(header("X-Parse-Master-Key", "mykey"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let obj = ParsePlatform {
+            host: addr.ip().to_string(),
+            port: Some(addr.port()),
+            app_id: "myapp".into(),
+            master_key: "mykey".into(),
+            secure: false,
+            verify_certificate: false,
+            tags: vec![],
+        };
+
+        let result = obj.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_server_error() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/parse/push/"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let obj = ParsePlatform {
+            host: addr.ip().to_string(),
+            port: Some(addr.port()),
+            app_id: "myapp".into(),
+            master_key: "mykey".into(),
+            secure: false,
+            verify_certificate: false,
+            tags: vec![],
+        };
+
+        let result = obj.send(&default_ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_send_verifies_headers() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/parse/push/"))
+            .and(header("X-Parse-Application-Id", "testapp"))
+            .and(header("X-Parse-Master-Key", "testmaster"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let obj = ParsePlatform {
+            host: addr.ip().to_string(),
+            port: Some(addr.port()),
+            app_id: "testapp".into(),
+            master_key: "testmaster".into(),
+            secure: false,
+            verify_certificate: false,
+            tags: vec![],
+        };
+
+        let result = obj.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
     }
 }

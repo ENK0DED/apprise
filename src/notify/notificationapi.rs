@@ -122,6 +122,7 @@ impl Notify for NotificationApi {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+    use super::*;
 
     #[test]
     fn test_valid_urls() {
@@ -184,5 +185,89 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_basic_path_format() {
+        let parsed = ParsedUrl::parse("napi://cid/secret/id/user1@example.com").expect("parse");
+        let n = NotificationApi::from_url(&parsed).expect("from_url");
+        assert_eq!(n.client_id, "cid");
+        assert_eq!(n.secret, "secret");
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let parsed = ParsedUrl::parse("napi://?id=ci&secret=cs&to=id,user5@example.com&type=typec").expect("parse");
+        let n = NotificationApi::from_url(&parsed).expect("from_url");
+        assert_eq!(n.client_id, "ci");
+        assert_eq!(n.secret, "cs");
+    }
+
+    #[test]
+    fn test_from_url_type_in_user() {
+        let parsed = ParsedUrl::parse("napi://type@cid/secret/id/user3@example.com").expect("parse");
+        let n = NotificationApi::from_url(&parsed).expect("from_url");
+        assert_eq!(n.client_id, "cid");
+        assert_eq!(n.secret, "secret");
+    }
+
+    #[test]
+    fn test_notificationapi_schema() {
+        // Support full notificationapi:// schema
+        let parsed = ParsedUrl::parse("notificationapi://cid/secret/id/user1@example.com").expect("parse");
+        let n = NotificationApi::from_url(&parsed).expect("from_url");
+        assert_eq!(n.client_id, "cid");
+    }
+
+    #[test]
+    fn test_mode_validation() {
+        // Valid modes
+        assert!(from_url("napi://type@cid/secret/id/+15551235553/?mode=template").is_some());
+        assert!(from_url("napi://type@cid/secret/id/+15551235553/?mode=message").is_some());
+        // Invalid mode
+        assert!(from_url("napi://type@client_id/client_secret/id/+15551235553/?mode=invalid").is_none());
+    }
+
+    #[test]
+    fn test_region_validation() {
+        // Valid regions
+        assert!(from_url("napi://?id=ci&secret=cs&type=test-type&region=eu").is_some());
+        // Invalid region
+        assert!(from_url("napi://type@client_id/client_secret/id/+15551235553/?region=invalid").is_none());
+    }
+
+    #[test]
+    fn test_channels_validation() {
+        // Valid channels
+        assert!(from_url("napi://client_id/cs3/id/user8@example.ca?channels=email,sms,slack,mobile_push,web_push,inapp").is_some());
+        // Invalid channel
+        assert!(from_url("napi://client_id/client_secret/id/+15551231234/?channels=bad").is_none());
+    }
+
+    #[test]
+    fn test_duplicate_email_rejected() {
+        // Two emails for the same id
+        assert!(from_url("napi://type@client_id/client_secret/id/user@example.ca/user2@example.ca").is_none());
+    }
+
+    #[test]
+    fn test_duplicate_phone_rejected() {
+        // Two phones for the same id
+        assert!(from_url("napi://type@client_id/client_secret/id/+15551235553/+15551235555").is_none());
+    }
+
+    #[test]
+    fn test_multiple_ids_with_contacts() {
+        // Multiple IDs each with their own contacts -- valid
+        assert!(from_url("napi://user@client_id/cs9/id2/user13@example.ca/id/kris@example.com/id/chris2@example.com/id/+15552341234").is_some());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = NotificationApi::static_details();
+        assert_eq!(details.service_name, "NotificationAPI");
+        assert!(details.protocols.contains(&"napi"));
+        assert!(details.protocols.contains(&"notificationapi"));
+        assert!(!details.attachment_support);
     }
 }

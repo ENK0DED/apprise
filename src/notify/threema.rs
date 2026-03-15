@@ -47,6 +47,7 @@ impl Notify for Threema {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -54,6 +55,9 @@ mod tests {
         let urls = vec![
             "threema://*THEGWID@secret",
             "threema://*THEGWID@secret/16134443333",
+            "threema://*THEGWID@secret/16134442222/16134443333",
+            "threema:///?secret=secret&from=*THEGWID&to=16134448888,user1@gmail.com,abcd1234",
+            "threema:///?secret=secret&gwid=*THEGWID&to=16134448888,user2@gmail.com,abcd1234",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -65,10 +69,88 @@ mod tests {
         let urls = vec![
             "threema://",
             "threema://@:",
+            // gateway id must start with *
             "threema://user@secret",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_user_at_host() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "threema://*THEGWID@secret/16134443333"
+        ).unwrap();
+        let t = Threema::from_url(&parsed).unwrap();
+        assert_eq!(t.gateway_id, "*THEGWID");
+        assert_eq!(t.secret, "secret");
+        assert_eq!(t.targets, vec!["16134443333"]);
+    }
+
+    #[test]
+    fn test_from_url_multiple_targets() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "threema://*THEGWID@secret/16134442222/16134443333"
+        ).unwrap();
+        let t = Threema::from_url(&parsed).unwrap();
+        assert_eq!(t.targets.len(), 2);
+        assert!(t.targets.contains(&"16134442222".to_string()));
+        assert!(t.targets.contains(&"16134443333".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_query_params_from() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "threema:///?secret=mysecret&from=*THEGWID&to=16134448888"
+        ).unwrap();
+        let t = Threema::from_url(&parsed).unwrap();
+        assert_eq!(t.gateway_id, "*THEGWID");
+        assert_eq!(t.secret, "mysecret");
+        assert!(t.targets.contains(&"16134448888".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_query_params_gwid() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "threema:///?secret=mysecret&gwid=*THEGWID&to=16134448888"
+        ).unwrap();
+        let t = Threema::from_url(&parsed).unwrap();
+        assert_eq!(t.gateway_id, "*THEGWID");
+    }
+
+    #[test]
+    fn test_from_url_no_targets() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "threema://*THEGWID@secret"
+        ).unwrap();
+        let t = Threema::from_url(&parsed).unwrap();
+        assert!(t.targets.is_empty());
+    }
+
+    #[test]
+    fn test_gateway_must_start_with_star() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "threema://NOLEADINGSTAR@secret/16134443333"
+        ).unwrap();
+        assert!(Threema::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_from_url_to_param_multiple() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "threema:///?secret=sec&from=*GW&to=111,222,333"
+        ).unwrap();
+        let t = Threema::from_url(&parsed).unwrap();
+        assert_eq!(t.targets.len(), 3);
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Threema::static_details();
+        assert_eq!(details.service_name, "Threema Gateway");
+        assert_eq!(details.service_url, Some("https://gateway.threema.ch"));
+        assert!(details.protocols.contains(&"threema"));
+        assert!(!details.attachment_support);
     }
 }

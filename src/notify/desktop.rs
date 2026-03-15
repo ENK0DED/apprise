@@ -48,6 +48,8 @@ mod tests {
             "dbus://MyApp",
             "kde://MyApp",
             "gnome://MyApp",
+            "qt://MyApp",
+            "glib://MyApp",
         ];
         for url in &valid_urls {
             let parsed = ParsedUrl::parse(url);
@@ -59,5 +61,31 @@ mod tests {
                 url,
             );
         }
+    }
+
+    #[test]
+    fn test_desktop_app_name() {
+        let parsed = ParsedUrl::parse("dbus://MyCustomApp").unwrap();
+        let d = Desktop::from_url(&parsed).unwrap();
+        assert_eq!(d.app_name, "MyCustomApp");
+    }
+
+    #[test]
+    fn test_desktop_default_app_name() {
+        // When no host is provided, default to "Apprise"
+        let parsed = ParsedUrl::parse("dbus://").unwrap_or_else(|| {
+            // If parsing fails, construct manually
+            ParsedUrl { schema: "dbus".to_string(), host: None, port: None, user: None, password: None, path: String::new(), path_parts: vec![], qsd: std::collections::HashMap::new(), raw: "dbus://".to_string() }
+        });
+        let d = Desktop::from_url(&parsed).unwrap();
+        assert_eq!(d.app_name, "Apprise");
+    }
+
+    #[test]
+    fn test_desktop_static_details() {
+        let details = Desktop::static_details();
+        assert_eq!(details.service_name, "Desktop Notification");
+        assert_eq!(details.protocols, vec!["dbus", "kde", "qt", "glib", "gnome"]);
+        assert!(!details.attachment_support);
     }
 }

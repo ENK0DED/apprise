@@ -121,6 +121,26 @@ impl Notify for Mastodon {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+    use super::*;
+    use crate::asset::AppriseAsset;
+    use crate::notify::{Notify, NotifyContext};
+    use crate::types::{NotifyFormat, NotifyType};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn ctx(title: &str, body: &str) -> NotifyContext {
+        NotifyContext {
+            body: body.to_string(),
+            title: title.to_string(),
+            notify_type: NotifyType::Info,
+            body_format: NotifyFormat::Text,
+            attachments: vec![],
+            interpret_escapes: false,
+            interpret_emojis: false,
+            tags: vec![],
+            asset: AppriseAsset::default(),
+        }
+    }
 
     #[test]
     fn test_valid_urls() {
@@ -154,5 +174,145 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let parsed = ParsedUrl::parse("mastodon://mytoken@nuxref.com/@user1/@user2?visibility=direct&spoiler=test&language=en&sensitive=yes").unwrap();
+        let m = Mastodon::from_url(&parsed).unwrap();
+        assert_eq!(m.host, "nuxref.com");
+        assert_eq!(m.token, "mytoken");
+        assert_eq!(m.visibility, "direct");
+        assert_eq!(m.spoiler_text, Some("test".to_string()));
+        assert_eq!(m.language, Some("en".to_string()));
+        assert!(m.sensitive);
+        assert_eq!(m.targets, vec!["@user1", "@user2"]);
+        assert!(!m.secure);
+    }
+
+    #[test]
+    fn test_secure_flag() {
+        let parsed = ParsedUrl::parse("mastodons://token@host:8443").unwrap();
+        let m = Mastodon::from_url(&parsed).unwrap();
+        assert!(m.secure);
+        assert_eq!(m.port, Some(8443));
+    }
+
+    #[test]
+    fn test_token_via_query_param() {
+        let parsed = ParsedUrl::parse("mastodon://hostname/@user?token=abcd123").unwrap();
+        let m = Mastodon::from_url(&parsed).unwrap();
+        assert_eq!(m.token, "abcd123");
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Mastodon::static_details();
+        assert_eq!(details.service_name, "Mastodon");
+        assert!(details.protocols.contains(&"toot"));
+        assert!(details.protocols.contains(&"toots"));
+        assert!(details.attachment_support);
+    }
+
+    #[tokio::test]
+    async fn test_send_public_toot() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/statuses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "12345"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!("mastodon://access_key@localhost:{}", addr.port());
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let m = Mastodon::from_url(&parsed).unwrap();
+
+        let result = m.send(&ctx("test title", "test body")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_send_status_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/statuses"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!("mastodon://access_key@localhost:{}", addr.port());
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let m = Mastodon::from_url(&parsed).unwrap();
+
+        let result = m.send(&ctx("test", "body")).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_send_with_attachment() {
+        let server = MockServer::start().await;
+        // Media upload
+        Mock::given(method("POST"))
+            .and(path("/api/v1/media"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "media123", "file_mime": "image/gif"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Status post
+        Mock::given(method("POST"))
+            .and(path("/api/v1/statuses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "status456"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!("mastodon://access_key@localhost:{}", addr.port());
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let m = Mastodon::from_url(&parsed).unwrap();
+
+        let mut c = ctx("title", "body");
+        c.attachments.push(crate::notify::Attachment {
+            name: "test.gif".to_string(),
+            data: b"GIF89a".to_vec(),
+            mime_type: "image/gif".to_string(),
+        });
+
+        let result = m.send(&c).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_unsupported_attachment_skipped() {
+        let server = MockServer::start().await;
+        // Only the status post, no media upload for zip
+        Mock::given(method("POST"))
+            .and(path("/api/v1/statuses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "1"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!("mastodon://access_key@localhost:{}", addr.port());
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let m = Mastodon::from_url(&parsed).unwrap();
+
+        let mut c = ctx("title", "body");
+        c.attachments.push(crate::notify::Attachment {
+            name: "archive.zip".to_string(),
+            data: b"PK".to_vec(),
+            mime_type: "application/zip".to_string(),
+        });
+
+        let result = m.send(&c).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
     }
 }

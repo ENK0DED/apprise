@@ -41,16 +41,59 @@ impl Notify for Kumulos {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
+
+    const UUID4: &str = "8b799edf-6f98-4d3a-9be7-2862fb4e5752";
+
+    fn parse_kumulos(url: &str) -> Option<Kumulos> {
+        ParsedUrl::parse(url).and_then(|p| Kumulos::from_url(&p))
+    }
 
     #[test]
     fn test_invalid_urls() {
         let urls = vec![
-            "kumulos://",
-            "kumulos://:@/",
+            "kumulos://".to_string(),
+            "kumulos://:@/".to_string(),
+            // No server key
+            format!("kumulos://{}/", UUID4),
         ];
         for url in &urls {
-            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+            assert!(from_url(&url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let server_key = "w".repeat(36);
+        let urls = vec![
+            format!("kumulos://{}/{}/", UUID4, server_key),
+        ];
+        for url in &urls {
+            assert!(from_url(&url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let server_key = "w".repeat(36);
+        let obj = parse_kumulos(&format!("kumulos://{}/{}/", UUID4, server_key)).unwrap();
+        assert_eq!(obj.apikey, UUID4);
+        assert_eq!(obj.server_key, server_key);
+    }
+
+    #[test]
+    fn test_server_key_too_short() {
+        // Server key must be at least 36 chars
+        let obj = parse_kumulos(&format!("kumulos://{}/short/", UUID4));
+        assert!(obj.is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Kumulos::static_details();
+        assert_eq!(details.service_name, "Kumulos");
+        assert_eq!(details.protocols, vec!["kumulos"]);
     }
 }

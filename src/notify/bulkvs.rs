@@ -53,16 +53,78 @@ impl Notify for BulkVs {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "bulkvs://uuuuuuuuuu:pppppppppp@2222222222",
+            "bulkvs://aaaaa:bbbbbbbbbb@9876543210/33333333333/abcd/",
+            "bulkvs://bbbbb:cccccccccc@44444444444?batch=y",
+            "bulkvs://aaaaaaaaaa:bbbbbbbbbb@55555555555",
+            "bulkvs://?user=zzzzzzzzzz&password=yyyyyyyyyy&from=55555555555",
+            "bulkvs://?user=aaaaaaaaaa&password=bbbbbbbbbb&from=55555555555&to=7777777777777",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "bulkvs://",
             "bulkvs://:@/",
+            // Just user, no password
+            "bulkvs://aaaaaaaaaa@9876543210/",
+            // Invalid source number (too short)
+            "bulkvs://uuuuuuuuuu:pppppppppp@33333",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_struct_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "bulkvs://myuser:mypass@14051231234/15551231234/15555555555"
+        ).unwrap();
+        let obj = BulkVs::from_url(&parsed).unwrap();
+        assert_eq!(obj.user, "myuser");
+        assert_eq!(obj.password, "mypass");
+        assert_eq!(obj.from_phone, "14051231234");
+        assert_eq!(obj.targets.len(), 2);
+        assert!(obj.targets.contains(&"15551231234".to_string()));
+        assert!(obj.targets.contains(&"15555555555".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "bulkvs://?user=testuser&password=testpass&from=55555555555&to=66666666666"
+        ).unwrap();
+        let obj = BulkVs::from_url(&parsed).unwrap();
+        assert_eq!(obj.user, "testuser");
+        assert_eq!(obj.password, "testpass");
+        assert_eq!(obj.from_phone, "55555555555");
+        assert!(obj.targets.contains(&"66666666666".to_string()));
+    }
+
+    #[test]
+    fn test_from_phone_too_short() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "bulkvs://user:pass@33333"
+        ).unwrap();
+        assert!(BulkVs::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = BulkVs::static_details();
+        assert_eq!(details.service_name, "BulkVS");
+        assert_eq!(details.protocols, vec!["bulkvs"]);
+        assert!(!details.attachment_support);
     }
 }

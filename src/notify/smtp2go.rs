@@ -47,6 +47,7 @@ impl Notify for Smtp2Go {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -54,10 +55,76 @@ mod tests {
         let urls = vec![
             "smtp2go://",
             "smtp2go://:@/",
+            // No token (no path parts = no targets)
             "smtp2go://user@localhost.localdomain",
+            // Invalid from email address (quote in user)
+            "smtp2go://\"@localhost.localdomain/aaaaaaaa",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            // user@host/path (host is api_key, path is target)
+            format!("smtp2go://user@apikey/test@example.com"),
+            format!("smtp2go://user@apikey/test@example.com?format=markdown"),
+            format!("smtp2go://user@apikey/test@example.com?format=html"),
+            format!("smtp2go://user@apikey/test@example.com?format=text"),
+            // bcc and cc (still need at least one path target)
+            format!("smtp2go://user@apikey/test@example.com?bcc=user@example.com&cc=user2@example.com"),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "smtp2go://user@myapikey/recipient@example.com"
+        ).unwrap();
+        let smtp = Smtp2Go::from_url(&parsed).unwrap();
+        assert_eq!(smtp.api_key, "myapikey");
+        assert!(smtp.targets.contains(&"recipient@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_no_user_returns_none() {
+        // No user@ prefix
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "smtp2go://apikey/target@example.com"
+        ).unwrap();
+        // user is None => returns None
+        assert!(Smtp2Go::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_from_url_user_with_quote_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "smtp2go://us\"er@apikey/target@example.com"
+        ).unwrap();
+        assert!(Smtp2Go::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Smtp2Go::static_details();
+        assert_eq!(details.service_name, "SMTP2Go");
+        assert_eq!(details.service_url, Some("https://www.smtp2go.com"));
+        assert!(details.protocols.contains(&"smtp2go"));
+        assert!(details.attachment_support);
+    }
+
+    #[test]
+    fn test_from_url_non_email_target_gets_domain() {
+        // Path parts without @ get @example.com appended
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "smtp2go://user@apikey/invalid"
+        ).unwrap();
+        let smtp = Smtp2Go::from_url(&parsed).unwrap();
+        assert_eq!(smtp.targets[0], "invalid@example.com");
     }
 }

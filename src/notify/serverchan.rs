@@ -29,12 +29,14 @@ impl Notify for ServerChan {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
     fn test_valid_urls() {
         let urls = vec![
-            "schan://12345678",
+            "schan://12345678".to_string(),
+            format!("schan://{}", "a".repeat(8)),
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -50,5 +52,32 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("schan://12345678").unwrap();
+        let sc = ServerChan::from_url(&parsed).unwrap();
+        assert_eq!(sc.token, "12345678");
+    }
+
+    #[test]
+    fn test_service_details() {
+        let d = ServerChan::static_details();
+        assert_eq!(d.service_name, "ServerChan");
+        assert!(d.protocols.contains(&"schan"));
+        assert!(!d.attachment_support);
+    }
+
+    #[test]
+    fn test_invalid_token_with_underscores() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("schan://a_bd_").unwrap();
+        assert!(ServerChan::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_empty_host() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("schan://").unwrap();
+        assert!(ServerChan::from_url(&parsed).is_none());
     }
 }

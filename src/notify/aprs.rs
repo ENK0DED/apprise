@@ -76,4 +76,42 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_aprs_struct_fields() {
+        let parsed = ParsedUrl::parse("aprs://DF1JSL-15:12345@DF1ABC/DF1XYZ").unwrap();
+        let aprs = Aprs::from_url(&parsed).unwrap();
+        assert_eq!(aprs.user, "DF1JSL-15");
+        assert_eq!(aprs.password, "12345");
+        assert!(aprs.targets.contains(&"DF1ABC".to_string()) || aprs.targets.contains(&"DF1XYZ".to_string()));
+    }
+
+    #[test]
+    fn test_aprs_multiple_targets() {
+        let parsed = ParsedUrl::parse("aprs://user:pass@localhost/target1/target2/target3").unwrap();
+        let aprs = Aprs::from_url(&parsed).unwrap();
+        assert_eq!(aprs.targets.len(), 3);
+    }
+
+    #[test]
+    fn test_aprs_no_password_fails() {
+        let result = ParsedUrl::parse("aprs://user@localhost/target")
+            .and_then(|p| Aprs::from_url(&p));
+        assert!(result.is_none(), "APRS without password should fail");
+    }
+
+    #[test]
+    fn test_aprs_no_targets_fails() {
+        let result = ParsedUrl::parse("aprs://user:pass@localhost")
+            .and_then(|p| Aprs::from_url(&p));
+        assert!(result.is_none(), "APRS without targets should fail");
+    }
+
+    #[test]
+    fn test_aprs_static_details() {
+        let details = Aprs::static_details();
+        assert_eq!(details.service_name, "APRS");
+        assert_eq!(details.protocols, vec!["aprs"]);
+        assert!(!details.attachment_support);
+    }
 }

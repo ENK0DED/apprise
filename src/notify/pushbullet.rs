@@ -140,7 +140,27 @@ impl Notify for Pushbullet {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let a32 = "a".repeat(32);
+        let urls = vec![
+            format!("pbul://{}", a32),
+            format!("pbul://{}/#channel/", a32),
+            format!("pbul://{}/?to=#channel", a32),
+            format!("pbul://{}/#channel1/#channel2", a32),
+            format!("pbul://{}/device/", a32),
+            format!("pbul://{}/device1/device2/", a32),
+            format!("pbul://{}/user@example.com/", a32),
+            format!("pbul://{}/user@example.com/abc@def.com/", a32),
+            format!("pbul://{}/device/#channel/user@example.com/", a32),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
@@ -151,5 +171,58 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_basic_fields() {
+        let a32 = "a".repeat(32);
+        let url = format!("pbul://{}", a32);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+        let obj = Pushbullet::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, a32);
+        // No explicit targets means empty targets vec (sends to all devices)
+        assert!(obj.targets.is_empty());
+    }
+
+    #[test]
+    fn test_from_url_with_targets() {
+        let a32 = "a".repeat(32);
+        let url = format!("pbul://{}/device/#channel/user@example.com/", a32);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+        let obj = Pushbullet::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, a32);
+        assert!(obj.targets.contains(&"device".to_string()));
+        assert!(obj.targets.contains(&"#channel".to_string()));
+        assert!(obj.targets.contains(&"user@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_set_target_email() {
+        let mut payload = serde_json::json!({"type": "note"});
+        Pushbullet::set_target(&mut payload, "user@example.com");
+        assert_eq!(payload["email"], "user@example.com");
+    }
+
+    #[test]
+    fn test_set_target_channel() {
+        let mut payload = serde_json::json!({"type": "note"});
+        Pushbullet::set_target(&mut payload, "#channel");
+        assert_eq!(payload["channel_tag"], "channel");
+    }
+
+    #[test]
+    fn test_set_target_device() {
+        let mut payload = serde_json::json!({"type": "note"});
+        Pushbullet::set_target(&mut payload, "device");
+        assert_eq!(payload["device_iden"], "device");
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Pushbullet::static_details();
+        assert_eq!(details.service_name, "Pushbullet");
+        assert!(details.protocols.contains(&"pbul"));
+        assert_eq!(details.service_url, Some("https://pushbullet.com"));
+        assert!(details.attachment_support);
     }
 }

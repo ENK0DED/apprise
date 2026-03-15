@@ -64,7 +64,13 @@ impl Notify for Ifttt {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
+
+    fn parse_ifttt(url: &str) -> Option<Ifttt> {
+        ParsedUrl::parse(url).and_then(|p| Ifttt::from_url(&p))
+    }
 
     #[test]
     fn test_valid_urls() {
@@ -93,5 +99,44 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_webhook_and_events() {
+        let obj = parse_ifttt("ifttt://WebHookID@EventID").unwrap();
+        assert_eq!(obj.webhook_id, "WebHookID");
+        assert!(obj.events.contains(&"EventID".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_multiple_events() {
+        let obj = parse_ifttt("ifttt://WebHookID@EventID/EventID2/").unwrap();
+        assert_eq!(obj.webhook_id, "WebHookID");
+        assert_eq!(obj.events.len(), 2);
+        assert!(obj.events.contains(&"EventID".to_string()));
+        assert!(obj.events.contains(&"EventID2".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_to_query_param() {
+        let obj = parse_ifttt("ifttt://WebHookID?to=EventID,EventID2").unwrap();
+        assert_eq!(obj.webhook_id, "WebHookID");
+        assert!(obj.events.contains(&"EventID".to_string()));
+        assert!(obj.events.contains(&"EventID2".to_string()));
+    }
+
+    #[test]
+    fn test_native_url_parsing() {
+        let obj = parse_ifttt("https://maker.ifttt.com/use/WebHookID/EventID/").unwrap();
+        assert_eq!(obj.webhook_id, "WebHookID");
+        assert!(obj.events.contains(&"EventID".to_string()));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Ifttt::static_details();
+        assert_eq!(details.service_name, "IFTTT");
+        assert_eq!(details.protocols, vec!["ifttt"]);
+        assert!(!details.attachment_support);
     }
 }

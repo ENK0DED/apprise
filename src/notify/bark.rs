@@ -55,7 +55,11 @@ impl Notify for Bark {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::notify::NotifyContext;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_valid_urls() {
@@ -105,5 +109,226 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    /// Helper: create a Bark instance pointing at the given mock server.
+    fn bark_for_mock(server: &MockServer, device_key: &str, extra_params: &str) -> Bark {
+        let addr = server.address();
+        let sep = if extra_params.is_empty() { "" } else { "?" };
+        let url_str = format!(
+            "bark://{}:{}/{}{}{}",
+            addr.ip(), addr.port(), device_key, sep, extra_params
+        );
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        Bark::from_url(&parsed).unwrap()
+    }
+
+    fn default_ctx() -> NotifyContext {
+        NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_basic_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/push"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "device_key": "mykey",
+                "title": "Test Title",
+                "body": "Test Body",
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let bark = bark_for_mock(&server, "mykey", "");
+        let result = bark.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_with_sound_group_level() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/push"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "device_key": "mykey",
+                "title": "Test Title",
+                "body": "Test Body",
+                "sound": "alarm",
+                "group": "mygroup",
+                "level": "active",
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let bark = bark_for_mock(&server, "mykey", "sound=alarm&group=mygroup&level=active");
+        let result = bark.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_with_icon() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/push"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "device_key": "mykey",
+                "title": "Test Title",
+                "body": "Test Body",
+                "icon": "https://example.com/icon.png",
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let bark = bark_for_mock(&server, "mykey", "icon=https://example.com/icon.png");
+        let result = bark.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_multiple_device_keys() {
+        let server = MockServer::start().await;
+
+        // Expect two POST requests, one per device key
+        Mock::given(method("POST"))
+            .and(path("/push"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!(
+            "bark://{}:{}/key1/key2/",
+            addr.ip(), addr.port()
+        );
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let bark = Bark::from_url(&parsed).unwrap();
+
+        let result = bark.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_no_device_keys_returns_true() {
+        // When no device keys are specified, the loop body never executes
+        // and all_ok remains true
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!("bark://{}:{}", addr.ip(), addr.port());
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let bark = Bark::from_url(&parsed).unwrap();
+
+        let result = bark.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        // No keys means no requests, all_ok stays true
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_error_500() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/push"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Server Error"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let bark = bark_for_mock(&server, "mykey", "");
+        let result = bark.send(&default_ctx()).await;
+        // Bark returns Ok(false) on non-success status, not Err
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_send_multiple_keys_partial_failure() {
+        let server = MockServer::start().await;
+
+        // First request succeeds, second fails
+        // wiremock serves all matching requests with the same response,
+        // so we use separate mounts with body matchers
+        Mock::given(method("POST"))
+            .and(path("/push"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "device_key": "goodkey",
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/push"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "device_key": "badkey",
+            })))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!(
+            "bark://{}:{}/goodkey/badkey/",
+            addr.ip(), addr.port()
+        );
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let bark = Bark::from_url(&parsed).unwrap();
+
+        let result = bark.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        // One key failed, so all_ok should be false
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[test]
+    fn test_secure_flag() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "bark://host/key",
+        ).unwrap();
+        let bark = Bark::from_url(&parsed).unwrap();
+        assert!(!bark.secure);
+
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "barks://host/key",
+        ).unwrap();
+        let bark = Bark::from_url(&parsed).unwrap();
+        assert!(bark.secure);
+    }
+
+    #[test]
+    fn test_to_query_param_adds_device_key() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "bark://host/?to=device_key",
+        ).unwrap();
+        let bark = Bark::from_url(&parsed).unwrap();
+        assert!(bark.device_keys.contains(&"device_key".to_string()));
     }
 }

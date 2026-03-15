@@ -70,18 +70,97 @@ impl Notify for Vonage {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
     fn test_invalid_urls() {
-        let urls = vec![
-            "vonage://",
-            "vonage://:@/",
-            "nexmo://",
-            "nexmo://:@/",
+        let urls: Vec<String> = vec![
+            "vonage://".into(),
+            "vonage://:@/".into(),
+            "nexmo://".into(),
+            "nexmo://:@/".into(),
+            // Just a key, no secret
+            format!("vonage://AC{}@12345678", "a".repeat(8)),
+            // 9-digit from phone - invalid
+            format!("vonage://AC{}:{}@{}", "a".repeat(8), "b".repeat(16), "3".repeat(9)),
+            // Invalid ttl=0
+            format!("vonage://AC{}:{}@{}/?ttl=0", "b".repeat(8), "c".repeat(16), "3".repeat(11)),
+            // Non-digit from phone
+            format!("vonage://AC{}:{}@{}", "d".repeat(8), "e".repeat(16), "a".repeat(11)),
+            // Nexmo variants - same validations
+            format!("nexmo://AC{}@12345678", "a".repeat(8)),
+            format!("nexmo://AC{}:{}@{}", "a".repeat(8), "b".repeat(16), "3".repeat(9)),
+            format!("nexmo://AC{}:{}@{}/?ttl=0", "b".repeat(8), "c".repeat(16), "3".repeat(11)),
+            format!("nexmo://AC{}:{}@{}", "d".repeat(8), "e".repeat(16), "a".repeat(11)),
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls: Vec<String> = vec![
+            // Valid with targets
+            format!("vonage://AC{}:{}@{}/123/{}/abcd/",
+                "f".repeat(8), "g".repeat(16), "3".repeat(11), "9".repeat(15)),
+            // Self-text (no target)
+            format!("vonage://AC{}:{}@{}", "h".repeat(8), "i".repeat(16), "5".repeat(11)),
+            // Query params
+            format!("vonage://_?key=AC{}&secret={}&from={}", "a".repeat(8), "b".repeat(16), "5".repeat(11)),
+            // source= alias
+            format!("vonage://_?key=AC{}&secret={}&source={}", "a".repeat(8), "b".repeat(16), "5".repeat(11)),
+            // to= param
+            format!("vonage://_?key=AC{}&secret={}&from={}&to={}",
+                "a".repeat(8), "b".repeat(16), "5".repeat(11), "7".repeat(13)),
+            // Nexmo variants
+            format!("nexmo://AC{}:{}@{}/123/{}/abcd/",
+                "f".repeat(8), "g".repeat(16), "3".repeat(11), "9".repeat(15)),
+            format!("nexmo://AC{}:{}@{}", "h".repeat(8), "i".repeat(16), "5".repeat(11)),
+            format!("nexmo://_?key=AC{}&secret={}&from={}", "a".repeat(8), "b".repeat(16), "5".repeat(11)),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let apikey = format!("AC{}", "f".repeat(8));
+        let secret = "g".repeat(16);
+        let from = "3".repeat(11);
+        let url_str = format!("vonage://{}:{}@{}/{}", apikey, secret, from, "9".repeat(15));
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let v = Vonage::from_url(&parsed).unwrap();
+        assert_eq!(v.apikey, apikey);
+        assert_eq!(v.api_secret, secret);
+        assert_eq!(v.from_phone, from);
+        assert_eq!(v.targets.len(), 1);
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let apikey = format!("AC{}", "a".repeat(8));
+        let secret = "b".repeat(16);
+        let from = "5".repeat(11);
+        let to = "7".repeat(13);
+        let url_str = format!("vonage://_?key={}&secret={}&from={}&to={}", apikey, secret, from, to);
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let v = Vonage::from_url(&parsed).unwrap();
+        assert_eq!(v.apikey, apikey);
+        assert_eq!(v.api_secret, secret);
+        assert_eq!(v.from_phone, from);
+        assert!(v.targets.contains(&to));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Vonage::static_details();
+        assert_eq!(details.service_name, "Vonage (Nexmo)");
+        assert_eq!(details.service_url, Some("https://vonage.com"));
+        assert!(details.protocols.contains(&"vonage"));
+        assert!(details.protocols.contains(&"nexmo"));
+        assert!(!details.attachment_support);
     }
 }

@@ -58,15 +58,74 @@ impl Notify for Plivo {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_invalid_urls() {
+    fn test_valid_urls() {
+        let a25 = "a".repeat(25);
+        let b40 = "b".repeat(40);
+        let a40 = "a".repeat(40);
         let urls = vec![
-            "plivo://",
+            format!("plivo://{}@{}/15551231234", a25, b40),
+            format!("plivo://{}@{}/?from=15551233000&to=15551232000&batch=yes", a25, a40),
+            format!("plivo://?id={}&token={}&from=15551233000&to=15551232000", a25, a40),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let a10 = "a".repeat(10);
+        let a25 = "a".repeat(25);
+        let urls = vec![
+            "plivo://".to_string(),
+            // invalid auth id (too short)
+            format!("plivo://{}@{}/15551232000", a10, "a".repeat(25)),
+            // invalid token (too short)
+            format!("plivo://{}@{}/15551232000", a25, a10),
+            // invalid phone number (too short)
+            format!("plivo://{}@{}/123", a25, "a".repeat(40)),
+            // invalid phone number (non-numeric)
+            format!("plivo://{}@{}/abc", a25, "a".repeat(40)),
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_basic_fields() {
+        let a25 = "a".repeat(25);
+        let b40 = "b".repeat(40);
+        let url = format!("plivo://{}@{}/15551231234", a25, b40);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+        let obj = Plivo::from_url(&parsed).unwrap();
+        assert_eq!(obj.auth_id, a25);
+        assert_eq!(obj.auth_token, b40);
+        assert!(obj.targets.contains(&"15551231234".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_kwargs() {
+        let a25 = "a".repeat(25);
+        let a40 = "a".repeat(40);
+        let url = format!("plivo://?id={}&token={}&from=15551233000&to=15551232000", a25, a40);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+        let obj = Plivo::from_url(&parsed).unwrap();
+        assert_eq!(obj.auth_id, a25);
+        assert_eq!(obj.auth_token, a40);
+        assert_eq!(obj.from_phone, "15551233000");
+        assert!(obj.targets.contains(&"15551232000".to_string()));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Plivo::static_details();
+        assert_eq!(details.service_name, "Plivo");
+        assert!(details.protocols.contains(&"plivo"));
+        assert_eq!(details.service_url, Some("https://plivo.com"));
     }
 }

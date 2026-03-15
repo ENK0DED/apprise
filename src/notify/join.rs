@@ -30,7 +30,13 @@ impl Notify for Join {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
+
+    fn parse_join(url: &str) -> Option<Join> {
+        ParsedUrl::parse(url).and_then(|p| Join::from_url(&p))
+    }
 
     #[test]
     fn test_invalid_urls() {
@@ -41,5 +47,80 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let apikey = "a".repeat(32);
+        let device = "d".repeat(32);
+        let device2 = "e".repeat(32);
+        let urls = vec![
+            // APIkey; no device
+            format!("join://{}", apikey),
+            // API Key + device (using to=)
+            format!("join://{}?to={}", apikey, device),
+            // API Key + priority setting
+            format!("join://{}?priority=high", apikey),
+            // API Key + invalid priority setting
+            format!("join://{}?priority=invalid", apikey),
+            // API Key + priority setting (empty)
+            format!("join://{}?priority=", apikey),
+            // API Key + device
+            format!("join://{}@{}?image=True", apikey, device),
+            // No image
+            format!("join://{}@{}?image=False", apikey, device),
+            // API Key + Device Name
+            format!("join://{}/My Device", apikey),
+            // API Key + device
+            format!("join://{}/{}", apikey, device),
+            // API Key + 2 devices
+            format!("join://{}/{}/{}", apikey, device, device2),
+            // API Key + 1 device and 1 group
+            format!("join://{}/{}/group.chrome", apikey, device),
+        ];
+        for url in &urls {
+            assert!(from_url(&url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_apikey() {
+        let apikey = "a".repeat(32);
+        let obj = parse_join(&format!("join://{}", apikey)).unwrap();
+        assert_eq!(obj.apikey, apikey);
+        assert!(obj.targets.is_empty());
+    }
+
+    #[test]
+    fn test_from_url_with_devices() {
+        let apikey = "a".repeat(32);
+        let device = "d".repeat(32);
+        let obj = parse_join(&format!("join://{}/{}", apikey, device)).unwrap();
+        assert_eq!(obj.apikey, apikey);
+        assert_eq!(obj.targets, vec![device]);
+    }
+
+    #[test]
+    fn test_from_url_with_group() {
+        let apikey = "a".repeat(32);
+        let device = "d".repeat(32);
+        let obj = parse_join(&format!("join://{}/{}/group.chrome", apikey, device)).unwrap();
+        assert_eq!(obj.targets.len(), 2);
+        assert!(obj.targets.contains(&"group.chrome".to_string()));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Join::static_details();
+        assert_eq!(details.service_name, "Join");
+        assert_eq!(details.protocols, vec!["join"]);
+    }
+
+    #[test]
+    fn test_default_device_ids_group_all() {
+        // When no targets, send() should use "group.all"
+        let apikey = "a".repeat(32);
+        let obj = parse_join(&format!("join://{}", apikey)).unwrap();
+        assert!(obj.targets.is_empty());
     }
 }

@@ -40,6 +40,8 @@ mod tests {
         let valid_urls = vec![
             "syslog://localhost",
             "syslog://localhost:514",
+            "syslog://192.168.1.1",
+            "syslog://syslog.example.com:1514",
         ];
         for url in &valid_urls {
             let parsed = ParsedUrl::parse(url);
@@ -51,5 +53,35 @@ mod tests {
                 url,
             );
         }
+    }
+
+    #[test]
+    fn test_syslog_default_port() {
+        let parsed = ParsedUrl::parse("syslog://localhost").unwrap();
+        let s = Syslog::from_url(&parsed).unwrap();
+        assert_eq!(s.host, "localhost");
+        assert_eq!(s.port, 514);
+    }
+
+    #[test]
+    fn test_syslog_custom_port() {
+        let parsed = ParsedUrl::parse("syslog://localhost:1514").unwrap();
+        let s = Syslog::from_url(&parsed).unwrap();
+        assert_eq!(s.port, 1514);
+    }
+
+    #[test]
+    fn test_syslog_host_parsing() {
+        let parsed = ParsedUrl::parse("syslog://syslog.example.com").unwrap();
+        let s = Syslog::from_url(&parsed).unwrap();
+        assert_eq!(s.host, "syslog.example.com");
+    }
+
+    #[test]
+    fn test_syslog_static_details() {
+        let details = Syslog::static_details();
+        assert_eq!(details.service_name, "Syslog");
+        assert_eq!(details.protocols, vec!["syslog"]);
+        assert!(!details.attachment_support);
     }
 }

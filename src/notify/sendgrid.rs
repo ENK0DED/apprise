@@ -88,6 +88,7 @@ impl Notify for SendGrid {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -99,6 +100,8 @@ mod tests {
             "sendgrid://abcd:user@example.com/newuser@example.com?bcc=l2g@nuxref.com",
             "sendgrid://abcd:user@example.com/newuser@example.com?cc=l2g@nuxref.com",
             "sendgrid://abcd:user@example.com/newuser@example.com?to=l2g@nuxref.com",
+            "sendgrid://abcd:user@example.com/newuser@example.com?template=8b799edf-6f98-4d3a-9be7-2862fb4e5752",
+            "sendgrid://abcd:user@example.com/newuser@example.com?template=8b799edf-6f98-4d3a-9be7-2862fb4e5752&+sub=value&+sub2=value2",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -117,5 +120,56 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields_basic() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sendgrid://abcd:user@example.com",
+        ).unwrap();
+        let sg = SendGrid::from_url(&parsed).unwrap();
+        assert_eq!(sg.apikey, "abcd");
+        assert_eq!(sg.from_email, "user@example.com");
+        // No targets specified, so we get empty to list
+        assert!(sg.to.is_empty());
+    }
+
+    #[test]
+    fn test_from_url_fields_with_target() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sendgrid://abcd:user@example.com/newuser@example.com",
+        ).unwrap();
+        let sg = SendGrid::from_url(&parsed).unwrap();
+        assert_eq!(sg.apikey, "abcd");
+        assert_eq!(sg.from_email, "user@example.com");
+        assert_eq!(sg.to, vec!["newuser@example.com"]);
+    }
+
+    #[test]
+    fn test_from_url_cc_bcc() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sendgrid://abcd:user@example.com/newuser@example.com?bcc=l2g@nuxref.com&cc=abc@test.org",
+        ).unwrap();
+        let sg = SendGrid::from_url(&parsed).unwrap();
+        assert_eq!(sg.bcc, vec!["l2g@nuxref.com"]);
+        assert_eq!(sg.cc, vec!["abc@test.org"]);
+    }
+
+    #[test]
+    fn test_from_url_to_param() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "sendgrid://abcd:user@example.com/newuser@example.com?to=l2g@nuxref.com",
+        ).unwrap();
+        let sg = SendGrid::from_url(&parsed).unwrap();
+        assert!(sg.to.contains(&"newuser@example.com".to_string()));
+        assert!(sg.to.contains(&"l2g@nuxref.com".to_string()));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let d = SendGrid::static_details();
+        assert_eq!(d.service_name, "SendGrid");
+        assert!(d.protocols.contains(&"sendgrid"));
+        assert!(d.attachment_support);
     }
 }

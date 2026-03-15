@@ -61,6 +61,7 @@ impl Notify for Streamlabs {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -91,5 +92,97 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso"
+        ).unwrap();
+        let sl = Streamlabs::from_url(&parsed).unwrap();
+        assert_eq!(sl.access_token, "IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso");
+    }
+
+    #[test]
+    fn test_token_must_be_40_chars_alphanumeric() {
+        // Too short
+        let parsed = crate::utils::parse::ParsedUrl::parse("strmlabs://short").unwrap();
+        assert!(Streamlabs::from_url(&parsed).is_none());
+
+        // Contains underscore
+        let parsed = crate::utils::parse::ParsedUrl::parse("strmlabs://a_bd_/").unwrap();
+        assert!(Streamlabs::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_currency_validation() {
+        // Valid 3-letter currency
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?currency=USD"
+        ).unwrap();
+        assert!(Streamlabs::from_url(&parsed).is_some());
+
+        // Invalid 4-letter currency
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?currency=ABCD"
+        ).unwrap();
+        assert!(Streamlabs::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_call_validation() {
+        for call in &["alerts", "donations", "ALERTS", "DONATIONS"] {
+            let url = format!(
+                "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?call={}", call
+            );
+            let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+            assert!(Streamlabs::from_url(&parsed).is_some(), "call={} should be valid", call);
+        }
+        // Invalid call
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?call=rms"
+        ).unwrap();
+        assert!(Streamlabs::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_alert_type_validation() {
+        let valid_types = vec!["donation", "follow", "subscription", "host", "bits", "raid"];
+        for at in &valid_types {
+            let url = format!(
+                "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?alert_type={}", at
+            );
+            let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+            assert!(Streamlabs::from_url(&parsed).is_some(), "alert_type={} should be valid", at);
+        }
+        // Invalid alert_type
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?alert_type=rms"
+        ).unwrap();
+        assert!(Streamlabs::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_name_validation() {
+        // Name too short (1 char)
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?name=t"
+        ).unwrap();
+        assert!(Streamlabs::from_url(&parsed).is_none());
+
+        // Valid name (2 chars)
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "strmlabs://IcIcArukDQtuC1is1X1UdKZjTg118Lag2vScOmso/?name=tt"
+        ).unwrap();
+        assert!(Streamlabs::from_url(&parsed).is_some());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Streamlabs::static_details();
+        assert_eq!(details.service_name, "Streamlabs");
+        assert_eq!(details.service_url, Some("https://streamlabs.com"));
+        assert!(details.protocols.contains(&"strmlabs"));
+        assert!(!details.attachment_support);
     }
 }

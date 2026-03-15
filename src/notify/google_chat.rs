@@ -55,6 +55,7 @@ impl Notify for GoogleChat {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -83,5 +84,59 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    fn parse_gchat(url: &str) -> GoogleChat {
+        let parsed = crate::utils::parse::ParsedUrl::parse(url).unwrap();
+        GoogleChat::from_url(&parsed).unwrap()
+    }
+
+    #[test]
+    fn test_from_url_path_style() {
+        let g = parse_gchat("gchat://workspace/key/token");
+        assert_eq!(g.workspace, "workspace");
+        assert_eq!(g.webhook_key, "key");
+        assert_eq!(g.webhook_token, "token");
+        assert_eq!(g.thread_key, None);
+    }
+
+    #[test]
+    fn test_from_url_query_style() {
+        let g = parse_gchat("gchat://?workspace=ws&key=mykey&token=mytoken");
+        assert_eq!(g.workspace, "ws");
+        assert_eq!(g.webhook_key, "mykey");
+        assert_eq!(g.webhook_token, "mytoken");
+    }
+
+    #[test]
+    fn test_from_url_with_thread_key() {
+        let g = parse_gchat("gchat://?workspace=ws&key=mykey&token=mytoken&thread=abc123");
+        assert_eq!(g.thread_key, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_no_workspace_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("gchat://").unwrap();
+        assert!(GoogleChat::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_from_url_no_key_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("gchat://workspace").unwrap();
+        assert!(GoogleChat::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_from_url_no_token_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("gchat://workspace/key/").unwrap();
+        assert!(GoogleChat::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = GoogleChat::static_details();
+        assert_eq!(details.service_name, "Google Chat");
+        assert_eq!(details.protocols, vec!["gchat"]);
+        assert!(!details.attachment_support);
     }
 }

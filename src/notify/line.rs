@@ -42,7 +42,13 @@ impl Notify for Line {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
+
+    fn parse_line(url: &str) -> Option<Line> {
+        ParsedUrl::parse(url).and_then(|p| Line::from_url(&p))
+    }
 
     #[test]
     fn test_valid_urls() {
@@ -68,5 +74,41 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_token_no_target() {
+        let obj = parse_line("line://token").unwrap();
+        assert_eq!(obj.token, "token");
+        assert!(obj.targets.is_empty());
+    }
+
+    #[test]
+    fn test_from_url_token_with_target() {
+        let obj = parse_line("line://token=/target").unwrap();
+        // token= is the host, target is path part
+        assert!(obj.targets.contains(&"target".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let obj = parse_line("line://?token=token&to=target1").unwrap();
+        assert_eq!(obj.token, "token");
+        assert!(obj.targets.contains(&"target1".to_string()));
+    }
+
+    #[test]
+    fn test_multiple_targets_via_path() {
+        let obj = parse_line("line://token/target1/target2").unwrap();
+        assert_eq!(obj.targets.len(), 2);
+        assert!(obj.targets.contains(&"target1".to_string()));
+        assert!(obj.targets.contains(&"target2".to_string()));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Line::static_details();
+        assert_eq!(details.service_name, "LINE");
+        assert_eq!(details.protocols, vec!["line"]);
     }
 }

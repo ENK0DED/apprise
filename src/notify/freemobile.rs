@@ -34,6 +34,7 @@ impl Notify for FreeMobile {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -56,5 +57,45 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    fn parse_freemobile(url: &str) -> FreeMobile {
+        let parsed = crate::utils::parse::ParsedUrl::parse(url).unwrap();
+        FreeMobile::from_url(&parsed).unwrap()
+    }
+
+    #[test]
+    fn test_from_url_user_at_password() {
+        // freemobile://user@password -> user=user, host=password (used as password)
+        let f = parse_freemobile("freemobile://user@password");
+        assert_eq!(f.user, "user");
+        assert_eq!(f.password, "password");
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let f = parse_freemobile("freemobile://?user=user&pass=password");
+        assert_eq!(f.user, "user");
+        assert_eq!(f.password, "password");
+    }
+
+    #[test]
+    fn test_from_url_no_user_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("freemobile://").unwrap();
+        assert!(FreeMobile::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_from_url_no_password_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("freemobile://:@/").unwrap();
+        assert!(FreeMobile::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = FreeMobile::static_details();
+        assert_eq!(details.service_name, "Free Mobile");
+        assert_eq!(details.protocols, vec!["freemobile"]);
+        assert!(!details.attachment_support);
     }
 }

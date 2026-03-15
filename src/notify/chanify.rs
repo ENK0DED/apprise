@@ -32,6 +32,7 @@ impl Notify for Chanify {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -56,5 +57,31 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_struct_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "chanify://my-secret-token"
+        ).unwrap();
+        let obj = Chanify::from_url(&parsed).unwrap();
+        assert_eq!(obj.token, "my-secret-token");
+    }
+
+    #[test]
+    fn test_from_url_token_query_param() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "chanify://?token=abc123"
+        ).unwrap();
+        let obj = Chanify::from_url(&parsed).unwrap();
+        assert_eq!(obj.token, "abc123");
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Chanify::static_details();
+        assert_eq!(details.service_name, "Chanify");
+        assert_eq!(details.protocols, vec!["chanify"]);
+        assert!(!details.attachment_support);
     }
 }

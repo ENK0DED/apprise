@@ -88,15 +88,95 @@ impl Notify for MsTeams {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+    use super::*;
+
+    const UUID4: &str = "8b799edf-6f98-4d3a-9be7-2862fb4e5752";
 
     #[test]
     fn test_invalid_urls() {
         let urls = vec![
-            "msteams://",
-            "msteams://:@/",
+            "msteams://".to_string(),
+            "msteams://:@/".to_string(),
+            // Only half of token_a
+            format!("msteams://{}", UUID4),
+            // Only 1 token (token_a@token_a but no token_b/token_c)
+            format!("msteams://{}@{}/", UUID4, UUID4),
+            // Only 2 tokens
+            format!("msteams://{}@{}/{}", UUID4, UUID4, "a".repeat(32)),
+            // Invalid version
+            format!("msteams://apprise/{}@{}/{}/{}?version=999", UUID4, UUID4, "e".repeat(32), UUID4),
+            format!("msteams://apprise/{}@{}/{}/{}?version=invalid", UUID4, UUID4, "e".repeat(32), UUID4),
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            // All 3 tokens -- good
+            format!("msteams://{}@{}/{}/{}", UUID4, UUID4, "b".repeat(32), UUID4),
+            // Legacy URL
+            format!("msteams://{}@{}/{}/{}", UUID4, UUID4, "c".repeat(32), UUID4),
+            // With team name (v2)
+            format!("msteams://apprise/{}@{}/{}/{}", UUID4, UUID4, "e".repeat(32), UUID4),
+            // team= argument
+            format!("msteams://{}@{}/{}/{}?team=teamname", UUID4, UUID4, "f".repeat(32), UUID4),
+            // Force v1
+            format!("msteams://apprise/{}@{}/{}/{}?version=1", UUID4, UUID4, "e".repeat(32), UUID4),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_webhook_url_v1_format() {
+        let url_str = format!("msteams://{}@{}/{}/{}", UUID4, UUID4, "a".repeat(32), UUID4);
+        let parsed = ParsedUrl::parse(&url_str).expect("parse");
+        let ms = MsTeams::from_url(&parsed).expect("from_url");
+        assert!(ms.webhook_url.starts_with("https://outlook.office.com/webhook/"));
+        assert!(ms.webhook_url.contains("/IncomingWebhook/"));
+    }
+
+    #[test]
+    fn test_webhook_url_with_team_in_user() {
+        // In Rust impl, team comes from url.user. When user is set and
+        // there are 3+ path parts, token_d triggers v2 team format.
+        let url_str = format!(
+            "msteams://myteam@{}/{}/{}/{}",
+            UUID4, "m".repeat(32), UUID4, "extra"
+        );
+        let parsed = ParsedUrl::parse(&url_str).expect("parse");
+        let ms = MsTeams::from_url(&parsed).expect("from_url");
+        assert!(ms.webhook_url.starts_with("https://myteam.webhook.office.com/webhookb2/"));
+        assert!(ms.webhook_url.contains("/IncomingWebhook/"));
+    }
+
+    #[test]
+    fn test_native_url_v1() {
+        let url_str = format!(
+            "https://outlook.office.com/webhook/{}@{}/IncomingWebhook/{}/{}",
+            UUID4, UUID4, "k".repeat(32), UUID4
+        );
+        assert!(from_url(&url_str).is_some(), "Should parse native v1 URL");
+    }
+
+    #[test]
+    fn test_native_url_v2() {
+        let url_str = format!(
+            "https://myteam.webhook.office.com/webhookb2/{}@{}/IncomingWebhook/{}/{}",
+            UUID4, UUID4, "m".repeat(32), UUID4
+        );
+        assert!(from_url(&url_str).is_some(), "Should parse native v2 URL");
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = MsTeams::static_details();
+        assert_eq!(details.service_name, "Microsoft Teams");
+        assert!(details.protocols.contains(&"msteams"));
+        assert!(!details.attachment_support);
     }
 }

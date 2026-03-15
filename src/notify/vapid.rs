@@ -97,7 +97,11 @@ impl Notify for Vapid {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::notify::NotifyContext;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_valid_urls() {
@@ -122,5 +126,122 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_subscriber_email() {
+        let parsed = ParsedUrl::parse("vapid://user@example.com").unwrap();
+        let v = Vapid::from_url(&parsed).unwrap();
+        assert_eq!(v.subscriber, "mailto:user@example.com");
+        assert!(v.endpoints.is_empty());
+    }
+
+    #[test]
+    fn test_from_url_with_endpoints() {
+        let parsed = ParsedUrl::parse("vapid://user@example.com/newuser@example.com").unwrap();
+        let v = Vapid::from_url(&parsed).unwrap();
+        assert_eq!(v.subscriber, "mailto:user@example.com");
+        assert_eq!(v.endpoints.len(), 1);
+    }
+
+    #[test]
+    fn test_from_url_with_to_param() {
+        let parsed = ParsedUrl::parse("vapid://user@example.com?to=ep1,ep2").unwrap();
+        let v = Vapid::from_url(&parsed).unwrap();
+        assert_eq!(v.endpoints.len(), 2);
+        assert!(v.endpoints.contains(&"ep1".to_string()));
+        assert!(v.endpoints.contains(&"ep2".to_string()));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Vapid::static_details();
+        assert_eq!(details.service_name, "VAPID / WebPush");
+        assert!(details.protocols.contains(&"vapid"));
+        assert!(!details.attachment_support);
+    }
+
+    #[tokio::test]
+    async fn test_send_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let v = Vapid {
+            subscriber: "mailto:user@example.com".into(),
+            endpoints: vec![format!("{}/push", server.uri())],
+            verify_certificate: false,
+            tags: vec![],
+        };
+
+        let ctx = NotifyContext {
+            title: "Test".into(),
+            body: "Hello".into(),
+            ..Default::default()
+        };
+        let result = v.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_server_error() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let v = Vapid {
+            subscriber: "mailto:user@example.com".into(),
+            endpoints: vec![format!("{}/push", server.uri())],
+            verify_certificate: false,
+            tags: vec![],
+        };
+
+        let ctx = NotifyContext {
+            title: "Test".into(),
+            body: "Hello".into(),
+            ..Default::default()
+        };
+        let result = v.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_send_multiple_endpoints() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let v = Vapid {
+            subscriber: "mailto:user@example.com".into(),
+            endpoints: vec![
+                format!("{}/push1", server.uri()),
+                format!("{}/push2", server.uri()),
+            ],
+            verify_certificate: false,
+            tags: vec![],
+        };
+
+        let ctx = NotifyContext {
+            title: "Test".into(),
+            body: "Hello".into(),
+            ..Default::default()
+        };
+        let result = v.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
     }
 }

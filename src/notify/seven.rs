@@ -35,7 +35,25 @@ impl Notify for Seven {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let apikey = "a".repeat(25);
+        let urls = vec![
+            format!("seven://{}/15551232000", apikey),
+            format!("seven://{}/?to=15551232000", apikey),
+            format!("seven://{}/15551232000?from=apprise", "3".repeat(14)),
+            format!("seven://{}/15551232000?source=apprise", "3".repeat(14)),
+            format!("seven://{}/15551232000?from=apprise&flash=true", "3".repeat(14)),
+            format!("seven://{}/15551232000?source=apprise&flash=true", "3".repeat(14)),
+            format!("seven://{}/15551232000?source=AR&flash=1&label=123", "3".repeat(14)),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
@@ -45,5 +63,41 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let apikey = "a".repeat(25);
+        let url_str = format!("seven://{}/15551232000", apikey);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let s = Seven::from_url(&parsed).unwrap();
+        assert_eq!(s.apikey, apikey);
+        assert_eq!(s.targets, vec!["15551232000"]);
+    }
+
+    #[test]
+    fn test_from_url_to_param() {
+        let apikey = "a".repeat(25);
+        let url_str = format!("seven://{}/?to=15551232000", apikey);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let s = Seven::from_url(&parsed).unwrap();
+        assert_eq!(s.apikey, apikey);
+        assert!(s.targets.contains(&"15551232000".to_string()));
+    }
+
+    #[test]
+    fn test_no_targets_fails() {
+        let apikey = "a".repeat(25);
+        let url_str = format!("seven://{}/", apikey);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        assert!(Seven::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let d = Seven::static_details();
+        assert_eq!(d.service_name, "Seven (seven.io)");
+        assert!(d.protocols.contains(&"seven"));
+        assert!(!d.attachment_support);
     }
 }

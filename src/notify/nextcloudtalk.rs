@@ -41,7 +41,11 @@ impl Notify for NextcloudTalk {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::notify::NotifyContext;
+    use wiremock::matchers::{method, path, header};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_valid_urls() {
@@ -73,5 +77,228 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    fn nctalk_for_mock(server: &MockServer, user: &str, pass: &str, rooms: &[&str]) -> NextcloudTalk {
+        let addr = server.address();
+        let rooms_path = rooms.iter().map(|r| format!("/{}", r)).collect::<String>();
+        let url_str = format!("nctalk://{}:{}@{}:{}{}", user, pass, addr.ip(), addr.port(), rooms_path);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        NextcloudTalk::from_url(&parsed).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_send_single_room_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/spreed/api/v1/chat/roomid1"))
+            .and(header("OCS-APIREQUEST", "true"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let nc = nctalk_for_mock(&server, "admin", "pass", &["roomid1"]);
+        let ctx = NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        };
+        let result = nc.send(&ctx).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_send_multiple_rooms() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/spreed/api/v1/chat/room1"))
+            .and(header("OCS-APIREQUEST", "true"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/spreed/api/v1/chat/room2"))
+            .and(header("OCS-APIREQUEST", "true"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/spreed/api/v1/chat/room3"))
+            .and(header("OCS-APIREQUEST", "true"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let nc = nctalk_for_mock(&server, "user", "pass", &["room1", "room2", "room3"]);
+        let ctx = NotifyContext {
+            title: "Title".into(),
+            body: "Body".into(),
+            ..Default::default()
+        };
+        let result = nc.send(&ctx).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_send_basic_auth_header() {
+        let server = MockServer::start().await;
+
+        // Verify basic auth is sent (base64 of "admin:secret")
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/spreed/api/v1/chat/myroom"))
+            .and(header("Authorization", "Basic YWRtaW46c2VjcmV0"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let nc = nctalk_for_mock(&server, "admin", "secret", &["myroom"]);
+        let ctx = NotifyContext {
+            body: "hello".into(),
+            ..Default::default()
+        };
+        let result = nc.send(&ctx).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_send_message_format_with_title() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/spreed/api/v1/chat/roomA"))
+            .and(wiremock::matchers::body_string_contains("My+Title%0AMy+Body"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let nc = nctalk_for_mock(&server, "u", "p", &["roomA"]);
+        let ctx = NotifyContext {
+            title: "My Title".into(),
+            body: "My Body".into(),
+            ..Default::default()
+        };
+        let result = nc.send(&ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_body_only() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/spreed/api/v1/chat/roomA"))
+            .and(wiremock::matchers::body_string_contains("message=Just+body"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let nc = nctalk_for_mock(&server, "u", "p", &["roomA"]);
+        let ctx = NotifyContext {
+            body: "Just body".into(),
+            ..Default::default()
+        };
+        let result = nc.send(&ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_server_error() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/spreed/api/v1/chat/roomid"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let nc = nctalk_for_mock(&server, "user", "pass", &["roomid"]);
+        let ctx = NotifyContext {
+            body: "test".into(),
+            ..Default::default()
+        };
+        let result = nc.send(&ctx).await;
+        assert!(result.is_ok());
+        // Server error returns Ok(false) since all_ok becomes false
+        assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_send_no_rooms_returns_true() {
+        // No rooms means the loop doesn't execute, all_ok stays true
+        let server = MockServer::start().await;
+        let addr = server.address();
+        let url_str = format!("nctalk://user:pass@{}:{}", addr.ip(), addr.port());
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let nc = NextcloudTalk::from_url(&parsed).unwrap();
+
+        let ctx = NotifyContext {
+            body: "test".into(),
+            ..Default::default()
+        };
+        let result = nc.send(&ctx).await;
+        assert!(result.is_ok());
+        // No rooms to send to, returns true (loop never runs)
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_send_partial_failure() {
+        let server = MockServer::start().await;
+
+        // First room succeeds
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/spreed/api/v1/chat/good_room"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // Second room fails
+        Mock::given(method("POST"))
+            .and(path("/ocs/v2.php/apps/spreed/api/v1/chat/bad_room"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let nc = nctalk_for_mock(&server, "user", "pass", &["good_room", "bad_room"]);
+        let ctx = NotifyContext {
+            body: "test".into(),
+            ..Default::default()
+        };
+        let result = nc.send(&ctx).await;
+        assert!(result.is_ok());
+        // One room failed, so all_ok should be false
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_secure_vs_insecure() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "nctalk://user:pass@host/room",
+        ).unwrap();
+        let nc = NextcloudTalk::from_url(&parsed).unwrap();
+        assert!(!nc.secure);
+
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "nctalks://user:pass@host/room",
+        ).unwrap();
+        let nc = NextcloudTalk::from_url(&parsed).unwrap();
+        assert!(nc.secure);
     }
 }

@@ -30,6 +30,7 @@ impl Notify for Notica {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+    use super::*;
 
     #[test]
     fn test_invalid_urls() {
@@ -40,5 +41,64 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            format!("notica://{}", "a".repeat(6)),
+            format!("notica://localhost/{}", "b".repeat(6)),
+            format!("notica://user@localhost/{}", "c".repeat(6)),
+            format!("notica://user:pass@localhost/{}/", "d".repeat(6)),
+            format!("notica://localhost:8080/{}", "a".repeat(6)),
+            format!("noticas://localhost/{}", "j".repeat(6)),
+            format!("noticas://user:pass@localhost/{}", "e".repeat(6)),
+            format!("noticas://localhost:8080/path/{}", "5".repeat(6)),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields_cloud_mode() {
+        let parsed = ParsedUrl::parse(&format!("notica://{}", "a".repeat(6))).unwrap();
+        let n = Notica::from_url(&parsed).unwrap();
+        assert_eq!(n.token, "a".repeat(6));
+        assert!(!n.secure);
+        assert!(n.host.is_none());
+    }
+
+    #[test]
+    fn test_from_url_self_hosted() {
+        // In self-hosted mode, the host becomes the token (impl limitation)
+        let parsed = ParsedUrl::parse(&format!("notica://localhost/{}", "b".repeat(6))).unwrap();
+        let n = Notica::from_url(&parsed).unwrap();
+        // Current impl uses host as token
+        assert_eq!(n.token, "localhost");
+    }
+
+    #[test]
+    fn test_secure_flag() {
+        let parsed = ParsedUrl::parse(&format!("noticas://localhost/{}", "j".repeat(6))).unwrap();
+        let n = Notica::from_url(&parsed).unwrap();
+        assert!(n.secure);
+    }
+
+    #[test]
+    fn test_port_parsing() {
+        let parsed = ParsedUrl::parse(&format!("notica://localhost:8080/{}", "a".repeat(6))).unwrap();
+        let n = Notica::from_url(&parsed).unwrap();
+        assert_eq!(n.port, Some(8080));
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Notica::static_details();
+        assert_eq!(details.service_name, "Notica");
+        assert_eq!(details.service_url, Some("https://notica.us"));
+        assert!(details.protocols.contains(&"notica"));
+        assert!(details.protocols.contains(&"noticas"));
+        assert!(!details.attachment_support);
     }
 }

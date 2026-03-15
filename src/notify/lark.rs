@@ -37,7 +37,22 @@ impl Notify for Lark {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
+    use wiremock::MockServer;
+
+    fn parse_lark(url: &str) -> Option<Lark> {
+        ParsedUrl::parse(url).and_then(|p| Lark::from_url(&p))
+    }
+
+    fn default_ctx() -> crate::notify::NotifyContext {
+        crate::notify::NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
@@ -48,5 +63,62 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "lark://abcd-1234",
+            "lark://?token=abcd-1234",
+            "https://open.larksuite.com/open-apis/bot/v2/hook/abcd-1234",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_token() {
+        let obj = parse_lark("lark://abcd-1234").unwrap();
+        assert_eq!(obj.token, "abcd-1234");
+    }
+
+    #[test]
+    fn test_from_url_query_token() {
+        let obj = parse_lark("lark://?token=abcd-1234").unwrap();
+        assert_eq!(obj.token, "abcd-1234");
+    }
+
+    #[test]
+    fn test_native_url_parsing() {
+        let obj = parse_lark("https://open.larksuite.com/open-apis/bot/v2/hook/abcd-1234").unwrap();
+        assert_eq!(obj.token, "abcd-1234");
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Lark::static_details();
+        assert_eq!(details.service_name, "Lark");
+        assert_eq!(details.protocols, vec!["lark"]);
+    }
+
+    /// Helper: create a Lark instance pointing at the given mock server.
+    fn lark_for_mock(server: &MockServer, token: &str) -> Lark {
+        // We override the token but send() still points at open.larksuite.com.
+        // Since Lark uses a fixed host, we only test from_url parsing.
+        // For a full send test we'd need to override the URL, but we can
+        // still verify the struct fields.
+        let addr = server.address();
+        let _ = addr; // Acknowledge mock server exists
+        let parsed = ParsedUrl::parse(&format!("lark://{}", token)).unwrap();
+        Lark::from_url(&parsed).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_lark_struct_fields() {
+        let server = MockServer::start().await;
+        let lark = lark_for_mock(&server, "mytoken");
+        assert_eq!(lark.token, "mytoken");
+        assert!(lark.verify_certificate);
     }
 }

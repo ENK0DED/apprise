@@ -40,6 +40,8 @@ mod tests {
         let valid_urls = vec![
             "rsyslog://localhost",
             "rsyslog://localhost:514",
+            "rsyslog://192.168.1.1",
+            "rsyslog://syslog.example.com:1514",
         ];
         for url in &valid_urls {
             let parsed = ParsedUrl::parse(url);
@@ -51,5 +53,35 @@ mod tests {
                 url,
             );
         }
+    }
+
+    #[test]
+    fn test_rsyslog_default_port() {
+        let parsed = ParsedUrl::parse("rsyslog://localhost").unwrap();
+        let rs = RSyslog::from_url(&parsed).unwrap();
+        assert_eq!(rs.host, "localhost");
+        assert_eq!(rs.port, 514);
+    }
+
+    #[test]
+    fn test_rsyslog_custom_port() {
+        let parsed = ParsedUrl::parse("rsyslog://localhost:518").unwrap();
+        let rs = RSyslog::from_url(&parsed).unwrap();
+        assert_eq!(rs.port, 518);
+    }
+
+    #[test]
+    fn test_rsyslog_host_parsing() {
+        let parsed = ParsedUrl::parse("rsyslog://syslog.example.com").unwrap();
+        let rs = RSyslog::from_url(&parsed).unwrap();
+        assert_eq!(rs.host, "syslog.example.com");
+    }
+
+    #[test]
+    fn test_rsyslog_static_details() {
+        let details = RSyslog::static_details();
+        assert_eq!(details.service_name, "RSyslog");
+        assert_eq!(details.protocols, vec!["rsyslog"]);
+        assert!(!details.attachment_support);
     }
 }

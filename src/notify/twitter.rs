@@ -142,6 +142,7 @@ impl Notify for Twitter {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -179,5 +180,58 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_host_path_form() {
+        // twitter://ck/cs/at/ats
+        let parsed = ParsedUrl::parse("twitter://ckey/csecret/atoken/asecret").unwrap();
+        let tw = Twitter::from_url(&parsed).unwrap();
+        assert_eq!(tw.consumer_key, "ckey");
+        assert_eq!(tw.consumer_secret, "csecret");
+        assert_eq!(tw.access_token, "atoken");
+        assert_eq!(tw.access_token_secret, "asecret");
+        assert!(tw.targets.is_empty());
+    }
+
+    #[test]
+    fn test_from_url_with_targets() {
+        // twitter://usera@consumer_key/consumer_secret/atoken14/access_secret/user/?to=userb
+        // With user@host form: user=usera, host=consumer_key
+        // Path parts: [consumer_secret, atoken14, access_secret, user]
+        // password is None, so host+path form: ck=consumer_key, cs=consumer_secret, at=atoken14, ats=access_secret
+        // remaining path parts = [user], plus to=userb
+        let parsed = ParsedUrl::parse(
+            "twitter://usera@consumer_key/consumer_secret/atoken14/access_secret/user/?to=userb"
+        ).unwrap();
+        let tw = Twitter::from_url(&parsed).unwrap();
+        assert_eq!(tw.consumer_key, "consumer_key");
+        // targets from path parts after first 3
+        assert!(tw.targets.contains(&"user".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_tweet_schema() {
+        let parsed = ParsedUrl::parse("tweet://ckey/csecret/atoken/asecret").unwrap();
+        let tw = Twitter::from_url(&parsed).unwrap();
+        assert_eq!(tw.consumer_key, "ckey");
+    }
+
+    #[test]
+    fn test_from_url_tweet_mode() {
+        let parsed = ParsedUrl::parse("twitter://ckey/csecret/atoken/asecret?mode=tweet").unwrap();
+        let tw = Twitter::from_url(&parsed);
+        assert!(tw.is_some());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Twitter::static_details();
+        assert_eq!(details.service_name, "Twitter/X");
+        assert_eq!(details.service_url, Some("https://twitter.com"));
+        assert!(details.protocols.contains(&"twitter"));
+        assert!(details.protocols.contains(&"x"));
+        assert!(details.protocols.contains(&"tweet"));
+        assert!(details.attachment_support);
     }
 }

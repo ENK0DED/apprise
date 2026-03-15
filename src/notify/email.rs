@@ -325,4 +325,100 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_email_gmail_smtp_defaults() {
+        let parsed = ParsedUrl::parse("mailto://user:pass@gmail.com").unwrap();
+        let e = Email::from_url(&parsed).unwrap();
+        assert_eq!(e.smtp_host, "smtp.gmail.com");
+        assert_eq!(e.smtp_port, 587);
+        assert_eq!(e.secure, SecureMode::StartTls);
+        assert_eq!(e.from, "user@gmail.com");
+    }
+
+    #[test]
+    fn test_email_yahoo_smtp_defaults() {
+        let parsed = ParsedUrl::parse("mailto://user:pass@yahoo.com").unwrap();
+        let e = Email::from_url(&parsed).unwrap();
+        assert_eq!(e.smtp_host, "smtp.mail.yahoo.com");
+        assert_eq!(e.smtp_port, 465);
+        assert_eq!(e.secure, SecureMode::Ssl);
+    }
+
+    #[test]
+    fn test_email_hotmail_smtp_defaults() {
+        let parsed = ParsedUrl::parse("mailto://user:pass@hotmail.com").unwrap();
+        let e = Email::from_url(&parsed).unwrap();
+        assert_eq!(e.smtp_host, "smtp-mail.outlook.com");
+        assert_eq!(e.smtp_port, 587);
+    }
+
+    #[test]
+    fn test_email_custom_smtp_host() {
+        let parsed = ParsedUrl::parse("mailto://user:pass@example.com?smtp=mail.example.com").unwrap();
+        let e = Email::from_url(&parsed).unwrap();
+        assert_eq!(e.smtp_host, "mail.example.com");
+    }
+
+    #[test]
+    fn test_email_explicit_recipient() {
+        let parsed = ParsedUrl::parse("mailto://user:pass@gmail.com/recipient@example.com").unwrap();
+        let e = Email::from_url(&parsed).unwrap();
+        assert!(e.to.contains(&"recipient@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_email_default_to_self() {
+        let parsed = ParsedUrl::parse("mailto://user:pass@gmail.com").unwrap();
+        let e = Email::from_url(&parsed).unwrap();
+        assert!(e.to.contains(&"user@gmail.com".to_string()));
+    }
+
+    #[test]
+    fn test_email_cc_bcc() {
+        let parsed = ParsedUrl::parse("mailto://user:pass@gmail.com?cc=cc@example.com&bcc=bcc@example.com").unwrap();
+        let e = Email::from_url(&parsed).unwrap();
+        assert!(e.cc.contains(&"cc@example.com".to_string()));
+        assert!(e.bcc.contains(&"bcc@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_email_from_override() {
+        let parsed = ParsedUrl::parse("mailto://user:pass@gmail.com?from=custom@example.com").unwrap();
+        let e = Email::from_url(&parsed).unwrap();
+        assert_eq!(e.from, "custom@example.com");
+    }
+
+    #[test]
+    fn test_email_secure_modes() {
+        // mailtos defaults to StartTls
+        let parsed = ParsedUrl::parse("mailtos://user:pass@example.com").unwrap();
+        let e = Email::from_url(&parsed).unwrap();
+        assert!(e.secure == SecureMode::StartTls || e.secure == SecureMode::Ssl);
+
+        // explicit ssl mode
+        let parsed = ParsedUrl::parse("mailto://user:pass@example.com?mode=ssl").unwrap();
+        let e = Email::from_url(&parsed).unwrap();
+        assert_eq!(e.secure, SecureMode::Ssl);
+
+        // explicit starttls mode
+        let parsed = ParsedUrl::parse("mailto://user:pass@example.com?mode=starttls").unwrap();
+        let e = Email::from_url(&parsed).unwrap();
+        assert_eq!(e.secure, SecureMode::StartTls);
+    }
+
+    #[test]
+    fn test_email_from_name() {
+        let parsed = ParsedUrl::parse("mailto://user:pass@gmail.com?name=John+Doe").unwrap();
+        let e = Email::from_url(&parsed).unwrap();
+        assert_eq!(e.from_name.as_deref(), Some("John Doe"));
+    }
+
+    #[test]
+    fn test_email_static_details() {
+        let details = Email::static_details();
+        assert_eq!(details.service_name, "Email (SMTP)");
+        assert_eq!(details.protocols, vec!["mailto", "mailtos"]);
+        assert!(details.attachment_support);
+    }
 }

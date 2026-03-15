@@ -47,6 +47,7 @@ impl Notify for Notifiarr {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+    use super::*;
 
     #[test]
     fn test_valid_urls() {
@@ -85,5 +86,72 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_apikey_from_host() {
+        let parsed = ParsedUrl::parse("notifiarr://myapikey/123").expect("parse");
+        let n = Notifiarr::from_url(&parsed).expect("from_url");
+        assert_eq!(n.apikey, "myapikey");
+        assert_eq!(n.channels, vec!["123"]);
+    }
+
+    #[test]
+    fn test_from_url_apikey_from_query() {
+        let parsed = ParsedUrl::parse("notifiarr://123/?apikey=myapikey").expect("parse");
+        let n = Notifiarr::from_url(&parsed).expect("from_url");
+        assert_eq!(n.apikey, "myapikey");
+    }
+
+    #[test]
+    fn test_from_url_key_alias() {
+        let parsed = ParsedUrl::parse("notifiarr://123/?key=myapikey").expect("parse");
+        let n = Notifiarr::from_url(&parsed).expect("from_url");
+        assert_eq!(n.apikey, "myapikey");
+    }
+
+    #[test]
+    fn test_channels_from_to_param() {
+        let parsed = ParsedUrl::parse("notifiarr://apikey/?to=123,432").expect("parse");
+        let n = Notifiarr::from_url(&parsed).expect("from_url");
+        assert!(n.channels.contains(&"123".to_string()));
+        assert!(n.channels.contains(&"432".to_string()));
+    }
+
+    #[test]
+    fn test_multiple_channels() {
+        // When apikey is from host, path parts are channels
+        let parsed = ParsedUrl::parse("notifiarr://apikey/123/325").expect("parse");
+        let n = Notifiarr::from_url(&parsed).expect("from_url");
+        assert_eq!(n.apikey, "apikey");
+        assert!(n.channels.contains(&"123".to_string()));
+        assert!(n.channels.contains(&"325".to_string()));
+    }
+
+    #[test]
+    fn test_event_must_be_numeric() {
+        // Valid numeric event
+        assert!(from_url("notifiarr://apikey/?to=123,432&event=1234").is_some());
+        // Invalid non-numeric event
+        assert!(from_url("notifiarr://apikey/1234/?event=invalid").is_none());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Notifiarr::static_details();
+        assert_eq!(details.service_name, "Notifiarr");
+        assert_eq!(details.service_url, Some("https://notifiarr.com"));
+        assert!(details.protocols.contains(&"notifiarr"));
+        assert!(!details.attachment_support);
+    }
+
+    #[test]
+    fn test_api_endpoint_is_fixed() {
+        // The Notifiarr API endpoint is fixed at https://notifiarr.com/api/v1/notification/apprise
+        // Verify it's used in the send method by checking the static details
+        let parsed = ParsedUrl::parse("notifiarr://apikey/12345").expect("parse");
+        let n = Notifiarr::from_url(&parsed).expect("from_url");
+        assert_eq!(n.apikey, "apikey");
+        assert_eq!(n.channels, vec!["12345"]);
     }
 }

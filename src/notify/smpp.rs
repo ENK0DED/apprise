@@ -149,7 +149,22 @@ impl Notify for Smpp {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "smpp://user:pass@host/+15551234567",
+            "smpps://user:pass@host/+15551234567",
+            "smpp://user:pass@host:2775/+15551234567",
+            "smpp://user:pass@host/+15551234567/+15559876543",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
@@ -167,5 +182,67 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_smpp_struct_fields() {
+        let parsed = ParsedUrl::parse("smpp://myuser:mypass@smpphost:2775/+15551234567").unwrap();
+        let smpp = Smpp::from_url(&parsed).unwrap();
+        assert_eq!(smpp.host, "smpphost");
+        assert_eq!(smpp.port, 2775);
+        assert_eq!(smpp.user, "myuser");
+        assert_eq!(smpp.password, "mypass");
+        assert!(smpp.targets.contains(&"+15551234567".to_string()));
+        assert!(!smpp.secure);
+    }
+
+    #[test]
+    fn test_smpps_secure_flag() {
+        let parsed = ParsedUrl::parse("smpps://user:pass@host/+15551234567").unwrap();
+        let smpp = Smpp::from_url(&parsed).unwrap();
+        assert!(smpp.secure);
+    }
+
+    #[test]
+    fn test_smpp_default_port() {
+        let parsed = ParsedUrl::parse("smpp://user:pass@host/+15551234567").unwrap();
+        let smpp = Smpp::from_url(&parsed).unwrap();
+        assert_eq!(smpp.port, 2775);
+    }
+
+    #[test]
+    fn test_smpp_custom_from() {
+        let parsed = ParsedUrl::parse("smpp://user:pass@host/+15551234567?from=MySender").unwrap();
+        let smpp = Smpp::from_url(&parsed).unwrap();
+        assert_eq!(smpp.from, "MySender");
+    }
+
+    #[test]
+    fn test_smpp_default_from() {
+        let parsed = ParsedUrl::parse("smpp://user:pass@host/+15551234567").unwrap();
+        let smpp = Smpp::from_url(&parsed).unwrap();
+        assert_eq!(smpp.from, "Apprise");
+    }
+
+    #[test]
+    fn test_smpp_multiple_targets() {
+        let parsed = ParsedUrl::parse("smpp://user:pass@host/+111/+222/+333").unwrap();
+        let smpp = Smpp::from_url(&parsed).unwrap();
+        assert_eq!(smpp.targets.len(), 3);
+    }
+
+    #[test]
+    fn test_smpp_to_query_param() {
+        let parsed = ParsedUrl::parse("smpp://user:pass@host/+111?to=+222,+333").unwrap();
+        let smpp = Smpp::from_url(&parsed).unwrap();
+        assert_eq!(smpp.targets.len(), 3);
+    }
+
+    #[test]
+    fn test_smpp_static_details() {
+        let details = Smpp::static_details();
+        assert_eq!(details.service_name, "SMPP");
+        assert_eq!(details.protocols, vec!["smpp", "smpps"]);
+        assert!(!details.attachment_support);
     }
 }

@@ -37,7 +37,11 @@ impl Notify for Xbmc {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::notify::NotifyContext;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_valid_urls() {
@@ -82,5 +86,211 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    /// Helper: create an Xbmc instance pointing at the given mock server.
+    fn xbmc_for_mock(server: &MockServer) -> Xbmc {
+        let addr = server.address();
+        let url_str = format!("kodi://{}:{}", addr.ip(), addr.port());
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        Xbmc::from_url(&parsed).unwrap()
+    }
+
+    fn xbmc_with_auth_for_mock(server: &MockServer, user: &str, pass: &str) -> Xbmc {
+        let addr = server.address();
+        let url_str = format!("kodi://{}:{}@{}:{}", user, pass, addr.ip(), addr.port());
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        Xbmc::from_url(&parsed).unwrap()
+    }
+
+    fn default_ctx() -> NotifyContext {
+        NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_basic_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/jsonrpc"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let xbmc = xbmc_for_mock(&server);
+        let result = xbmc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_json_rpc_payload() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/jsonrpc"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "GUI.ShowNotification",
+                "params": {
+                    "title": "My Title",
+                    "message": "My Body",
+                    "displaytime": 5000
+                },
+                "id": 1
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let xbmc = xbmc_for_mock(&server);
+        let ctx = NotifyContext {
+            title: "My Title".into(),
+            body: "My Body".into(),
+            ..Default::default()
+        };
+        let result = xbmc.send(&ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_with_basic_auth() {
+        use wiremock::matchers::header;
+
+        let server = MockServer::start().await;
+
+        // "user:pass" base64 = "dXNlcjpwYXNz"
+        Mock::given(method("POST"))
+            .and(path("/jsonrpc"))
+            .and(header("Authorization", "Basic dXNlcjpwYXNz"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let xbmc = xbmc_with_auth_for_mock(&server, "user", "pass");
+        let result = xbmc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_server_error_returns_false() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/jsonrpc"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let xbmc = xbmc_for_mock(&server);
+        let result = xbmc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_send_bizarre_status_code() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/jsonrpc"))
+            .respond_with(ResponseTemplate::new(418))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let xbmc = xbmc_for_mock(&server);
+        let result = xbmc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_send_connection_failure() {
+        let url_str = "kodi://127.0.0.1:1";
+        let parsed = crate::utils::parse::ParsedUrl::parse(url_str).unwrap();
+        let xbmc = Xbmc::from_url(&parsed).unwrap();
+
+        let result = xbmc.send(&default_ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_send_includes_user_agent() {
+        use crate::notify::APP_ID;
+        use wiremock::matchers::header;
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/jsonrpc"))
+            .and(header("User-Agent", APP_ID))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let xbmc = xbmc_for_mock(&server);
+        let result = xbmc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_default_ports() {
+        // kodi:// defaults to 8080
+        let parsed = crate::utils::parse::ParsedUrl::parse("kodi://localhost").unwrap();
+        let x = Xbmc::from_url(&parsed).unwrap();
+        assert_eq!(x.port, 8080);
+        assert!(!x.secure);
+
+        // kodis:// defaults to 443
+        let parsed = crate::utils::parse::ParsedUrl::parse("kodis://localhost").unwrap();
+        let x = Xbmc::from_url(&parsed).unwrap();
+        assert_eq!(x.port, 443);
+        assert!(x.secure);
+    }
+
+    #[test]
+    fn test_custom_port() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("kodi://localhost:9090").unwrap();
+        let x = Xbmc::from_url(&parsed).unwrap();
+        assert_eq!(x.port, 9090);
+    }
+
+    #[test]
+    fn test_xbmc_schema_also_works() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("xbmc://localhost").unwrap();
+        let x = Xbmc::from_url(&parsed).unwrap();
+        assert_eq!(x.host, "localhost");
+    }
+
+    #[tokio::test]
+    async fn test_send_without_auth_no_auth_header() {
+        let server = MockServer::start().await;
+
+        // Mount a mock that does NOT require auth header
+        Mock::given(method("POST"))
+            .and(path("/jsonrpc"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let xbmc = xbmc_for_mock(&server);
+        assert!(xbmc.user.is_none());
+        assert!(xbmc.password.is_none());
+
+        let result = xbmc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
     }
 }

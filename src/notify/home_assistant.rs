@@ -117,4 +117,314 @@ mod tests {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
     }
+
+    // ── Behavioral tests using wiremock ──────────────────────────────────
+
+    use super::*;
+    use crate::asset::AppriseAsset;
+    use crate::notify::{Notify, NotifyContext};
+    use crate::types::{NotifyFormat, NotifyType};
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Helper: build a NotifyContext with sensible defaults.
+    fn ctx(title: &str, body: &str) -> NotifyContext {
+        NotifyContext {
+            body: body.to_string(),
+            title: title.to_string(),
+            notify_type: NotifyType::Info,
+            body_format: NotifyFormat::Text,
+            attachments: vec![],
+            interpret_escapes: false,
+            interpret_emojis: false,
+            tags: vec![],
+            asset: AppriseAsset::default(),
+        }
+    }
+
+    /// Helper: create a HomeAssistant instance pointing at the mock server.
+    fn ha_for_mock(server: &MockServer, token: &str) -> HomeAssistant {
+        let addr = server.address();
+        let port = addr.port();
+        let url_str = format!("hassio://localhost:{}/{}", port, token);
+        let parsed = ParsedUrl::parse(&url_str).expect("parse test URL");
+        HomeAssistant::from_url(&parsed).expect("create HomeAssistant from test URL")
+    }
+
+    // ── 1. Basic POST with correct JSON payload ─────────────────────────
+
+    #[tokio::test]
+    async fn test_basic_send_posts_to_correct_endpoint() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/services/persistent_notification/create"))
+            .and(header("Authorization", "Bearer accesstoken"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ha = ha_for_mock(&server, "accesstoken");
+        let result = ha.send(&ctx("hello", "world")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_send_includes_title_and_body_in_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/services/persistent_notification/create"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "title": "My Title",
+                "message": "My Body"
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ha = ha_for_mock(&server, "mytoken");
+        let result = ha.send(&ctx("My Title", "My Body")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    // ── 2. Authorization header with long-lived access token ────────────
+
+    #[tokio::test]
+    async fn test_bearer_token_in_auth_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/services/persistent_notification/create"))
+            .and(header("Authorization", "Bearer long-lived-access-token"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ha = ha_for_mock(&server, "long-lived-access-token");
+        let result = ha.send(&ctx("t", "b")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_accesstoken_from_query_param() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/services/persistent_notification/create"))
+            .and(header("Authorization", "Bearer llat"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!(
+            "hassio://localhost:{}/a/path?accesstoken=llat",
+            addr.port()
+        );
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let ha = HomeAssistant::from_url(&parsed).unwrap();
+
+        let result = ha.send(&ctx("t", "b")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    // ── 3. Custom port and path ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_custom_port() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/services/persistent_notification/create"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!(
+            "hassio://localhost:{}/mytoken",
+            addr.port()
+        );
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let ha = HomeAssistant::from_url(&parsed).unwrap();
+
+        let result = ha.send(&ctx("t", "b")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_default_port_8123_for_insecure() {
+        // hassio:// without explicit port should default to 8123
+        let parsed = ParsedUrl::parse("hassio://localhost/mytoken").unwrap();
+        let ha = HomeAssistant::from_url(&parsed).unwrap();
+        assert_eq!(ha.port, Some(8123));
+    }
+
+    #[tokio::test]
+    async fn test_secure_no_default_port() {
+        // hassios:// without explicit port should have no port set
+        let parsed = ParsedUrl::parse("hassios://localhost/mytoken").unwrap();
+        let ha = HomeAssistant::from_url(&parsed).unwrap();
+        assert_eq!(ha.port, None);
+    }
+
+    // ── 4. Notification ID ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_notification_id_included_in_payload() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/services/persistent_notification/create"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "title": "t",
+                "message": "b",
+                "notification_id": "abcd"
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!(
+            "hassio://localhost:{}/mytoken?nid=abcd",
+            addr.port()
+        );
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let ha = HomeAssistant::from_url(&parsed).unwrap();
+
+        let result = ha.send(&ctx("t", "b")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    // ── 5. Error handling ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_http_500_returns_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/services/persistent_notification/create"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ha = ha_for_mock(&server, "mytoken");
+        let result = ha.send(&ctx("title", "body")).await;
+        assert!(result.is_err(), "HTTP 500 should return Err");
+    }
+
+    #[tokio::test]
+    async fn test_http_401_returns_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/services/persistent_notification/create"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ha = ha_for_mock(&server, "badtoken");
+        let result = ha.send(&ctx("title", "body")).await;
+        assert!(result.is_err(), "HTTP 401 should return Err");
+    }
+
+    #[tokio::test]
+    async fn test_http_error_contains_status_code() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/services/persistent_notification/create"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ha = ha_for_mock(&server, "mytoken");
+        let result = ha.send(&ctx("title", "body")).await;
+        match result {
+            Err(crate::error::NotifyError::ServiceError { status, body }) => {
+                assert_eq!(status, 500);
+                assert_eq!(body, "server error");
+            }
+            other => panic!("Expected ServiceError, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connection_refused_returns_error() {
+        // Point at a port that nothing is listening on
+        let parsed = ParsedUrl::parse("hassio://localhost:19999/mytoken").unwrap();
+        let ha = HomeAssistant::from_url(&parsed).unwrap();
+
+        let result = ha.send(&ctx("title", "body")).await;
+        assert!(result.is_err(), "Connection refused should return Err");
+    }
+
+    // ── 6. Secure vs insecure mode ──────────────────────────────────────
+
+    #[test]
+    fn test_hassios_sets_secure_flag() {
+        let parsed = ParsedUrl::parse("hassios://localhost/mytoken").unwrap();
+        let ha = HomeAssistant::from_url(&parsed).unwrap();
+        assert!(ha.secure);
+    }
+
+    #[test]
+    fn test_hassio_sets_insecure_flag() {
+        let parsed = ParsedUrl::parse("hassio://localhost/mytoken").unwrap();
+        let ha = HomeAssistant::from_url(&parsed).unwrap();
+        assert!(!ha.secure);
+    }
+
+    // ── 7. User-Agent header ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_user_agent_header_sent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/services/persistent_notification/create"))
+            .and(header("User-Agent", crate::notify::APP_ID))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ha = ha_for_mock(&server, "mytoken");
+        let result = ha.send(&ctx("t", "b")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    // ── 8. User:pass in URL with access token in path ───────────────────
+
+    #[tokio::test]
+    async fn test_user_pass_url_with_path_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/services/persistent_notification/create"))
+            .and(header("Authorization", "Bearer long-lived-access-token"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!(
+            "hassio://user:pass@localhost:{}/long-lived-access-token/",
+            addr.port()
+        );
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let ha = HomeAssistant::from_url(&parsed).unwrap();
+
+        let result = ha.send(&ctx("t", "b")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
 }

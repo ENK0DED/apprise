@@ -104,6 +104,7 @@ impl Notify for OpsGenie {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -150,5 +151,84 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_basic_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("opsgenie://apikey/user").unwrap();
+        let obj = OpsGenie::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, "apikey");
+        assert!(obj.targets.contains(&"user".to_string()));
+        assert_eq!(obj.region, "us");
+    }
+
+    #[test]
+    fn test_from_url_eu_region() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "opsgenie://apikey/@user?region=eu",
+        ).unwrap();
+        let obj = OpsGenie::from_url(&parsed).unwrap();
+        assert_eq!(obj.region, "eu");
+    }
+
+    #[test]
+    fn test_from_url_kwargs() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "opsgenie://?apikey=abc&to=user",
+        ).unwrap();
+        let obj = OpsGenie::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, "abc");
+        assert!(obj.targets.contains(&"user".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_multiple_targets() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "opsgenie://apikey/user@email.com/#team/*sche/^esc/%20/a",
+        ).unwrap();
+        let obj = OpsGenie::from_url(&parsed).unwrap();
+        // Should have multiple targets parsed from path
+        assert!(obj.targets.len() >= 4);
+    }
+
+    #[test]
+    fn test_from_url_to_param_targets() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "opsgenie://apikey?to=#team,user",
+        ).unwrap();
+        let obj = OpsGenie::from_url(&parsed).unwrap();
+        assert!(obj.targets.contains(&"#team".to_string()));
+        assert!(obj.targets.contains(&"user".to_string()));
+    }
+
+    #[test]
+    fn test_valid_actions() {
+        for action in &["new", "close", "delete", "acknowledge", "ack", "note"] {
+            let url = format!("opsgenie://apikey/@user?action={}", action);
+            let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+            assert!(OpsGenie::from_url(&parsed).is_some(), "Action {} should be valid", action);
+        }
+    }
+
+    #[test]
+    fn test_type_mappings() {
+        // Valid type mappings: :info=new, :warning=close, etc.
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "opsgenie://apikey/@user?:info=new",
+        ).unwrap();
+        assert!(OpsGenie::from_url(&parsed).is_some());
+
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "opsgenie://apikey/@user?:success=acknowledge",
+        ).unwrap();
+        assert!(OpsGenie::from_url(&parsed).is_some());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = OpsGenie::static_details();
+        assert_eq!(details.service_name, "OpsGenie");
+        assert!(details.protocols.contains(&"opsgenie"));
+        assert_eq!(details.service_url, Some("https://www.opsgenie.com"));
     }
 }

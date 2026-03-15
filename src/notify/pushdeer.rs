@@ -33,7 +33,21 @@ impl Notify for PushDeer {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let a8 = "a".repeat(8);
+        let urls = vec![
+            format!("pushdeer://localhost/{}", a8),
+            format!("pushdeer://localhost:80/{}", a8),
+            format!("pushdeer://{}", a8),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
@@ -44,5 +58,33 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_basic_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "pushdeer://mytoken",
+        ).unwrap();
+        let obj = PushDeer::from_url(&parsed).unwrap();
+        assert_eq!(obj.token, "mytoken");
+    }
+
+    #[test]
+    fn test_from_url_with_host() {
+        // When host is specified, the token is the host (default API)
+        let a8 = "a".repeat(8);
+        let url = format!("pushdeer://{}", a8);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+        let obj = PushDeer::from_url(&parsed).unwrap();
+        assert_eq!(obj.token, a8);
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = PushDeer::static_details();
+        assert_eq!(details.service_name, "PushDeer");
+        assert!(details.protocols.contains(&"pushdeer"));
+        assert!(details.protocols.contains(&"pushdeers"));
+        assert_eq!(details.service_url, Some("https://www.pushdeer.com"));
     }
 }

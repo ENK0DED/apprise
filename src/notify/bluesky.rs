@@ -74,6 +74,7 @@ impl Notify for BlueSky {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -100,5 +101,38 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_struct_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "bluesky://myhandle@my-app-password"
+        ).unwrap();
+        let obj = BlueSky::from_url(&parsed).unwrap();
+        assert_eq!(obj.user, "myhandle");
+        assert_eq!(obj.password, "my-app-password");
+    }
+
+    #[test]
+    fn test_from_url_dotted_user() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "bluesky://user.example.ca@app-pw3"
+        ).unwrap();
+        let obj = BlueSky::from_url(&parsed).unwrap();
+        assert_eq!(obj.user, "user.example.ca");
+        assert_eq!(obj.password, "app-pw3");
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = BlueSky::static_details();
+        assert_eq!(details.service_name, "BlueSky");
+        assert_eq!(details.protocols, vec!["bsky", "bluesky"]);
+        assert!(details.attachment_support);
+    }
+
+    #[test]
+    fn test_bsky_schema_alias() {
+        assert!(from_url("bsky://user@pass").is_some());
     }
 }

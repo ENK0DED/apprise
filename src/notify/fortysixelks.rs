@@ -47,6 +47,7 @@ impl Notify for FortySixElks {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -66,4 +67,56 @@ mod tests {
         }
     }
 
+    fn parse_elks(url: &str) -> FortySixElks {
+        let parsed = crate::utils::parse::ParsedUrl::parse(url).unwrap();
+        FortySixElks::from_url(&parsed).unwrap()
+    }
+
+    #[test]
+    fn test_from_url_basic() {
+        let e = parse_elks("46elks://user:pass@+15551234556");
+        assert_eq!(e.user, "user");
+        assert_eq!(e.password, "pass");
+        // Host becomes from_phone in non-native URL mode
+        assert_eq!(e.from_phone, "+15551234556");
+        assert!(e.targets.is_empty());
+    }
+
+    #[test]
+    fn test_from_url_with_targets() {
+        let e = parse_elks("46elks://user:pass@+15551234567/+46701234534?from=Acme");
+        assert_eq!(e.user, "user");
+        assert_eq!(e.password, "pass");
+        assert!(e.targets.contains(&"+46701234534".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_elks_schema() {
+        let e = parse_elks("elks://user:pass@+15551234123/");
+        assert_eq!(e.user, "user");
+        assert_eq!(e.password, "pass");
+    }
+
+    #[test]
+    fn test_from_url_native_url() {
+        let e = parse_elks("https://user1:pass@api.46elks.com/a1/sms?to=%2B15551234511&from=Acme");
+        assert_eq!(e.user, "user1");
+        assert_eq!(e.password, "pass");
+        assert_eq!(e.from_phone, "Acme");
+        assert!(e.targets.contains(&"+15551234511".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_to_query() {
+        let e = parse_elks("46elks://user:pass@+15551234567?to=+15559876543");
+        assert!(e.targets.contains(&"+15559876543".to_string()));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = FortySixElks::static_details();
+        assert_eq!(details.service_name, "46elks");
+        assert_eq!(details.protocols, vec!["46elks", "elks"]);
+        assert!(!details.attachment_support);
+    }
 }

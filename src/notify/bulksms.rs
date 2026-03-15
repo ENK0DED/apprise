@@ -52,6 +52,7 @@ impl Notify for BulkSms {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -59,10 +60,80 @@ mod tests {
         let urls = vec![
             "bulksms://",
             "bulksms://:@/",
+            "bulksms://aaaaaaaaaa@12345678",
+            "bulksms://aaaaaaaaaa:bbbbbbbbbb@33333",
+            "bulksms://aaaaa:bbbbbbbbbb@33333333333/abcd/",
+            "bulksms://bbbbb:cccccccccc@44444444444?batch=y&unicode=n",
+            "bulksms://aaaaaaaaaa:bbbbbbbbbb@123456/44444444444",
+            "bulksms://aaaaaaaaaa:bbbbbbbbbb@55555555555",
+            "bulksms://aaaaaaaaaa:bbbbbbbbbb@admin?route=premium",
+            "bulksms://_?user=aaaaaaaaaa&password=bbbbbbbbbb&from=55555555555",
+            "bulksms://_?user=aaaaaaaaaa&password=bbbbbbbbbb&from=55555555555&to=7777777777777",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);
         }
     }
 
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            // invalid route
+            "bulksms://aaaaaaaaaa:bbbbbbbbbb@admin?route=invalid",
+            // from too short
+            "bulksms://_?user=aaaaaaaaaa&password=bbbbbbbbbb&from=555",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_struct_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "bulksms://myuser:mypass@+15551231234/+15555555555"
+        ).unwrap();
+        let obj = BulkSms::from_url(&parsed).unwrap();
+        assert_eq!(obj.user, "myuser");
+        assert_eq!(obj.password, "mypass");
+        // host is first target, path_parts are additional
+        assert!(obj.targets.len() >= 2);
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "bulksms://_?user=testuser&password=testpass&from=55555555555&to=66666666666"
+        ).unwrap();
+        let obj = BulkSms::from_url(&parsed).unwrap();
+        assert_eq!(obj.user, "testuser");
+        assert_eq!(obj.password, "testpass");
+        assert!(obj.targets.contains(&"66666666666".to_string()));
+    }
+
+    #[test]
+    fn test_route_validation() {
+        // Valid routes
+        for route in &["economy", "standard", "premium"] {
+            let url = format!(
+                "bulksms://aaaaaaaaaa:bbbbbbbbbb@admin?route={}",
+                route
+            );
+            let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+            assert!(BulkSms::from_url(&parsed).is_some(), "Route {} should be valid", route);
+        }
+        // Invalid route
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "bulksms://aaaaaaaaaa:bbbbbbbbbb@admin?route=invalid"
+        ).unwrap();
+        assert!(BulkSms::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = BulkSms::static_details();
+        assert_eq!(details.service_name, "BulkSMS");
+        assert_eq!(details.protocols, vec!["bulksms"]);
+        assert!(!details.attachment_support);
+    }
 }

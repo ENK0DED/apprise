@@ -37,7 +37,9 @@ impl Notify for Qq {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
 
     #[test]
     fn test_valid_urls() {
@@ -61,5 +63,37 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_token_from_host() {
+        let parsed = ParsedUrl::parse("qq://abc123def456ghi789jkl012mno345pq").unwrap();
+        let q = Qq::from_url(&parsed).unwrap();
+        assert_eq!(q.token, "abc123def456ghi789jkl012mno345pq");
+    }
+
+    #[test]
+    fn test_from_url_token_from_param() {
+        let parsed = ParsedUrl::parse("qq://?token=abc123def456ghi789jkl012mno345pq").unwrap();
+        let q = Qq::from_url(&parsed).unwrap();
+        assert_eq!(q.token, "abc123def456ghi789jkl012mno345pq");
+    }
+
+    #[test]
+    fn test_from_url_https_format() {
+        let parsed = ParsedUrl::parse(
+            "https://qmsg.zendee.cn/send/abc123def456ghi789jkl012mno345pq"
+        ).unwrap();
+        let q = Qq::from_url(&parsed).unwrap();
+        assert_eq!(q.token, "abc123def456ghi789jkl012mno345pq");
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Qq::static_details();
+        assert_eq!(details.service_name, "QQ (Qmsg)");
+        assert_eq!(details.service_url, Some("https://qmsg.zendee.cn"));
+        assert!(details.protocols.contains(&"qq"));
+        assert!(!details.attachment_support);
     }
 }

@@ -126,6 +126,7 @@ impl Notify for Splunk {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -172,5 +173,98 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_user_at_host() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "splunk://myroute@myapikey"
+        ).unwrap();
+        let splunk = Splunk::from_url(&parsed).unwrap();
+        assert_eq!(splunk.apikey, "myapikey");
+        assert_eq!(splunk.routing_key, "myroute");
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "splunk://?apikey=abc123&routing_key=db"
+        ).unwrap();
+        let splunk = Splunk::from_url(&parsed).unwrap();
+        assert_eq!(splunk.apikey, "abc123");
+        assert_eq!(splunk.routing_key, "db");
+    }
+
+    #[test]
+    fn test_from_url_route_alias() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "splunk://?apikey=abc123&route=myroute"
+        ).unwrap();
+        let splunk = Splunk::from_url(&parsed).unwrap();
+        assert_eq!(splunk.routing_key, "myroute");
+    }
+
+    #[test]
+    fn test_from_url_with_entity_id_in_path() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "splunk://route@abc123/entity_id"
+        ).unwrap();
+        let splunk = Splunk::from_url(&parsed).unwrap();
+        assert_eq!(splunk.apikey, "abc123");
+        assert_eq!(splunk.routing_key, "route");
+    }
+
+    #[test]
+    fn test_from_url_legacy_victorops_url() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "https://alert.victorops.com/integrations/generic/20131114/alert/myapi/myroute"
+        ).unwrap();
+        let splunk = Splunk::from_url(&parsed).unwrap();
+        // Legacy URL: host is alert.victorops.com, path parts contain the components
+        assert!(!splunk.apikey.is_empty());
+        assert!(!splunk.routing_key.is_empty());
+    }
+
+    #[test]
+    fn test_action_validation() {
+        let valid_actions = vec![
+            "recovery", "resolve", "r",
+            "acknowledgement", "ack",
+            "critical", "crit",
+            "warning", "warn",
+            "info", "i",
+        ];
+        for action in &valid_actions {
+            let url = format!("splunk://db@apikey?action={}", action);
+            let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+            assert!(Splunk::from_url(&parsed).is_some(), "Action {} should be valid", action);
+        }
+        // Invalid action
+        let parsed = crate::utils::parse::ParsedUrl::parse("splunk://db@apikey?action=invalid").unwrap();
+        assert!(Splunk::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_type_remapping_validation() {
+        // Valid remap: :warning=critical
+        let parsed = crate::utils::parse::ParsedUrl::parse("splunk://db@apikey?:warning=critical").unwrap();
+        assert!(Splunk::from_url(&parsed).is_some());
+
+        // Invalid apprise type
+        let parsed = crate::utils::parse::ParsedUrl::parse("splunk://db@apikey?:invalid=critical").unwrap();
+        assert!(Splunk::from_url(&parsed).is_none());
+
+        // Invalid splunk type
+        let parsed = crate::utils::parse::ParsedUrl::parse("splunk://db@apikey?:warning=invalid").unwrap();
+        assert!(Splunk::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Splunk::static_details();
+        assert_eq!(details.service_name, "Splunk On-Call");
+        assert!(details.protocols.contains(&"splunk"));
+        assert!(details.protocols.contains(&"victorops"));
+        assert!(!details.attachment_support);
     }
 }

@@ -101,6 +101,9 @@ impl Notify for Emby {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+    use crate::notify::{Notify, NotifyContext};
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_invalid_urls() {
@@ -113,5 +116,212 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    fn emby_for_mock(server: &MockServer) -> super::Emby {
+        let addr = server.address();
+        let url_str = format!("emby://l2g:l2gpass@{}:{}", addr.ip(), addr.port());
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        super::Emby::from_url(&parsed).unwrap()
+    }
+
+    fn default_ctx() -> NotifyContext {
+        NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_success() {
+        let server = MockServer::start().await;
+
+        // Mock auth endpoint
+        Mock::given(method("POST"))
+            .and(path_regex("/emby/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "AccessToken": "test-token-123",
+                "User": { "Id": "user-abc" },
+                "Id": "session-xyz"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // Mock sessions endpoint
+        Mock::given(method("GET"))
+            .and(path_regex("/emby/Sessions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "Id": "sess1" },
+                { "Id": "sess2" }
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // Mock message sending to sessions
+        Mock::given(method("POST"))
+            .and(path_regex("/emby/Sessions/.*/Message"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        // Mock logout
+        Mock::given(method("POST"))
+            .and(path_regex("/emby/Sessions/Logout"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let emby = emby_for_mock(&server);
+        let ctx = default_ctx();
+        let result = emby.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_auth_failure() {
+        let server = MockServer::start().await;
+
+        // Auth returns 401
+        Mock::given(method("POST"))
+            .and(path_regex("/emby/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let emby = emby_for_mock(&server);
+        let ctx = default_ctx();
+        let result = emby.send(&ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_send_server_error() {
+        let server = MockServer::start().await;
+
+        // Auth returns 500
+        Mock::given(method("POST"))
+            .and(path_regex("/emby/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let emby = emby_for_mock(&server);
+        let ctx = default_ctx();
+        let result = emby.send(&ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_send_no_sessions() {
+        let server = MockServer::start().await;
+
+        // Auth succeeds
+        Mock::given(method("POST"))
+            .and(path_regex("/emby/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "AccessToken": "test-token",
+                "User": { "Id": "user1" }
+            })))
+            .mount(&server)
+            .await;
+
+        // Sessions returns empty array
+        Mock::given(method("GET"))
+            .and(path_regex("/emby/Sessions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        // Logout
+        Mock::given(method("POST"))
+            .and(path_regex("/emby/Sessions/Logout"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let emby = emby_for_mock(&server);
+        let ctx = default_ctx();
+        let result = emby.send(&ctx).await;
+        assert!(result.is_ok());
+        // No sessions means no messages sent, but still succeeds
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_message_failure() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex("/emby/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "AccessToken": "test-token",
+                "User": { "Id": "user1" }
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path_regex("/emby/Sessions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "Id": "sess1" }
+            ])))
+            .mount(&server)
+            .await;
+
+        // Message send fails
+        Mock::given(method("POST"))
+            .and(path_regex("/emby/Sessions/.*/Message"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path_regex("/emby/Sessions/Logout"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let emby = emby_for_mock(&server);
+        let ctx = default_ctx();
+        let result = emby.send(&ctx).await;
+        assert!(result.is_ok());
+        // Message failed, so all_ok = false
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "emby://l2g:pass@localhost",
+            "embys://l2g:password@localhost",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_default_ports() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("emby://l2g:pass@localhost").unwrap();
+        let emby = super::Emby::from_url(&parsed).unwrap();
+        assert_eq!(emby.port, 8096);
+
+        let parsed = crate::utils::parse::ParsedUrl::parse("embys://l2g:pass@localhost").unwrap();
+        let emby = super::Emby::from_url(&parsed).unwrap();
+        assert_eq!(emby.port, 8920);
+    }
+
+    #[test]
+    fn test_custom_port() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("emby://l2g:pass@localhost:1234").unwrap();
+        let emby = super::Emby::from_url(&parsed).unwrap();
+        assert_eq!(emby.port, 1234);
     }
 }

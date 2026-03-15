@@ -131,7 +131,12 @@ impl Notify for Ses {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    const TEST_ACCESS_KEY_ID: &str = "AHIAJGNT76XIMXDBIJYA";
+    const TEST_ACCESS_KEY_SECRET: &str = "bu1dHSdO22pfaaVy/wmNsdljF4C07D3bndi9PQJ9";
+    const TEST_REGION: &str = "us-east-2";
 
     #[test]
     fn test_valid_urls() {
@@ -164,5 +169,61 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields_path_format() {
+        // ses://user@domain/access_key/secret_key/region
+        // The URL parser splits on '/', so path parts are:
+        // [0]=access_key, [1]=secret_key, [2]=region
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "ses://user@example.com/MYACCESSKEY/MYSECRETKEY/us-west-2",
+        ).unwrap();
+        let ses = Ses::from_url(&parsed).unwrap();
+        assert_eq!(ses.from, "user@example.com");
+        assert_eq!(ses.access_key, "MYACCESSKEY");
+        assert_eq!(ses.secret_key, "MYSECRETKEY");
+        assert_eq!(ses.region, "us-west-2");
+    }
+
+    #[test]
+    fn test_from_url_fields_with_targets() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "ses://user@example.com/T1JJ3TD4JD/TIiajkdnlazk7FQ/us-west-2/user2@example.ca/user3@example.eu",
+        ).unwrap();
+        let ses = Ses::from_url(&parsed).unwrap();
+        assert_eq!(ses.from, "user@example.com");
+        assert!(ses.targets.contains(&"user2@example.ca".to_string()));
+        assert!(ses.targets.contains(&"user3@example.eu".to_string()));
+        assert_eq!(ses.targets.len(), 2);
+        assert_eq!(ses.region, "us-west-2");
+    }
+
+    #[test]
+    fn test_from_url_query_format() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "ses://?from=user@example.com&region=us-west-2&access=T1JJ3T3L2&secret=A1BRTD4JD/TIiajkdnlaevi7FQ&to=user2@example.ca",
+        ).unwrap();
+        let ses = Ses::from_url(&parsed).unwrap();
+        assert_eq!(ses.from, "user@example.com");
+        assert_eq!(ses.access_key, "T1JJ3T3L2");
+        assert_eq!(ses.region, "us-west-2");
+        assert!(ses.targets.contains(&"user2@example.ca".to_string()));
+    }
+
+    #[test]
+    fn test_invalid_reply_address() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcevi7FQ/us-west-2?reply=invalid-email",
+        ).unwrap();
+        assert!(Ses::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let d = Ses::static_details();
+        assert_eq!(d.service_name, "AWS SES");
+        assert!(d.protocols.contains(&"ses"));
+        assert!(d.attachment_support);
     }
 }

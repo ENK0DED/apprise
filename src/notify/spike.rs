@@ -39,6 +39,7 @@ impl Notify for Spike {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -63,5 +64,49 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_host_form() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "spike://1234567890abcdef1234567890abcdef"
+        ).unwrap();
+        let spike = Spike::from_url(&parsed).unwrap();
+        assert_eq!(spike.channel_key, "1234567890abcdef1234567890abcdef");
+    }
+
+    #[test]
+    fn test_from_url_token_param() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "spike://?token=1234567890abcdef1234567890abcdef"
+        ).unwrap();
+        let spike = Spike::from_url(&parsed).unwrap();
+        assert_eq!(spike.channel_key, "1234567890abcdef1234567890abcdef");
+    }
+
+    #[test]
+    fn test_from_url_https_form() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "https://api.spike.sh/v1/alerts/1234567890abcdef1234567890abcdef"
+        ).unwrap();
+        let spike = Spike::from_url(&parsed).unwrap();
+        assert_eq!(spike.channel_key, "1234567890abcdef1234567890abcdef");
+    }
+
+    #[test]
+    fn test_from_url_rejects_non_alphanumeric() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "spike://invalid-key"
+        ).unwrap();
+        assert!(Spike::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Spike::static_details();
+        assert_eq!(details.service_name, "Spike");
+        assert_eq!(details.service_url, Some("https://spike.sh"));
+        assert!(details.protocols.contains(&"spike"));
+        assert!(!details.attachment_support);
     }
 }

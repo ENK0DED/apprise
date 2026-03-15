@@ -171,7 +171,11 @@ impl Notify for RocketChat {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::notify::NotifyContext;
+    use wiremock::matchers::{method, path, header, body_json};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_valid_urls() {
@@ -212,5 +216,242 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    /// Build a RocketChat instance pointing at the mock server using webhook mode.
+    fn rocketchat_webhook_for_mock(server: &MockServer, token: &str, targets: &[&str]) -> RocketChat {
+        let addr = server.address();
+        let target_path = targets.iter().map(|t| format!("/{}", t)).collect::<String>();
+        let url_str = format!(
+            "rocket://web/{}@{}:{}{}",
+            token, addr.ip(), addr.port(), target_path
+        );
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        RocketChat::from_url(&parsed).unwrap()
+    }
+
+    /// Build a RocketChat instance pointing at the mock server using basic auth mode.
+    fn rocketchat_basic_for_mock(server: &MockServer, user: &str, pass: &str, targets: &[&str]) -> RocketChat {
+        let addr = server.address();
+        let target_path = targets.iter().map(|t| format!("/{}", t)).collect::<String>();
+        let url_str = format!(
+            "rocket://{}:{}@{}:{}{}",
+            user, pass, addr.ip(), addr.port(), target_path
+        );
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        RocketChat::from_url(&parsed).unwrap()
+    }
+
+    fn default_ctx() -> NotifyContext {
+        NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_webhook_post_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/hooks/web/mytoken"))
+            .and(header("User-Agent", APP_ID))
+            .and(body_json(serde_json::json!({
+                "text": "**Test Title**\nTest Body",
+                "channel": "#channel"
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let rc = rocketchat_webhook_for_mock(&server, "mytoken", &["#channel"]);
+        let result = rc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_webhook_channel_and_user_targets() {
+        let server = MockServer::start().await;
+
+        // Expect two POST requests: one for #general, one for @admin
+        Mock::given(method("POST"))
+            .and(path("/hooks/web/tok123"))
+            .and(body_json(serde_json::json!({
+                "text": "**Test Title**\nTest Body",
+                "channel": "#general"
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .named("channel target")
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/hooks/web/tok123"))
+            .and(body_json(serde_json::json!({
+                "text": "**Test Title**\nTest Body",
+                "channel": "@admin"
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .named("user target")
+            .mount(&server)
+            .await;
+
+        let rc = rocketchat_webhook_for_mock(&server, "tok123", &["#general", "@admin"]);
+        let result = rc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_webhook_room_target_gets_hash_prefix() {
+        // A bare room name (no # or @) should get a # prefix
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/hooks/web/tok"))
+            .and(body_json(serde_json::json!({
+                "text": "**Test Title**\nTest Body",
+                "channel": "#myroom"
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let rc = rocketchat_webhook_for_mock(&server, "tok", &["myroom"]);
+        let result = rc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_basic_auth_post_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/chat.postMessage"))
+            .and(header("User-Agent", APP_ID))
+            .and(header("Authorization", "Basic dXNlcjpwYXNz")) // base64("user:pass")
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let rc = rocketchat_basic_for_mock(&server, "user", "pass", &["#channel"]);
+        let result = rc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_webhook_error_500_returns_false() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/hooks/web/errtoken"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let rc = rocketchat_webhook_for_mock(&server, "errtoken", &["#channel"]);
+        let result = rc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_basic_auth_error_500_returns_false() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/chat.postMessage"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let rc = rocketchat_basic_for_mock(&server, "user", "pass", &["#chan"]);
+        let result = rc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_targets_one_fails() {
+        // If one target returns 500, overall result should be false
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/hooks/web/multi"))
+            .and(body_json(serde_json::json!({
+                "text": "**Test Title**\nTest Body",
+                "channel": "#good"
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .named("good channel")
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/hooks/web/multi"))
+            .and(body_json(serde_json::json!({
+                "text": "**Test Title**\nTest Body",
+                "channel": "#bad"
+            })))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .named("bad channel")
+            .mount(&server)
+            .await;
+
+        let rc = rocketchat_webhook_for_mock(&server, "multi", &["#good", "#bad"]);
+        let result = rc.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_connection_failure() {
+        // Point at a port nothing listens on
+        let url_str = "rocket://web/tok@127.0.0.1:1/#chan";
+        let parsed = crate::utils::parse::ParsedUrl::parse(url_str).unwrap();
+        let rc = RocketChat::from_url(&parsed).unwrap();
+
+        let result = rc.send(&default_ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_title_body_formatting() {
+        // When title is empty, text should be just the body
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/hooks/web/fmt"))
+            .and(body_json(serde_json::json!({
+                "text": "Just the body",
+                "channel": "#room"
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let rc = rocketchat_webhook_for_mock(&server, "fmt", &["#room"]);
+        let ctx = NotifyContext {
+            title: "".into(),
+            body: "Just the body".into(),
+            ..Default::default()
+        };
+        let result = rc.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
     }
 }

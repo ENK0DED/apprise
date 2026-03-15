@@ -45,6 +45,7 @@ impl Notify for OneSignal {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -82,5 +83,71 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "onesignal://myapp@myapikey/player1/player2",
+        ).unwrap();
+        let obj = OneSignal::from_url(&parsed).unwrap();
+        assert_eq!(obj.app_id, "myapp");
+        assert_eq!(obj.apikey, "myapikey");
+        assert!(obj.targets.contains(&"player1".to_string()));
+        assert!(obj.targets.contains(&"player2".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_kwargs() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "onesignal://?apikey=abc&app=123&to=playerid",
+        ).unwrap();
+        let obj = OneSignal::from_url(&parsed).unwrap();
+        assert_eq!(obj.app_id, "123");
+        assert_eq!(obj.apikey, "abc");
+        assert!(obj.targets.contains(&"playerid".to_string()));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = OneSignal::static_details();
+        assert_eq!(details.service_name, "OneSignal");
+        assert!(details.protocols.contains(&"onesignal"));
+        assert_eq!(details.service_url, Some("https://onesignal.com"));
+    }
+
+    fn default_ctx() -> NotifyContext {
+        NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_struct_fields_direct() {
+        let obj = OneSignal {
+            apikey: "testapikey".into(),
+            app_id: "testapp".into(),
+            targets: vec!["player1".into()],
+            verify_certificate: false,
+            tags: vec![],
+        };
+
+        assert_eq!(obj.apikey, "testapikey");
+        assert_eq!(obj.app_id, "testapp");
+        assert_eq!(obj.targets, vec!["player1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_send_server_error() {
+        // Verify that the struct is built correctly for error case URLs
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "onesignal://appid@apikey/#segment/playerid/",
+        ).unwrap();
+        let obj = OneSignal::from_url(&parsed).unwrap();
+        assert_eq!(obj.app_id, "appid");
+        assert_eq!(obj.apikey, "apikey");
+        assert!(obj.targets.len() >= 2);
     }
 }

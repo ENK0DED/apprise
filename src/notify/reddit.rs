@@ -103,7 +103,9 @@ impl Notify for Reddit {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
 
     #[test]
     fn test_valid_urls() {
@@ -134,5 +136,74 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields_basic() {
+        let parsed = ParsedUrl::parse(
+            "reddit://user:password@app-id/app-secret/apprise"
+        ).unwrap();
+        let r = Reddit::from_url(&parsed).unwrap();
+        assert_eq!(r.app_id, "user");
+        assert_eq!(r.app_secret, "password");
+        assert!(r.subreddits.contains(&"apprise".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_multiple_subreddits() {
+        let parsed = ParsedUrl::parse(
+            "reddit://user:password@app-id/app-secret/apprise/subreddit2"
+        ).unwrap();
+        let r = Reddit::from_url(&parsed).unwrap();
+        assert!(r.subreddits.len() >= 2);
+        assert!(r.subreddits.contains(&"apprise".to_string()));
+        assert!(r.subreddits.contains(&"subreddit2".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let parsed = ParsedUrl::parse(
+            "reddit://?user=l2g&pass=pass&app_secret=abc123&app_id=54321&to=sub1,sub2"
+        ).unwrap();
+        let r = Reddit::from_url(&parsed).unwrap();
+        assert_eq!(r.app_id, "54321");
+        assert_eq!(r.app_secret, "abc123");
+        assert_eq!(r.user, "l2g");
+        assert!(r.subreddits.contains(&"sub1".to_string()));
+        assert!(r.subreddits.contains(&"sub2".to_string()));
+    }
+
+    #[test]
+    fn test_kind_validation() {
+        // Valid kinds
+        for kind in &["self", "link", "auto"] {
+            let url = format!(
+                "reddit://user:pass@id/secret/sub?kind={}", kind
+            );
+            let parsed = ParsedUrl::parse(&url).unwrap();
+            assert!(Reddit::from_url(&parsed).is_some(), "Kind {} should be valid", kind);
+        }
+        // Invalid kind
+        let parsed = ParsedUrl::parse(
+            "reddit://user:pass@id/secret/sub?kind=invalid"
+        ).unwrap();
+        assert!(Reddit::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Reddit::static_details();
+        assert_eq!(details.service_name, "Reddit");
+        assert_eq!(details.service_url, Some("https://reddit.com"));
+        assert!(details.protocols.contains(&"reddit"));
+        assert!(!details.attachment_support);
+    }
+
+    #[test]
+    fn test_percent_in_app_id_rejected() {
+        let parsed = ParsedUrl::parse(
+            "reddit://user:password@app%id/appsecret/apprise"
+        ).unwrap();
+        assert!(Reddit::from_url(&parsed).is_none());
     }
 }

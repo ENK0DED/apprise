@@ -31,7 +31,9 @@ impl Notify for PushPlus {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
 
     #[test]
     fn test_valid_urls() {
@@ -55,5 +57,37 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_token_from_host() {
+        let parsed = ParsedUrl::parse("pushplus://abc123def456ghi789jkl012mno345pq").unwrap();
+        let p = PushPlus::from_url(&parsed).unwrap();
+        assert_eq!(p.token, "abc123def456ghi789jkl012mno345pq");
+    }
+
+    #[test]
+    fn test_from_url_token_from_param() {
+        let parsed = ParsedUrl::parse("pushplus://?token=abc123def456ghi789jkl012mno345pq").unwrap();
+        let p = PushPlus::from_url(&parsed).unwrap();
+        assert_eq!(p.token, "abc123def456ghi789jkl012mno345pq");
+    }
+
+    #[test]
+    fn test_from_url_https_format() {
+        let parsed = ParsedUrl::parse(
+            "https://www.pushplus.plus/send?token=abc123def456ghi789jkl012mno345pq"
+        ).unwrap();
+        let p = PushPlus::from_url(&parsed).unwrap();
+        assert_eq!(p.token, "abc123def456ghi789jkl012mno345pq");
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = PushPlus::static_details();
+        assert_eq!(details.service_name, "PushPlus");
+        assert_eq!(details.service_url, Some("https://www.pushplus.plus"));
+        assert!(details.protocols.contains(&"pushplus"));
+        assert!(!details.attachment_support);
     }
 }

@@ -37,6 +37,9 @@ impl Notify for Enigma2 {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+    use crate::notify::{Notify, NotifyContext};
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_valid_urls() {
@@ -71,5 +74,141 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    fn enigma2_for_mock(server: &MockServer) -> super::Enigma2 {
+        let addr = server.address();
+        let url_str = format!("enigma2://{}:{}", addr.ip(), addr.port());
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        super::Enigma2::from_url(&parsed).unwrap()
+    }
+
+    fn enigma2_with_auth_for_mock(server: &MockServer) -> super::Enigma2 {
+        let addr = server.address();
+        let url_str = format!("enigma2://user:pass@{}:{}", addr.ip(), addr.port());
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        super::Enigma2::from_url(&parsed).unwrap()
+    }
+
+    fn default_ctx() -> NotifyContext {
+        NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path_regex("/web/message"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let e2 = enigma2_for_mock(&server);
+        let ctx = default_ctx();
+        let result = e2.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_with_auth() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path_regex("/web/message"))
+            .and(wiremock::matchers::header_exists("Authorization"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let e2 = enigma2_with_auth_for_mock(&server);
+        let ctx = default_ctx();
+        let result = e2.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_server_error() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path_regex("/web/message"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let e2 = enigma2_for_mock(&server);
+        let ctx = default_ctx();
+        let result = e2.send(&ctx).await;
+        assert!(result.is_ok());
+        // Returns false on non-success status
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_send_bizarre_status_code() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path_regex("/web/message"))
+            .respond_with(ResponseTemplate::new(418))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let e2 = enigma2_for_mock(&server);
+        let ctx = default_ctx();
+        let result = e2.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_send_no_title() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path_regex("/web/message"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let e2 = enigma2_for_mock(&server);
+        let ctx = NotifyContext {
+            title: "".into(),
+            body: "Just a body".into(),
+            ..Default::default()
+        };
+        let result = e2.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[test]
+    fn test_default_ports() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("enigma2://localhost").unwrap();
+        let e2 = super::Enigma2::from_url(&parsed).unwrap();
+        assert_eq!(e2.port, 80);
+
+        let parsed = crate::utils::parse::ParsedUrl::parse("enigma2s://localhost").unwrap();
+        let e2 = super::Enigma2::from_url(&parsed).unwrap();
+        assert_eq!(e2.port, 443);
+    }
+
+    #[test]
+    fn test_custom_port() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("enigma2://localhost:8080").unwrap();
+        let e2 = super::Enigma2::from_url(&parsed).unwrap();
+        assert_eq!(e2.port, 8080);
     }
 }

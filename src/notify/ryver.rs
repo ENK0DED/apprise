@@ -56,6 +56,7 @@ impl Notify for Ryver {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -87,5 +88,49 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "ryver://apprise/ckhrjW8w672m6HG?mode=slack",
+        ).unwrap();
+        let r = Ryver::from_url(&parsed).unwrap();
+        assert_eq!(r.organization, "apprise");
+        assert_eq!(r.token, "ckhrjW8w672m6HG");
+    }
+
+    #[test]
+    fn test_native_url_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "https://apprise.ryver.com/application/webhook/ckhrjW8w672m6HG",
+        ).unwrap();
+        let r = Ryver::from_url(&parsed).unwrap();
+        assert_eq!(r.organization, "apprise");
+        assert_eq!(r.token, "ckhrjW8w672m6HG");
+    }
+
+    #[test]
+    fn test_service_details() {
+        let d = Ryver::static_details();
+        assert_eq!(d.service_name, "Ryver");
+        assert!(d.protocols.contains(&"ryver"));
+        assert!(!d.attachment_support);
+    }
+
+    #[test]
+    fn test_edge_case_no_token() {
+        // Organization only, no token
+        let parsed = crate::utils::parse::ParsedUrl::parse("ryver://apprise").unwrap();
+        assert!(Ryver::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_edge_case_short_org() {
+        // org "x" is only 1 char, must be >= 3
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "ryver://x/ckhrjW8w672m6HG",
+        ).unwrap();
+        assert!(Ryver::from_url(&parsed).is_none());
     }
 }

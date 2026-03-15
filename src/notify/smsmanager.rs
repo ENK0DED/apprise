@@ -55,6 +55,7 @@ impl Notify for SmsManager {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -62,9 +63,95 @@ mod tests {
         let urls = vec![
             "smsmgr://",
             "smsmgr://:@/",
+            // invalid gateway
+            "smsmgr://aaaaaaaaaa@11111111111?gateway=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            // apikey@phone with invalid number filtered but valid one present
+            "smsmgr://zzzzzzzzzz@123/33333333333/abcd/+44444444444",
+            // batch mode
+            "smsmgr://bbbbb@44444444444?batch=y",
+            // gateway=low
+            "smsmgr://aaaaaaaaaa@11111111111?gateway=low",
+            // use get args: key= and from=
+            "smsmgr://11111111111?key=aaaaaaaaaa&from=user",
+            // use get args: to=, key=, sender=
+            "smsmgr://_?to=11111111111,22222222222&key=bbbbbbbbbb&sender=5555555555555",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "smsmgr://myapikey@15551231234/15555555555"
+        ).unwrap();
+        let sms = SmsManager::from_url(&parsed).unwrap();
+        assert_eq!(sms.apikey, "myapikey");
+        assert_eq!(sms.targets.len(), 2);
+        assert!(sms.targets.contains(&"15551231234".to_string()));
+        assert!(sms.targets.contains(&"15555555555".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_with_key_param() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "smsmgr://11111111111?key=testapikey"
+        ).unwrap();
+        let sms = SmsManager::from_url(&parsed).unwrap();
+        assert_eq!(sms.apikey, "testapikey");
+        assert!(sms.targets.contains(&"11111111111".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_with_to_param() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "smsmgr://_?to=11111111111,22222222222&key=bbbbbbbbbb"
+        ).unwrap();
+        let sms = SmsManager::from_url(&parsed).unwrap();
+        assert_eq!(sms.apikey, "bbbbbbbbbb");
+        assert_eq!(sms.targets.len(), 2);
+    }
+
+    #[test]
+    fn test_gateway_validation() {
+        // Valid gateways
+        for gw in &["economy", "low", "high", "standard"] {
+            let url = format!("smsmgr://apikey@11111111111?gateway={}", gw);
+            let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
+            assert!(SmsManager::from_url(&parsed).is_some(), "Gateway {} should be valid", gw);
+        }
+        // Invalid gateway
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "smsmgr://apikey@11111111111?gateway=invalid"
+        ).unwrap();
+        assert!(SmsManager::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = SmsManager::static_details();
+        assert_eq!(details.service_name, "SmsManager");
+        assert_eq!(details.service_url, Some("https://smsmanager.cz"));
+        assert!(details.protocols.contains(&"smsmanager"));
+        assert!(details.protocols.contains(&"smsmgr"));
+        assert!(!details.attachment_support);
+    }
+
+    #[test]
+    fn test_no_targets_returns_none() {
+        // apikey present but no valid target
+        let parsed = crate::utils::parse::ParsedUrl::parse("smsmgr://apikey@_").unwrap();
+        // _ is filtered out as host, and no path_parts => None
+        assert!(SmsManager::from_url(&parsed).is_none());
     }
 }

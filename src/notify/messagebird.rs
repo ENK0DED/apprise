@@ -53,14 +53,71 @@ impl Notify for MessageBird {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+    use super::*;
 
     #[test]
     fn test_invalid_urls() {
-        let urls = vec![
+        let inv1 = format!("msgbird://{}/abcd", "a".repeat(25));
+        let inv2 = format!("msgbird://{}/123", "a".repeat(25));
+        let urls: Vec<&str> = vec![
             "msgbird://",
+            // Invalid characters in source phone number
+            &inv1,
+            // Invalid source phone number (too short)
+            &inv2,
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let key = "a".repeat(25);
+        let urls = vec![
+            format!("msgbird://{}/15551232000", key),
+            format!("msgbird://{}/?from=15551233000&to=15551232000", key),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let key = "a".repeat(25);
+        let url_str = format!("msgbird://{}/15551232000", key);
+        let parsed = ParsedUrl::parse(&url_str).expect("parse");
+        let mb = MessageBird::from_url(&parsed).expect("from_url");
+        assert_eq!(mb.api_key, key);
+        assert_eq!(mb.targets, vec!["15551232000"]);
+    }
+
+    #[test]
+    fn test_from_to_query_params() {
+        let key = "a".repeat(25);
+        let url_str = format!("msgbird://{}/?from=15551233000&to=15551232000", key);
+        let parsed = ParsedUrl::parse(&url_str).expect("parse");
+        let mb = MessageBird::from_url(&parsed).expect("from_url");
+        assert_eq!(mb.api_key, key);
+        assert!(mb.targets.contains(&"15551232000".to_string()));
+    }
+
+    #[test]
+    fn test_invalid_target_with_valid_phone() {
+        // One valid, one invalid target -- still parses because valid phone exists
+        let key = "a".repeat(25);
+        let url_str = format!("msgbird://{}/15551232000/abcd", key);
+        let parsed = ParsedUrl::parse(&url_str).expect("parse");
+        let mb = MessageBird::from_url(&parsed).expect("from_url");
+        assert_eq!(mb.targets.len(), 2);
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = MessageBird::static_details();
+        assert_eq!(details.service_name, "MessageBird");
+        assert!(details.protocols.contains(&"msgbird"));
+        assert!(!details.attachment_support);
     }
 }

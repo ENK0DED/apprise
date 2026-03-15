@@ -32,6 +32,7 @@ impl Notify for Twist {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -56,5 +57,39 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_password_in_path() {
+        // twist://user@example.com/password
+        let parsed = ParsedUrl::parse("twist://user@example.com/password").unwrap();
+        let tw = Twist::from_url(&parsed).unwrap();
+        assert_eq!(tw.token, "password");
+    }
+
+    #[test]
+    fn test_from_url_password_colon_form() {
+        // twist://password:user@example.com
+        // URL parsing: user=password, password=user, host=example.com
+        let parsed = ParsedUrl::parse("twist://password:user@example.com").unwrap();
+        let tw = Twist::from_url(&parsed).unwrap();
+        // password field from URL is "user"
+        assert_eq!(tw.token, "user");
+    }
+
+    #[test]
+    fn test_from_url_channel_in_path() {
+        let parsed = ParsedUrl::parse("twist://password:user@example.com/12345").unwrap();
+        let tw = Twist::from_url(&parsed).unwrap();
+        assert!(tw.token.len() > 0);
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Twist::static_details();
+        assert_eq!(details.service_name, "Twist");
+        assert_eq!(details.service_url, Some("https://twist.com"));
+        assert!(details.protocols.contains(&"twist"));
+        assert!(!details.attachment_support);
     }
 }

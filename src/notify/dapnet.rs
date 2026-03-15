@@ -41,12 +41,21 @@ impl Notify for Dapnet {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
     fn test_valid_urls() {
         let urls = vec![
+            "dapnet://user:pass@DF1ABC",
+            "dapnet://user:pass@DF1ABC/DF1DEF",
             "dapnet://user:pass@DF1ABC-1/DF1ABC/DF1ABC-15",
+            "dapnet://user:pass@?to=DF1ABC,DF1DEF",
+            "dapnet://user:pass@DF1ABC?priority=normal",
+            "dapnet://user:pass@DF1ABC/0A1DEF?priority=em&batch=false",
+            "dapnet://user:pass@DF1ABC?priority=invalid",
+            "dapnet://user:pass@DF1ABC?txgroups=dl-all,all",
+            "dapnet://user:pass@DF1ABC?txgroups=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -64,5 +73,66 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    fn parse_dapnet(url: &str) -> Dapnet {
+        let parsed = crate::utils::parse::ParsedUrl::parse(url).unwrap();
+        Dapnet::from_url(&parsed).unwrap()
+    }
+
+    #[test]
+    fn test_from_url_single_target() {
+        let d = parse_dapnet("dapnet://user:pass@DF1ABC");
+        assert_eq!(d.user, "user");
+        assert_eq!(d.password, "pass");
+        assert_eq!(d.targets, vec!["DF1ABC"]);
+        assert_eq!(d.txgroups, vec!["dl-all"]);
+        assert_eq!(d.priority, 0);
+    }
+
+    #[test]
+    fn test_from_url_multiple_targets() {
+        let d = parse_dapnet("dapnet://user:pass@DF1ABC/DF1DEF");
+        assert_eq!(d.targets, vec!["DF1ABC", "DF1DEF"]);
+    }
+
+    #[test]
+    fn test_from_url_to_query_param() {
+        let d = parse_dapnet("dapnet://user:pass@?to=DF1ABC,DF1DEF");
+        assert!(d.targets.contains(&"DF1ABC".to_string()));
+        assert!(d.targets.contains(&"DF1DEF".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_custom_txgroups() {
+        let d = parse_dapnet("dapnet://user:pass@DF1ABC?txgroups=dl-all,all");
+        assert_eq!(d.txgroups, vec!["dl-all", "all"]);
+    }
+
+    #[test]
+    fn test_from_url_priority() {
+        // priority=1 should parse as emergency
+        let d = parse_dapnet("dapnet://user:pass@DF1ABC?priority=1");
+        assert_eq!(d.priority, 1);
+    }
+
+    #[test]
+    fn test_from_url_invalid_priority_defaults_to_zero() {
+        let d = parse_dapnet("dapnet://user:pass@DF1ABC?priority=invalid");
+        assert_eq!(d.priority, 0);
+    }
+
+    #[test]
+    fn test_no_targets_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("dapnet://user:pass@").unwrap();
+        assert!(Dapnet::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Dapnet::static_details();
+        assert_eq!(details.service_name, "DAPNET");
+        assert_eq!(details.protocols, vec!["dapnet"]);
+        assert!(!details.attachment_support);
     }
 }

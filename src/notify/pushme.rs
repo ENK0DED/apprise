@@ -30,7 +30,9 @@ impl Notify for PushMe {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
 
     #[test]
     fn test_invalid_urls() {
@@ -41,5 +43,52 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            format!("pushme://{}", "a".repeat(6)),
+            format!("pushme://?token={}&status=yes", "b".repeat(6)),
+            format!("pushme://?token={}&status=no", "b".repeat(6)),
+            format!("pushme://?token={}&status=True", "b".repeat(6)),
+            format!("pushme://?push_key={}&status=no", "p".repeat(6)),
+            format!("pushme://{}", "c".repeat(6)),
+            format!("pushme://{}", "d".repeat(7)),
+            format!("pushme://{}", "e".repeat(8)),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_token_from_host() {
+        let parsed = ParsedUrl::parse(&format!("pushme://{}", "a".repeat(6))).unwrap();
+        let p = PushMe::from_url(&parsed).unwrap();
+        assert_eq!(p.token, "a".repeat(6));
+    }
+
+    #[test]
+    fn test_from_url_token_from_param() {
+        let parsed = ParsedUrl::parse(&format!("pushme://?token={}", "b".repeat(6))).unwrap();
+        let p = PushMe::from_url(&parsed).unwrap();
+        assert_eq!(p.token, "b".repeat(6));
+    }
+
+    #[test]
+    fn test_from_url_push_key_param() {
+        let parsed = ParsedUrl::parse(&format!("pushme://?push_key={}", "p".repeat(6))).unwrap();
+        let p = PushMe::from_url(&parsed).unwrap();
+        assert_eq!(p.token, "p".repeat(6));
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = PushMe::static_details();
+        assert_eq!(details.service_name, "PushMe");
+        assert_eq!(details.service_url, Some("https://push.i-i.me"));
+        assert!(details.protocols.contains(&"pushme"));
+        assert!(!details.attachment_support);
     }
 }

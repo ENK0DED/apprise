@@ -63,7 +63,11 @@ impl Notify for SmsEagle {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::notify::NotifyContext;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_valid_urls() {
@@ -93,5 +97,221 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    /// Helper: create an SmsEagle pointing at the mock server with given targets.
+    fn smseagle_for_mock(server: &MockServer, targets: &[&str]) -> SmsEagle {
+        let addr = server.address();
+        let target_path = targets.join("/");
+        let url_str = format!("smseagle://token@{}:{}/{}", addr.ip(), addr.port(), target_path);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        SmsEagle::from_url(&parsed).unwrap()
+    }
+
+    fn default_ctx() -> NotifyContext {
+        NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_basic_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/index.php/jsonrpc/sms"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let eagle = smseagle_for_mock(&server, &["@user"]);
+        let result = eagle.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_multiple_targets() {
+        let server = MockServer::start().await;
+
+        // Should make one POST per target
+        Mock::given(method("POST"))
+            .and(path("/index.php/jsonrpc/sms"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!(
+            "smseagle://token@{}:{}/11111111111/22222222222/@contact",
+            addr.ip(), addr.port()
+        );
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let eagle = SmsEagle::from_url(&parsed).unwrap();
+
+        let result = eagle.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_title_and_body_concatenation() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/index.php/jsonrpc/sms"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let eagle = smseagle_for_mock(&server, &["@user"]);
+        let ctx = NotifyContext {
+            title: "My Title".into(),
+            body: "My Body".into(),
+            ..Default::default()
+        };
+        let result = eagle.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_body_only_when_no_title() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/index.php/jsonrpc/sms"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let eagle = smseagle_for_mock(&server, &["@user"]);
+        let ctx = NotifyContext {
+            title: "".into(),
+            body: "Body Only".into(),
+            ..Default::default()
+        };
+        let result = eagle.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_server_error_returns_false() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/index.php/jsonrpc/sms"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let eagle = smseagle_for_mock(&server, &["@user"]);
+        let result = eagle.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_send_partial_failure() {
+        // Two targets: first succeeds, second fails
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/index.php/jsonrpc/sms"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!(
+            "smseagle://token@{}:{}/11111111111/22222222222",
+            addr.ip(), addr.port()
+        );
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let eagle = SmsEagle::from_url(&parsed).unwrap();
+
+        let result = eagle.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_send_connection_failure() {
+        // Point at a port that nothing is listening on
+        let url_str = "smseagle://token@127.0.0.1:1/@user";
+        let parsed = crate::utils::parse::ParsedUrl::parse(url_str).unwrap();
+        let eagle = SmsEagle::from_url(&parsed).unwrap();
+
+        let result = eagle.send(&default_ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_send_secure_url() {
+        // Verify that smseagles:// sets secure flag
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "smseagles://token@localhost/@user"
+        ).unwrap();
+        let eagle = SmsEagle::from_url(&parsed).unwrap();
+        assert!(eagle.secure);
+    }
+
+    #[tokio::test]
+    async fn test_send_includes_user_agent() {
+        use crate::notify::APP_ID;
+        use wiremock::matchers::header;
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/index.php/jsonrpc/sms"))
+            .and(header("User-Agent", APP_ID))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let eagle = smseagle_for_mock(&server, &["@user"]);
+        let result = eagle.send(&default_ctx()).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_json_payload_structure() {
+        let server = MockServer::start().await;
+
+        // Verify the JSON-RPC payload structure
+        Mock::given(method("POST"))
+            .and(path("/index.php/jsonrpc/sms"))
+            .and(wiremock::matchers::body_json(serde_json::json!([{
+                "method": "sms.send_sms",
+                "params": {
+                    "login": "token",
+                    "pass": "",
+                    "to": "@user",
+                    "message": "My Title: My Body"
+                }
+            }])))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let eagle = smseagle_for_mock(&server, &["@user"]);
+        let ctx = NotifyContext {
+            title: "My Title".into(),
+            body: "My Body".into(),
+            ..Default::default()
+        };
+        let result = eagle.send(&ctx).await;
+        assert!(result.is_ok());
     }
 }

@@ -79,16 +79,125 @@ impl Notify for Twilio {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
     fn test_invalid_urls() {
-        let urls = vec![
-            "twilio://",
-            "twilio://:@/",
+        let urls: Vec<String> = vec![
+            "twilio://".into(),
+            "twilio://:@/".into(),
+            // Just SID, no token
+            format!("twilio://AC{}@12345678", "a".repeat(32)),
+            // SID and token but invalid from (_)
+            format!("twilio://AC{}:{}@_", "a".repeat(32), "b".repeat(32)),
+            // 9-digit from (not short code 5-6, not full 11+)
+            format!("twilio://AC{}:{}@{}", "a".repeat(32), "b".repeat(32), "3".repeat(9)),
+            // Invalid method
+            format!("twilio://AC{}:{}@{}?method=mms", "a".repeat(32), "b".repeat(32), "5".repeat(11)),
+            // w: prefix with call method - incompatible
+            format!("twilio://AC{}:{}@{}?method=call", "a".repeat(32), "b".repeat(32), format!("w:{}", "5".repeat(11))),
+            // Invalid short-code w: prefix
+            format!("twilio://AC{}:{}@w:12345/{}/{}", "a".repeat(32), "b".repeat(32), "4".repeat(11), "5".repeat(11)),
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            // Short code (5 digits)
+            format!("twilio://AC{}:{}@{}", "a".repeat(32), "b".repeat(32), "3".repeat(5)),
+            // Short code (5 digits) with target
+            format!("twilio://AC{}:{}@12345/{}", "a".repeat(32), "b".repeat(32), "4".repeat(11)),
+            // Short code (6 digits)
+            format!("twilio://AC{}:{}@123456/{}", "a".repeat(32), "b".repeat(32), "4".repeat(11)),
+            // Full 11-digit from, targets with valid/invalid mixed
+            format!("twilio://AC{}:{}@{}/123/{}/abcd/w:{}",
+                "a".repeat(32), "b".repeat(32), "3".repeat(11), "9".repeat(15), 8u64 * 11),
+            // Phone number as from, self-text
+            format!("twilio://AC{}:{}@{}", "a".repeat(32), "b".repeat(32), "5".repeat(11)),
+            // Explicit sms method
+            format!("twilio://AC{}:{}@{}?method=sms", "a".repeat(32), "b".repeat(32), "5".repeat(11)),
+            // Query param form
+            format!("twilio://_?sid=AC{}&token={}&from={}", "a".repeat(32), "b".repeat(32), "5".repeat(11)),
+            // Query param with source=
+            format!("twilio://_?sid=AC{}&token={}&source={}", "a".repeat(32), "b".repeat(32), "5".repeat(11)),
+            // Query param with to=
+            format!("twilio://_?sid=AC{}&token={}&from={}&to={}",
+                "a".repeat(32), "b".repeat(32), "5".repeat(11), "7".repeat(13)),
+            // Whatsapp target
+            format!("twilio://_?sid=AC{}&token={}&from={}&to=w:{}",
+                "a".repeat(32), "b".repeat(32), "5".repeat(11), "6".repeat(11)),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let sid = format!("AC{}", "a".repeat(32));
+        let token = "b".repeat(32);
+        let from = "15551233456";
+        let target = "15559876543";
+        let url_str = format!("twilio://{}:{}@{}/{}", sid, token, from, target);
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let tw = Twilio::from_url(&parsed).unwrap();
+        assert_eq!(tw.account_sid, sid);
+        assert_eq!(tw.auth_token, token);
+        assert_eq!(tw.from_phone, from);
+        assert_eq!(tw.targets.len(), 1);
+        assert_eq!(tw.targets[0], target);
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let sid = format!("AC{}", "c".repeat(32));
+        let token = "d".repeat(32);
+        let from = "15551112222";
+        let to = "15553334444";
+        let url_str = format!("twilio://_?sid={}&token={}&from={}&to={}", sid, token, from, to);
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let tw = Twilio::from_url(&parsed).unwrap();
+        assert_eq!(tw.account_sid, sid);
+        assert_eq!(tw.auth_token, token);
+        assert_eq!(tw.from_phone, from);
+        assert!(tw.targets.contains(&to.to_string()));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Twilio::static_details();
+        assert_eq!(details.service_name, "Twilio");
+        assert_eq!(details.service_url, Some("https://twilio.com"));
+        assert!(details.protocols.contains(&"twilio"));
+        assert!(!details.attachment_support);
+    }
+
+    #[test]
+    fn test_short_code_from() {
+        // 5-digit short code
+        let url_str = format!("twilio://AC{}:{}@33333/{}", "a".repeat(32), "b".repeat(32), "4".repeat(11));
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let tw = Twilio::from_url(&parsed).unwrap();
+        assert_eq!(tw.from_phone, "33333");
+
+        // 6-digit short code
+        let url_str = format!("twilio://AC{}:{}@333333/{}", "a".repeat(32), "b".repeat(32), "4".repeat(11));
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let tw = Twilio::from_url(&parsed).unwrap();
+        assert_eq!(tw.from_phone, "333333");
+    }
+
+    #[test]
+    fn test_multiple_targets() {
+        let url_str = format!("twilio://AC{}:{}@{}/{}/{}", "a".repeat(32), "b".repeat(32),
+            "3".repeat(11), "4".repeat(11), "5".repeat(11));
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let tw = Twilio::from_url(&parsed).unwrap();
+        assert_eq!(tw.targets.len(), 2);
     }
 }

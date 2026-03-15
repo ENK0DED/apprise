@@ -41,6 +41,7 @@ impl Notify for Viber {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -65,4 +66,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_from_url_token_from_host() {
+        let parsed = ParsedUrl::parse("viber://mytoken/target1").unwrap();
+        let v = Viber::from_url(&parsed).unwrap();
+        assert_eq!(v.token, "mytoken");
+        assert_eq!(v.targets, vec!["target1".to_string()]);
+    }
+
+    #[test]
+    fn test_from_url_token_from_query() {
+        let parsed = ParsedUrl::parse("viber://?token=mytoken&to=t1,t2").unwrap();
+        let v = Viber::from_url(&parsed).unwrap();
+        assert_eq!(v.token, "mytoken");
+        assert!(v.targets.contains(&"t1".to_string()));
+        assert!(v.targets.contains(&"t2".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_multiple_targets() {
+        let parsed = ParsedUrl::parse("viber://token/t1/t2?from=Viber%20Bot").unwrap();
+        let v = Viber::from_url(&parsed).unwrap();
+        assert_eq!(v.token, "token");
+        assert_eq!(v.targets.len(), 2);
+        assert_eq!(v.targets[0], "t1");
+        assert_eq!(v.targets[1], "t2");
+    }
+
+    #[test]
+    fn test_from_url_to_param_combined() {
+        let parsed = ParsedUrl::parse("viber://token/?to=abc,def").unwrap();
+        let v = Viber::from_url(&parsed).unwrap();
+        assert_eq!(v.token, "token");
+        assert_eq!(v.targets.len(), 2);
+        assert!(v.targets.contains(&"abc".to_string()));
+        assert!(v.targets.contains(&"def".to_string()));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Viber::static_details();
+        assert_eq!(details.service_name, "Viber");
+        assert_eq!(details.service_url, Some("https://www.viber.com"));
+        assert!(details.protocols.contains(&"viber"));
+        assert!(!details.attachment_support);
+    }
 }

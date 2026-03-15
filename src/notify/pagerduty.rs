@@ -102,6 +102,7 @@ impl Notify for PagerDuty {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -137,5 +138,63 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_basic_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "pagerduty://myroutekey@myapikey",
+        ).unwrap();
+        let obj = PagerDuty::from_url(&parsed).unwrap();
+        assert_eq!(obj.integration_key, "myapikey");
+        assert_eq!(obj.apikey, "myroutekey");
+        assert_eq!(obj.region, "us");
+        assert_eq!(obj.source, "Apprise");
+        assert!(obj.component.is_none());
+        assert!(obj.group.is_none());
+        assert!(obj.class.is_none());
+        assert!(obj.click.is_none());
+    }
+
+    #[test]
+    fn test_from_url_eu_region() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "pagerduty://myroutekey@myapikey?region=eu",
+        ).unwrap();
+        let obj = PagerDuty::from_url(&parsed).unwrap();
+        assert_eq!(obj.region, "eu");
+    }
+
+    #[test]
+    fn test_from_url_all_params() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "pagerduty://?integrationkey=r&apikey=a&source=s&component=c&group=g&class=cl&click=http://localhost",
+        ).unwrap();
+        let obj = PagerDuty::from_url(&parsed).unwrap();
+        assert_eq!(obj.integration_key, "r");
+        assert_eq!(obj.apikey, "a");
+        assert_eq!(obj.source, "s");
+        assert_eq!(obj.component.as_deref(), Some("c"));
+        assert_eq!(obj.group.as_deref(), Some("g"));
+        assert_eq!(obj.class.as_deref(), Some("cl"));
+        assert_eq!(obj.click.as_deref(), Some("http://localhost"));
+    }
+
+    #[test]
+    fn test_from_url_with_group_class() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "pagerduty://routekey@apikey/ms/mc?group=mygroup&class=myclass",
+        ).unwrap();
+        let obj = PagerDuty::from_url(&parsed).unwrap();
+        assert_eq!(obj.group.as_deref(), Some("mygroup"));
+        assert_eq!(obj.class.as_deref(), Some("myclass"));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = PagerDuty::static_details();
+        assert_eq!(details.service_name, "PagerDuty");
+        assert!(details.protocols.contains(&"pagerduty"));
+        assert_eq!(details.service_url, Some("https://pagerduty.com"));
     }
 }

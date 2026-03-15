@@ -62,6 +62,7 @@ impl Notify for VoipMs {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -69,9 +70,82 @@ mod tests {
         let urls = vec![
             "voipms://",
             "voipms://@:",
+            // No password
+            "voipms://user@example.com/11111111111",
+            // No email (just password)
+            "voipms://:password",
+            // Invalid email (user@ without domain)
+            "voipms://user@:pass/11111111111",
+            // Invalid short phone number
+            "voipms://password:user@example.com/1613",
+            // International format starting with 011
+            "voipms://password:user@example.com/01133122446688",
+            // International format target starting with 011
+            "voipms://password:user@example.com/16134448888/01133122446688",
         ];
-        for url in &urls {
+        for url in urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            // Valid with from and target
+            "voipms://password:user@example.com/16138884444/16134442222",
+            // Valid with multiple targets
+            "voipms://password:user@example.com/16138884444/16134442222/16134443333",
+            // Valid with from= and to= query params
+            "voipms://password:user@example.com/?from=16138884444&to=16134448888",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        // voipms://password:user@example.com/DID/TARGET
+        // URL parsing: user=password, password=user, host=example.com
+        let parsed = ParsedUrl::parse(
+            "voipms://password:user@example.com/16138884444/16134442222"
+        ).unwrap();
+        let v = VoipMs::from_url(&parsed).unwrap();
+        assert_eq!(v.password, "password");
+        // password field from URL parser is "user" (not user@host)
+        assert_eq!(v.user, "user");
+        assert_eq!(v.did, "16138884444");
+        assert_eq!(v.targets.len(), 1);
+        assert_eq!(v.targets[0], "16134442222");
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let parsed = ParsedUrl::parse(
+            "voipms://password:user@example.com/?from=16138884444&to=16134448888"
+        ).unwrap();
+        let v = VoipMs::from_url(&parsed).unwrap();
+        assert_eq!(v.did, "16138884444");
+        assert!(v.targets.contains(&"16134448888".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_multiple_targets() {
+        let parsed = ParsedUrl::parse(
+            "voipms://password:user@example.com/16138884444/16134442222/16134443333"
+        ).unwrap();
+        let v = VoipMs::from_url(&parsed).unwrap();
+        assert_eq!(v.targets.len(), 2);
+        assert_eq!(v.targets[0], "16134442222");
+        assert_eq!(v.targets[1], "16134443333");
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = VoipMs::static_details();
+        assert_eq!(details.service_name, "VoIP.ms");
+        assert_eq!(details.service_url, Some("https://voip.ms"));
+        assert!(details.protocols.contains(&"voipms"));
+        assert!(!details.attachment_support);
     }
 }

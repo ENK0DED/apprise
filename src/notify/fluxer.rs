@@ -60,16 +60,115 @@ impl Notify for Fluxer {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    fn tokens() -> (&'static str, &'static str) {
+        ("0000000000", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let (wid, wtk) = tokens();
+        let urls = vec![
+            format!("fluxer://{}/{}", wid, wtk),
+            format!("fluxer://l2g@{}/{}", wid, wtk),
+            format!("fluxer://{}/{}?format=markdown&footer=Yes&image=Yes&ping=Joe", wid, wtk),
+            format!("fluxer://{}/{}?format=markdown&footer=Yes&image=No&fields=no", wid, wtk),
+            format!("fluxer://{}/{}?format=markdown&avatar=No&footer=No", wid, wtk),
+            format!("fluxer://{}/{}?flags=1", wid, wtk),
+            format!("fluxer://{}/{}?format=markdown", wid, wtk),
+            format!("fluxer://{}/{}?format=markdown&thread=abc123", wid, wtk),
+            format!("fluxer://{}/{}?format=text", wid, wtk),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
+        let (wid, wtk) = tokens();
         let urls = vec![
-            "fluxer://",
-            "fluxer://:@/",
+            "fluxer://".to_string(),
+            "fluxer://:@/".to_string(),
+            // No webhook_token specified
+            format!("fluxer://{}", wid),
+            // Invalid mode
+            format!("fluxer://{}/{}?mode=invalid", wid, wtk),
+            // Negative flags
+            format!("fluxer://{}/{}?flags=-1", wid, wtk),
+            // Non-numeric flags
+            format!("fluxer://{}/{}?flags=invalid", wid, wtk),
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    fn parse_fluxer(url: &str) -> Fluxer {
+        let parsed = crate::utils::parse::ParsedUrl::parse(url).unwrap();
+        Fluxer::from_url(&parsed).unwrap()
+    }
+
+    #[test]
+    fn test_from_url_basic() {
+        let (wid, wtk) = tokens();
+        let f = parse_fluxer(&format!("fluxer://{}/{}", wid, wtk));
+        assert_eq!(f.webhook_id, wid);
+        assert_eq!(f.token, wtk);
+    }
+
+    #[test]
+    fn test_from_url_with_user() {
+        let (wid, wtk) = tokens();
+        let f = parse_fluxer(&format!("fluxer://l2g@{}/{}", wid, wtk));
+        assert_eq!(f.webhook_id, wid);
+        assert_eq!(f.token, wtk);
+    }
+
+    #[test]
+    fn test_from_url_no_token_returns_none() {
+        let (wid, _) = tokens();
+        let parsed = crate::utils::parse::ParsedUrl::parse(&format!("fluxer://{}", wid)).unwrap();
+        assert!(Fluxer::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_from_url_mode_validation() {
+        let (wid, wtk) = tokens();
+        // private mode is valid
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            &format!("fluxer://{}/{}?mode=private", wid, wtk)
+        ).unwrap();
+        assert!(Fluxer::from_url(&parsed).is_some());
+
+        // invalid mode returns None
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            &format!("fluxer://{}/{}?mode=invalid", wid, wtk)
+        ).unwrap();
+        assert!(Fluxer::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_from_url_flags_validation() {
+        let (wid, wtk) = tokens();
+        // Valid flags
+        let f = parse_fluxer(&format!("fluxer://{}/{}?flags=1", wid, wtk));
+        assert_eq!(f.webhook_id, wid);
+
+        // Negative flags
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            &format!("fluxer://{}/{}?flags=-1", wid, wtk)
+        ).unwrap();
+        assert!(Fluxer::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Fluxer::static_details();
+        assert_eq!(details.service_name, "Fluxer");
+        assert_eq!(details.protocols, vec!["fluxer", "fluxers"]);
+        assert!(details.attachment_support);
     }
 }

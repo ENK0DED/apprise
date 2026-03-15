@@ -37,16 +37,118 @@ impl Notify for Revolt {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
 
     #[test]
     fn test_invalid_urls() {
-        let urls = vec![
+        let no_channel = format!("revolt://{}", "i".repeat(24));
+        let no_token = format!("revolt://?channel={}", "i".repeat(24));
+        let urls: Vec<&str> = vec![
             "revolt://",
             "revolt://:@/",
+            &no_channel,
+            &no_token,
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let bot = "i".repeat(24);
+        let chan = "t".repeat(64);
+        let urls = vec![
+            // channel via path
+            format!("revolt://{}/{}", bot, chan),
+            // channel via ?channel=
+            format!("revolt://{}/?channel={}", bot, chan),
+            // channel via ?to=
+            format!("revolt://{}/?to={}", bot, chan),
+            // bot_token via ?bot_token=
+            format!("revolt://_?bot_token={}&channel={}", bot, chan),
+            // format=markdown
+            format!("revolt://{}/{}?format=markdown", bot, chan),
+            // format=text
+            format!("revolt://{}/{}?format=text", bot, chan),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields_path() {
+        let bot = "A".repeat(24);
+        let chan = "B".repeat(64);
+        let url_str = format!("revolt://{}/{}", bot, chan);
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let r = Revolt::from_url(&parsed).unwrap();
+        assert_eq!(r.bot_token, bot);
+        assert_eq!(r.channel_id, chan);
+    }
+
+    #[test]
+    fn test_from_url_fields_channel_param() {
+        let bot = "i".repeat(24);
+        let chan = "i".repeat(24);
+        let url_str = format!("revolt://{}/?channel={}", bot, chan);
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let r = Revolt::from_url(&parsed).unwrap();
+        assert_eq!(r.bot_token, bot);
+        assert_eq!(r.channel_id, chan);
+    }
+
+    #[test]
+    fn test_from_url_fields_to_param() {
+        let bot = "i".repeat(24);
+        let chan = "i".repeat(24);
+        let url_str = format!("revolt://{}/?to={}", bot, chan);
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let r = Revolt::from_url(&parsed).unwrap();
+        assert_eq!(r.bot_token, bot);
+        assert_eq!(r.channel_id, chan);
+    }
+
+    #[test]
+    fn test_from_url_bot_token_param() {
+        let bot = "i".repeat(24);
+        let chan = "t".repeat(64);
+        let url_str = format!("revolt://_?bot_token={}&channel={}", bot, chan);
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let r = Revolt::from_url(&parsed).unwrap();
+        assert_eq!(r.bot_token, bot);
+        assert_eq!(r.channel_id, chan);
+    }
+
+    #[test]
+    fn test_no_channel_returns_none() {
+        let bot = "i".repeat(24);
+        // Bot token only, no channel
+        let parsed = ParsedUrl::parse(&format!("revolt://{}", bot)).unwrap();
+        assert!(Revolt::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Revolt::static_details();
+        assert_eq!(details.service_name, "Revolt");
+        assert_eq!(details.service_url, Some("https://revolt.chat"));
+        assert!(details.protocols.contains(&"revolt"));
+        assert!(!details.attachment_support);
+    }
+
+    #[test]
+    fn test_channel_comma_separated_takes_first() {
+        let bot = "i".repeat(24);
+        let chan1 = "a".repeat(24);
+        let chan2 = "b".repeat(24);
+        let url_str = format!("revolt://{}/?channel={},{}", bot, chan1, chan2);
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let r = Revolt::from_url(&parsed).unwrap();
+        // Takes the first channel from comma-separated list
+        assert_eq!(r.channel_id, chan1);
     }
 }

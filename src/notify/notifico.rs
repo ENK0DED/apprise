@@ -46,6 +46,7 @@ impl Notify for Notifico {
 #[cfg(test)]
 mod tests {
     use crate::notify::registry::from_url;
+    use super::*;
 
     #[test]
     fn test_valid_urls() {
@@ -72,5 +73,52 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let parsed = ParsedUrl::parse("notifico://1234/ckhrjW8w672m6HG").expect("parse");
+        let n = Notifico::from_url(&parsed).expect("from_url");
+        assert_eq!(n.project_id, "1234");
+        assert_eq!(n.msghook, "ckhrjW8w672m6HG");
+    }
+
+    #[test]
+    fn test_native_url_parsing() {
+        let parsed = ParsedUrl::parse("https://n.tkte.ch/h/2144/uJmKaBW9WFk42miB146ci3Kj").expect("parse");
+        let n = Notifico::from_url(&parsed).expect("from_url");
+        assert_eq!(n.project_id, "2144");
+        assert_eq!(n.msghook, "uJmKaBW9WFk42miB146ci3Kj");
+    }
+
+    #[test]
+    fn test_project_id_must_be_numeric() {
+        // Non-numeric project id
+        assert!(from_url("notifico://abcd/ckhrjW8w672m6HG").is_none());
+        // Numeric project id
+        assert!(from_url("notifico://1234/ckhrjW8w672m6HG").is_some());
+    }
+
+    #[test]
+    fn test_missing_msghook() {
+        // Only project id, no message hook
+        assert!(from_url("notifico://1234").is_none());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Notifico::static_details();
+        assert_eq!(details.service_name, "Notifico");
+        assert!(details.protocols.contains(&"notifico"));
+        assert!(!details.attachment_support);
+    }
+
+    #[test]
+    fn test_api_endpoint_format() {
+        // Verify the endpoint would be correct
+        let parsed = ParsedUrl::parse("notifico://1234/ckhrjW8w672m6HG").expect("parse");
+        let n = Notifico::from_url(&parsed).expect("from_url");
+        let expected_url = format!("https://notico.re/api/{}/{}", n.project_id, n.msghook);
+        assert_eq!(expected_url, "https://notico.re/api/1234/ckhrjW8w672m6HG");
     }
 }

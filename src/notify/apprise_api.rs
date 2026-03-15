@@ -106,7 +106,11 @@ impl Notify for AppriseApi {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::notify::NotifyContext;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_valid_urls() {
@@ -141,5 +145,204 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    /// Helper: create an AppriseApi instance pointing at the given mock server.
+    fn apprise_api_for_mock(server: &MockServer, token: &str, extra_params: &str) -> AppriseApi {
+        let addr = server.address();
+        let sep = if extra_params.is_empty() { "" } else { "?" };
+        let url_str = format!(
+            "apprise://{}:{}/{}{}{}",
+            addr.ip(), addr.port(), token, sep, extra_params
+        );
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        AppriseApi::from_url(&parsed).unwrap()
+    }
+
+    fn default_ctx() -> NotifyContext {
+        NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_json_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/notify/mytoken"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "title": "Test Title",
+                "body": "Test Body",
+                "type": "info",
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = apprise_api_for_mock(&server, "mytoken", "");
+        let result = api.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_form_success() {
+        let server = MockServer::start().await;
+
+        // For multipart/form, we just check that the POST arrives at the right path
+        Mock::given(method("POST"))
+            .and(path("/notify/mytoken"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = apprise_api_for_mock(&server, "mytoken", "method=form");
+        let result = api.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_json_with_auth() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/notify/mytoken"))
+            .and(wiremock::matchers::header_exists("authorization"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let addr = server.address();
+        let url_str = format!(
+            "apprise://user:pass@{}:{}/mytoken",
+            addr.ip(), addr.port()
+        );
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let api = AppriseApi::from_url(&parsed).unwrap();
+
+        let result = api.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_error_500() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/notify/mytoken"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("Internal Server Error"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = apprise_api_for_mock(&server, "mytoken", "");
+        let result = api.send(&default_ctx()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NotifyError::ServiceError { status, body } => {
+                assert_eq!(status, 500);
+                assert_eq!(body, "Internal Server Error");
+            }
+            other => panic!("Expected ServiceError, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_error_401() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/notify/mytoken"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_string("Unauthorized"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = apprise_api_for_mock(&server, "mytoken", "");
+        let result = api.send(&default_ctx()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NotifyError::ServiceError { status, .. } => {
+                assert_eq!(status, 401);
+            }
+            other => panic!("Expected ServiceError, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_form_error_500() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/notify/mytoken"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("Server Error"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = apprise_api_for_mock(&server, "mytoken", "method=form");
+        let result = api.send(&default_ctx()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NotifyError::ServiceError { status, .. } => {
+                assert_eq!(status, 500);
+            }
+            other => panic!("Expected ServiceError, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_secure_flag() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "apprise://host/token",
+        ).unwrap();
+        let api = AppriseApi::from_url(&parsed).unwrap();
+        assert!(!api.secure);
+
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "apprises://host/token",
+        ).unwrap();
+        let api = AppriseApi::from_url(&parsed).unwrap();
+        assert!(api.secure);
+    }
+
+    #[test]
+    fn test_method_defaults_to_json() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "apprise://host/token",
+        ).unwrap();
+        let api = AppriseApi::from_url(&parsed).unwrap();
+        assert_eq!(api.method, "json");
+    }
+
+    #[test]
+    fn test_method_form() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "apprise://host/token?method=form",
+        ).unwrap();
+        let api = AppriseApi::from_url(&parsed).unwrap();
+        assert_eq!(api.method, "form");
+    }
+
+    #[test]
+    fn test_invalid_method_rejected() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "apprise://host/token?method=invalid",
+        ).unwrap();
+        assert!(AppriseApi::from_url(&parsed).is_none());
     }
 }

@@ -261,6 +261,7 @@ mod tests {
         let invalid_urls = vec![
             "xmpp://",
             "xmpp://localhost/target",
+            // No password
             "xmpp://user@localhost/target",
         ];
         for url in &invalid_urls {
@@ -272,5 +273,84 @@ mod tests {
                 url,
             );
         }
+    }
+
+    #[test]
+    fn test_xmpp_struct_fields() {
+        let parsed = ParsedUrl::parse("xmpp://user:pass@jabber.org/target@example.com").unwrap();
+        let x = Xmpp::from_url(&parsed).unwrap();
+        assert_eq!(x.host, "jabber.org");
+        assert_eq!(x.jid, "user@jabber.org");
+        assert_eq!(x.password, "pass");
+        assert!(x.targets.contains(&"target@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_xmpp_jid_with_at_sign() {
+        let parsed = ParsedUrl::parse("xmpp://user%40jabber.org:pass@jabber.org/target@example.com").unwrap();
+        let x = Xmpp::from_url(&parsed).unwrap();
+        assert!(x.jid.contains("jabber.org"));
+    }
+
+    #[test]
+    fn test_xmpps_default_port() {
+        let parsed = ParsedUrl::parse("xmpps://user:pass@jabber.org/target@example.com").unwrap();
+        let x = Xmpp::from_url(&parsed).unwrap();
+        assert_eq!(x.port, 5223);
+        assert_eq!(x.secure_mode, XmppSecureMode::Tls);
+    }
+
+    #[test]
+    fn test_xmpp_default_port() {
+        let parsed = ParsedUrl::parse("xmpp://user:pass@jabber.org/target@example.com").unwrap();
+        let x = Xmpp::from_url(&parsed).unwrap();
+        assert_eq!(x.port, 5222);
+        assert_eq!(x.secure_mode, XmppSecureMode::StartTls);
+    }
+
+    #[test]
+    fn test_xmpp_target_auto_domain() {
+        // When target doesn't contain @, host is appended
+        let parsed = ParsedUrl::parse("xmpp://user:pass@jabber.org/target").unwrap();
+        let x = Xmpp::from_url(&parsed).unwrap();
+        assert!(x.targets.contains(&"target@jabber.org".to_string()));
+    }
+
+    #[test]
+    fn test_xmpp_to_query_param() {
+        let parsed = ParsedUrl::parse("xmpp://user:pass@jabber.org/t1@example.com?to=t2@example.com,t3").unwrap();
+        let x = Xmpp::from_url(&parsed).unwrap();
+        assert_eq!(x.targets.len(), 3);
+        assert!(x.targets.contains(&"t2@example.com".to_string()));
+        assert!(x.targets.contains(&"t3@jabber.org".to_string()));
+    }
+
+    #[test]
+    fn test_xmpp_no_targets_fails() {
+        let result = ParsedUrl::parse("xmpp://user:pass@jabber.org")
+            .and_then(|p| Xmpp::from_url(&p));
+        assert!(result.is_none(), "XMPP without targets should fail");
+    }
+
+    #[test]
+    fn test_xmpp_mode_none() {
+        let parsed = ParsedUrl::parse("xmpp://user:pass@jabber.org/target?mode=none").unwrap();
+        let x = Xmpp::from_url(&parsed).unwrap();
+        assert_eq!(x.secure_mode, XmppSecureMode::None);
+    }
+
+    #[test]
+    fn test_xmpps_mode_starttls() {
+        let parsed = ParsedUrl::parse("xmpps://user:pass@jabber.org/target?mode=starttls").unwrap();
+        let x = Xmpp::from_url(&parsed).unwrap();
+        assert_eq!(x.secure_mode, XmppSecureMode::StartTls);
+    }
+
+    #[test]
+    fn test_xmpp_static_details() {
+        let details = Xmpp::static_details();
+        assert_eq!(details.service_name, "XMPP");
+        assert_eq!(details.protocols, vec!["xmpp", "xmpps"]);
+        assert!(!details.attachment_support);
     }
 }

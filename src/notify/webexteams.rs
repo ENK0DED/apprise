@@ -46,6 +46,7 @@ impl Notify for WebexTeams {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -57,5 +58,54 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls: Vec<String> = vec![
+            // Token via host
+            format!("wxteams://{}", "a".repeat(80)),
+            // Token via query param
+            format!("wxteams://?token={}", "a".repeat(80)),
+            // webex schema
+            format!("webex://{}", "a".repeat(140)),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_token_from_host() {
+        let token = "a".repeat(80);
+        let parsed = ParsedUrl::parse(&format!("wxteams://{}", token)).unwrap();
+        let wt = WebexTeams::from_url(&parsed).unwrap();
+        assert_eq!(wt.token, token);
+    }
+
+    #[test]
+    fn test_from_url_token_from_query() {
+        let token = "b".repeat(80);
+        let parsed = ParsedUrl::parse(&format!("wxteams://?token={}", token)).unwrap();
+        let wt = WebexTeams::from_url(&parsed).unwrap();
+        assert_eq!(wt.token, token);
+    }
+
+    #[test]
+    fn test_from_url_webex_schema() {
+        let token = "c".repeat(140);
+        let parsed = ParsedUrl::parse(&format!("webex://{}", token)).unwrap();
+        let wt = WebexTeams::from_url(&parsed).unwrap();
+        assert_eq!(wt.token, token);
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = WebexTeams::static_details();
+        assert_eq!(details.service_name, "Cisco Webex Teams");
+        assert_eq!(details.service_url, Some("https://webex.com"));
+        assert!(details.protocols.contains(&"wxteams"));
+        assert!(details.protocols.contains(&"webex"));
+        assert!(!details.attachment_support);
     }
 }

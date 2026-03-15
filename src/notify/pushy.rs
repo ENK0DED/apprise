@@ -34,7 +34,9 @@ impl Notify for Pushy {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
 
     #[test]
     fn test_valid_urls() {
@@ -64,5 +66,46 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_fields_basic() {
+        let parsed = ParsedUrl::parse("pushy://apikey/@device").unwrap();
+        let p = Pushy::from_url(&parsed).unwrap();
+        assert_eq!(p.apikey, "apikey");
+        assert!(p.targets.contains(&"@device".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_targets_via_to_param() {
+        let parsed = ParsedUrl::parse("pushy://apikey/?to=@device").unwrap();
+        let p = Pushy::from_url(&parsed).unwrap();
+        assert_eq!(p.apikey, "apikey");
+        assert!(p.targets.contains(&"@device".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_device_and_topic() {
+        let parsed = ParsedUrl::parse("pushy://_/@device/#topic?key=apikey").unwrap();
+        let p = Pushy::from_url(&parsed).unwrap();
+        assert!(p.targets.contains(&"@device".to_string()));
+        assert!(p.targets.contains(&"#topic".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_no_targets() {
+        let parsed = ParsedUrl::parse("pushy://apikey").unwrap();
+        let p = Pushy::from_url(&parsed).unwrap();
+        assert_eq!(p.apikey, "apikey");
+        assert!(p.targets.is_empty());
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Pushy::static_details();
+        assert_eq!(details.service_name, "Pushy");
+        assert_eq!(details.service_url, Some("https://pushy.me"));
+        assert!(details.protocols.contains(&"pushy"));
+        assert!(!details.attachment_support);
     }
 }

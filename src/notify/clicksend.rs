@@ -40,7 +40,22 @@ impl Notify for ClickSend {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "clicksend://user:pass@33333333333333?batch=yes",
+            "clicksend://user:pass@33333333333333?batch=yes&to=66666666666666",
+            "clicksend://user:pass@33333333333333?batch=no",
+            "clicksend://user@33333333333333?batch=no&key=abc123",
+            "clicksend://user:pass@33333333333333",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
@@ -51,5 +66,55 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_struct_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "clicksend://myuser:mypass@33333333333333/44444444444444"
+        ).unwrap();
+        let obj = ClickSend::from_url(&parsed).unwrap();
+        assert_eq!(obj.user, "myuser");
+        assert_eq!(obj.apikey, "mypass");
+        assert_eq!(obj.targets.len(), 2);
+        assert!(obj.targets.contains(&"33333333333333".to_string()));
+        assert!(obj.targets.contains(&"44444444444444".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_to_query_param() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "clicksend://user:pass@33333333333333?to=66666666666666"
+        ).unwrap();
+        let obj = ClickSend::from_url(&parsed).unwrap();
+        assert_eq!(obj.targets.len(), 2);
+        assert!(obj.targets.contains(&"33333333333333".to_string()));
+        assert!(obj.targets.contains(&"66666666666666".to_string()));
+    }
+
+    #[test]
+    fn test_from_url_key_query_param() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "clicksend://user@33333333333333?key=myapikey"
+        ).unwrap();
+        let obj = ClickSend::from_url(&parsed).unwrap();
+        assert_eq!(obj.user, "user");
+        assert_eq!(obj.apikey, "myapikey");
+    }
+
+    #[test]
+    fn test_no_targets_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "clicksend://user:pass@"
+        ).unwrap();
+        assert!(ClickSend::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = ClickSend::static_details();
+        assert_eq!(details.service_name, "ClickSend");
+        assert_eq!(details.protocols, vec!["clicksend"]);
+        assert!(!details.attachment_support);
     }
 }

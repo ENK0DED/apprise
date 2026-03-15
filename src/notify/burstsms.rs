@@ -56,16 +56,83 @@ impl Notify for BurstSms {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "burstsms://ffffffff:gggggggggggggggg@33333333333/999999999999999/123/abcd/",
+            "burstsms://hhhhhhhh:iiiiiiiiiiiiiiii@55555555555",
+            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555&to=66666666666",
+            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555&to=66666666666&batch=y",
+            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555&to=66666666666&country=us",
+            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555&to=66666666666&validity=10",
+            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&from=55555555555&to=77777777777",
+            "burstsms://aaaaaaaa:bbbbbbbbbbbbbbbb@66666666666/77777777777",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "burstsms://",
             "burstsms://:@/",
+            // Just key, no secret
+            "burstsms://aaaaaaaa@12345678",
+            // Invalid source number (percent-encoded space)
+            "burstsms://dddddddd:eeeeeeeeeeeeeeee@%20",
+            // Invalid country
+            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555&to=66666666666&country=invalid",
+            // Invalid validity
+            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555&to=66666666666&validity=invalid",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_struct_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "burstsms://mykey123:mysecretvalue1234@15551233456/15555555555"
+        ).unwrap();
+        let obj = BurstSms::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, "mykey123");
+        assert_eq!(obj.api_secret, "mysecretvalue1234");
+        assert_eq!(obj.from_phone, "15551233456");
+        assert_eq!(obj.targets, vec!["15555555555"]);
+    }
+
+    #[test]
+    fn test_from_url_query_params() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "burstsms://_?key=testkey1&secret=testsecret123456&from=55555555555&to=66666666666"
+        ).unwrap();
+        let obj = BurstSms::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, "testkey1");
+        assert_eq!(obj.api_secret, "testsecret123456");
+        assert_eq!(obj.from_phone, "55555555555");
+        assert!(obj.targets.contains(&"66666666666".to_string()));
+    }
+
+    #[test]
+    fn test_source_alias() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "burstsms://_?key=aaaaaaaa&secret=bbbbbbbbbbbbbbbb&source=55555555555&to=66666666666"
+        ).unwrap();
+        let obj = BurstSms::from_url(&parsed).unwrap();
+        assert_eq!(obj.from_phone, "55555555555");
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = BurstSms::static_details();
+        assert_eq!(details.service_name, "Burst SMS");
+        assert_eq!(details.protocols, vec!["burstsms"]);
+        assert!(!details.attachment_support);
     }
 }

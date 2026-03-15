@@ -74,15 +74,183 @@ mod tests {
     use crate::notify::registry::from_url;
 
     #[test]
-    fn test_invalid_urls() {
+    fn test_valid_urls() {
+        let token = "a".repeat(32);
         let urls = vec![
+            format!("zulip://bot-name@apprise/{}", token),
+            format!("zulip://botname@apprise/{}", token),
+            format!("zulip://botname@apprise.zulipchat.com/{}", token),
+            format!("zulip://botname@apprise/{}/channel1/channel2", token),
+            format!("zulip://botname@apprise/{}/?to=channel1/channel2", token),
+            format!("zulip://botname@apprise/?token={}&to=channel1", token),
+            format!("zulip://botname@apprise/{}/user@example.com/user2@example.com", token),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let short_tok = format!("zulip://botname@apprise/{}", "a".repeat(24));
+        let bad_bot = format!("zulip://....@apprise/{}", "a".repeat(32));
+        let urls: Vec<&str> = vec![
             "zulip://",
             "zulip://:@/",
             "zulip://apprise",
             "zulip://botname@apprise",
+            // Token too short (24 chars, need >= 32)
+            &short_tok,
+            // Invalid botname (no alphanumeric)
+            &bad_bot,
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    // ── Behavioral tests using wiremock ──────────────────────────────────
+
+    use super::*;
+    use crate::asset::AppriseAsset;
+    use crate::notify::{Notify, NotifyContext};
+    use crate::types::{NotifyFormat, NotifyType};
+    use crate::utils::parse::ParsedUrl;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn ctx(title: &str, body: &str) -> NotifyContext {
+        NotifyContext {
+            body: body.to_string(),
+            title: title.to_string(),
+            notify_type: NotifyType::Info,
+            body_format: NotifyFormat::Text,
+            attachments: vec![],
+            interpret_escapes: false,
+            interpret_emojis: false,
+            tags: vec![],
+            asset: AppriseAsset::default(),
+        }
+    }
+
+    fn make_zulip(server: &MockServer, targets: Vec<&str>) -> Zulip {
+        let addr = server.address();
+        let base = format!("http://127.0.0.1:{}", addr.port());
+        Zulip {
+            user: "botname".to_string(),
+            token: "a".repeat(32),
+            org_url: base,
+            targets: targets.iter().map(|s| s.to_string()).collect(),
+            verify_certificate: false,
+            tags: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_zulip_basic_send_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": "success"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let z = make_zulip(&server, vec!["general"]);
+        let result = z.send(&ctx("title", "body")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap(), "Zulip POST should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_zulip_multiple_targets() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": "success"})))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let z = make_zulip(&server, vec!["channel1", "channel2"]);
+        let result = z.send(&ctx("title", "body")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_zulip_email_target_uses_private_type() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": "success"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let z = make_zulip(&server, vec!["user@example.com"]);
+        let result = z.send(&ctx("title", "body")).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_zulip_http_500_returns_false() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/messages"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("error"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let z = make_zulip(&server, vec!["general"]);
+        let result = z.send(&ctx("title", "body")).await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap(), "HTTP 500 should return false");
+    }
+
+    #[tokio::test]
+    async fn test_zulip_connection_refused_returns_error() {
+        let z = Zulip {
+            user: "botname".to_string(),
+            token: "a".repeat(32),
+            org_url: "http://127.0.0.1:19999".to_string(),
+            targets: vec!["general".to_string()],
+            verify_certificate: false,
+            tags: vec![],
+        };
+        let result = z.send(&ctx("title", "body")).await;
+        assert!(result.is_err(), "Connection refused should return Err");
+    }
+
+    #[test]
+    fn test_zulip_from_url_struct_fields() {
+        let token = "a".repeat(32);
+        let url = format!("zulip://botname@apprise/{}/channel1", token);
+        let parsed = ParsedUrl::parse(&url).unwrap();
+        let z = Zulip::from_url(&parsed).unwrap();
+        assert_eq!(z.user, "botname");
+        assert_eq!(z.token, token);
+        assert_eq!(z.org_url, "https://apprise");
+        assert!(z.targets.contains(&"channel1".to_string()));
+    }
+
+    #[test]
+    fn test_zulip_token_from_query_param() {
+        let token = "a".repeat(32);
+        let url = format!("zulip://botname@apprise/?token={}&to=channel1", token);
+        let parsed = ParsedUrl::parse(&url).unwrap();
+        let z = Zulip::from_url(&parsed).unwrap();
+        assert_eq!(z.token, token);
+        assert!(z.targets.contains(&"channel1".to_string()));
+    }
+
+    #[test]
+    fn test_zulip_static_details() {
+        let details = Zulip::static_details();
+        assert_eq!(details.service_name, "Zulip");
+        assert_eq!(details.protocols, vec!["zulip"]);
+        assert!(!details.attachment_support);
     }
 }

@@ -42,16 +42,94 @@ impl Notify for Kavenegar {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
+
+    fn parse_kav(url: &str) -> Option<Kavenegar> {
+        ParsedUrl::parse(url).and_then(|p| Kavenegar::from_url(&p))
+    }
 
     #[test]
     fn test_invalid_urls() {
-        let urls = vec![
+        let alpha_from = format!("kavenegar://{}@{}/{}", "a".repeat(14), "b".repeat(24), "3".repeat(14));
+        let short_from = format!("kavenegar://{}@{}/{}", "3".repeat(4), "b".repeat(24), "3".repeat(14));
+        let urls: Vec<&str> = vec![
             "kavenegar://",
             "kavenegar://:@/",
+            // invalid from number (alpha chars)
+            &alpha_from,
+            // invalid from number (too short)
+            &short_from,
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            format!("kavenegar://{}/{}", "a".repeat(24), "3".repeat(14)),
+            format!("kavenegar://{}?to={}", "a".repeat(24), "3".repeat(14)),
+            format!("kavenegar://{}@{}/{}", "1".repeat(14), "b".repeat(24), "3".repeat(14)),
+            format!("kavenegar://{}/{}?from={}", "b".repeat(24), "3".repeat(14), "1".repeat(14)),
+        ];
+        for url in &urls {
+            assert!(from_url(&url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_targets_not_valid_phones_still_parsed() {
+        // kavenegar://apikey/target1/non_phone_target -- non-phone targets are still stored
+        // The Python test shows this URL parses but notify_response is False
+        let url = format!("kavenegar://{}/{}/{}", "1".repeat(10), "2".repeat(15), "a".repeat(13));
+        let obj = parse_kav(&url);
+        // Targets include non-digit strings; from_url doesn't validate target format
+        assert!(obj.is_some());
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let apikey = "a".repeat(24);
+        let target = "3".repeat(14);
+        let obj = parse_kav(&format!("kavenegar://{}/{}", apikey, target)).unwrap();
+        assert_eq!(obj.apikey, apikey);
+        assert!(obj.targets.contains(&target));
+        assert!(obj.sender.is_none());
+    }
+
+    #[test]
+    fn test_from_url_with_sender() {
+        let sender = "1".repeat(14);
+        let apikey = "b".repeat(24);
+        let target = "3".repeat(14);
+        let obj = parse_kav(&format!("kavenegar://{}@{}/{}", sender, apikey, target)).unwrap();
+        assert_eq!(obj.sender.as_deref(), Some(sender.as_str()));
+    }
+
+    #[test]
+    fn test_from_url_sender_via_query() {
+        let sender = "1".repeat(14);
+        let apikey = "b".repeat(24);
+        let target = "3".repeat(14);
+        let obj = parse_kav(&format!("kavenegar://{}/{}?from={}", apikey, target, sender)).unwrap();
+        assert_eq!(obj.sender.as_deref(), Some(sender.as_str()));
+    }
+
+    #[test]
+    fn test_to_query_param() {
+        let apikey = "a".repeat(24);
+        let target = "3".repeat(14);
+        let obj = parse_kav(&format!("kavenegar://{}?to={}", apikey, target)).unwrap();
+        assert!(obj.targets.contains(&target));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Kavenegar::static_details();
+        assert_eq!(details.service_name, "Kavenegar");
+        assert_eq!(details.protocols, vec!["kavenegar"]);
     }
 }

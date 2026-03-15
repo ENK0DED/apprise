@@ -65,6 +65,7 @@ impl Notify for Brevo {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
 
     #[test]
@@ -96,5 +97,63 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_from_url_struct_fields() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "brevo://myapikey:sender@example.com/recipient@example.com"
+        ).unwrap();
+        let obj = Brevo::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, "myapikey");
+        assert_eq!(obj.from_email, "sender@example.com");
+        assert_eq!(obj.to, vec!["recipient@example.com"]);
+    }
+
+    #[test]
+    fn test_from_url_no_target_uses_from() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "brevo://abcd:user@example.com?format=text"
+        ).unwrap();
+        let obj = Brevo::from_url(&parsed).unwrap();
+        assert_eq!(obj.apikey, "abcd");
+        assert_eq!(obj.from_email, "user@example.com");
+        // No explicit targets - to list should be empty
+        assert!(obj.to.is_empty());
+    }
+
+    #[test]
+    fn test_from_url_multiple_targets() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "brevo://abcd:user@example.com/one@test.com?to=two@test.com"
+        ).unwrap();
+        let obj = Brevo::from_url(&parsed).unwrap();
+        assert_eq!(obj.to.len(), 2);
+        assert!(obj.to.contains(&"one@test.com".to_string()));
+        assert!(obj.to.contains(&"two@test.com".to_string()));
+    }
+
+    #[test]
+    fn test_invalid_apikey_special_chars() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "brevo://invalid-api-key+*-d:user@example.com"
+        ).unwrap();
+        assert!(Brevo::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_invalid_reply_to() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "brevo://abcd:user@example.com/newuser@example.com?reply=%20!"
+        ).unwrap();
+        assert!(Brevo::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Brevo::static_details();
+        assert_eq!(details.service_name, "Brevo (Sendinblue)");
+        assert_eq!(details.protocols, vec!["brevo"]);
+        assert!(details.attachment_support);
     }
 }

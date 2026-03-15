@@ -52,16 +52,85 @@ impl Notify for HttpSms {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
+
+    fn parse_httpsms(url: &str) -> Option<HttpSms> {
+        ParsedUrl::parse(url).and_then(|p| HttpSms::from_url(&p))
+    }
 
     #[test]
     fn test_invalid_urls() {
-        let urls = vec![
+        let short_source = format!("httpsms://{}:{}@{}", "u".repeat(10), "p".repeat(10), "3".repeat(5));
+        let urls: Vec<&str> = vec![
             "httpsms://",
             "httpsms://:@/",
+            // invalid source number (too short)
+            &short_source,
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            // apikey@from (default to self)
+            format!("httpsms://{}@{}", "p".repeat(10), "2".repeat(10)),
+            // apikey@from/target with valid target
+            format!("httpsms://{}@{}/{}", "b".repeat(10), "9876543210", "3".repeat(11)),
+            // apikey@from with 11-digit from
+            format!("httpsms://{}@{}", "c".repeat(10), "4".repeat(11)),
+            format!("httpsms://{}@{}", "b".repeat(10), "5".repeat(11)),
+            // use get args
+            format!("httpsms://?key={}&from={}", "y".repeat(10), "5".repeat(11)),
+            format!("httpsms://?key={}&from={}&to={}", "b".repeat(10), "5".repeat(11), "7".repeat(13)),
+        ];
+        for url in &urls {
+            assert!(from_url(&url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_target_still_parses() {
+        // Invalid target number provided -- plugin still parses but notify would fail
+        let url = format!("httpsms://{}@{}/{}", "p".repeat(10), "1".repeat(10), "55");
+        let obj = parse_httpsms(&url);
+        assert!(obj.is_some(), "Should parse even with short target");
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let url = format!("httpsms://{}@9876543210/{}/abcd/", "b".repeat(10), "3".repeat(11));
+        let obj = parse_httpsms(&url).unwrap();
+        assert_eq!(obj.apikey, "b".repeat(10));
+        assert_eq!(obj.from_phone, "9876543210");
+        // "abcd" is not filtered by from_url (it's just a path part),
+        // but 33333333333 should be present
+        assert!(obj.targets.contains(&"3".repeat(11)));
+    }
+
+    #[test]
+    fn test_query_param_key_and_from() {
+        let url = format!("httpsms://?key={}&from={}", "y".repeat(10), "5".repeat(11));
+        let obj = parse_httpsms(&url).unwrap();
+        assert_eq!(obj.apikey, "y".repeat(10));
+        assert_eq!(obj.from_phone, "5".repeat(11));
+    }
+
+    #[test]
+    fn test_query_param_to() {
+        let url = format!("httpsms://?key={}&from={}&to={}", "b".repeat(10), "5".repeat(11), "7".repeat(13));
+        let obj = parse_httpsms(&url).unwrap();
+        assert!(obj.targets.contains(&"7".repeat(13)));
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = HttpSms::static_details();
+        assert_eq!(details.service_name, "HttpSMS");
+        assert_eq!(details.protocols, vec!["httpsms"]);
     }
 }

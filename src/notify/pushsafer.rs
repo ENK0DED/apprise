@@ -98,17 +98,103 @@ impl Notify for Pushsafer {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
 
     #[test]
     fn test_invalid_urls() {
-        let urls = vec![
-            "psafer://:@/",
-            "psafer://",
-            "psafers://",
+        let urls: Vec<String> = vec![
+            "psafer://:@/".into(),
+            "psafer://".into(),
+            "psafers://".into(),
+            // Invalid priority
+            format!("psafer://{}?priority=invalid", "f".repeat(20)),
+            format!("psafer://{}?priority=25", "f".repeat(20)),
+            // Invalid sound
+            format!("psafer://{}?sound=invalid", "h".repeat(20)),
+            format!("psafer://{}?sound=94000", "h".repeat(20)),
+            // Invalid vibration
+            format!("psafer://{}?vibration=invalid", "h".repeat(20)),
+            format!("psafer://{}?vibration=25000", "h".repeat(20)),
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            format!("psafer://{}", "a".repeat(20)),
+            format!("psafer://{}/12/24/53", "e".repeat(20)),
+            format!("psafer://{}?to=12,24,53", "e".repeat(20)),
+            format!("psafer://{}?priority=emergency", "f".repeat(20)),
+            format!("psafer://{}?priority=-1", "f".repeat(20)),
+            format!("psafer://{}?sound=ok", "g".repeat(20)),
+            format!("psafers://{}?sound=14", "g".repeat(20)),
+            format!("psafers://{}?vibration=1", "h".repeat(20)),
+            format!("psafers://{}", "d".repeat(20)),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let parsed = ParsedUrl::parse(&format!("psafer://{}", "a".repeat(20))).unwrap();
+        let p = Pushsafer::from_url(&parsed).unwrap();
+        assert_eq!(p.privatekey, "a".repeat(20));
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Pushsafer::static_details();
+        assert_eq!(details.service_name, "Pushsafer");
+        assert_eq!(details.service_url, Some("https://www.pushsafer.com"));
+        assert!(details.protocols.contains(&"psafer"));
+        assert!(details.protocols.contains(&"psafers"));
+        assert!(details.attachment_support);
+    }
+
+    #[test]
+    fn test_priority_validation() {
+        // Valid priorities
+        for p in &["-2", "-1", "0", "1", "2", "3", "low", "moderate", "normal", "high", "emergency", "confirmation"] {
+            let url = format!("psafer://{}?priority={}", "a".repeat(20), p);
+            let parsed = ParsedUrl::parse(&url).unwrap();
+            assert!(Pushsafer::from_url(&parsed).is_some(), "Priority {} should be valid", p);
+        }
+    }
+
+    #[test]
+    fn test_sound_validation() {
+        // Valid numeric sounds
+        for s in &["0", "14", "62"] {
+            let url = format!("psafer://{}?sound={}", "a".repeat(20), s);
+            let parsed = ParsedUrl::parse(&url).unwrap();
+            assert!(Pushsafer::from_url(&parsed).is_some(), "Sound {} should be valid", s);
+        }
+        // Valid named sounds
+        for s in &["ok", "alarm", "ring", "bell"] {
+            let url = format!("psafer://{}?sound={}", "a".repeat(20), s);
+            let parsed = ParsedUrl::parse(&url).unwrap();
+            assert!(Pushsafer::from_url(&parsed).is_some(), "Sound {} should be valid", s);
+        }
+    }
+
+    #[test]
+    fn test_vibration_validation() {
+        // Valid vibrations 0..3
+        for v in 0..=3 {
+            let url = format!("psafer://{}?vibration={}", "a".repeat(20), v);
+            let parsed = ParsedUrl::parse(&url).unwrap();
+            assert!(Pushsafer::from_url(&parsed).is_some(), "Vibration {} should be valid", v);
+        }
+        // Invalid vibration 4
+        let url = format!("psafer://{}?vibration=4", "a".repeat(20));
+        let parsed = ParsedUrl::parse(&url).unwrap();
+        assert!(Pushsafer::from_url(&parsed).is_none());
     }
 }

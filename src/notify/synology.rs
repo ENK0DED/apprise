@@ -67,7 +67,11 @@ impl Notify for Synology {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::notify::NotifyContext;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_valid_urls() {
@@ -102,5 +106,197 @@ mod tests {
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    /// Helper: create a Synology instance pointing at the given mock server.
+    fn synology_for_mock(server: &MockServer, token: &str) -> Synology {
+        let addr = server.address();
+        let url_str = format!("synology://{}:{}/{}", addr.ip(), addr.port(), token);
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        Synology::from_url(&parsed).unwrap()
+    }
+
+    fn default_ctx() -> NotifyContext {
+        NotifyContext {
+            title: "Test Title".into(),
+            body: "Test Body".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_basic_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/webapi/entry.cgi"))
+            .and(query_param("api", "SYNO.Chat.External"))
+            .and(query_param("method", "incoming"))
+            .and(query_param("version", "2"))
+            .and(query_param("token", "mytoken"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let synology = synology_for_mock(&server, "mytoken");
+        let result = synology.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_title_and_body_concatenation() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/webapi/entry.cgi"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let synology = synology_for_mock(&server, "tok");
+        let ctx = NotifyContext {
+            title: "My Title".into(),
+            body: "My Body".into(),
+            ..Default::default()
+        };
+        let result = synology.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_body_only_when_no_title() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/webapi/entry.cgi"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let synology = synology_for_mock(&server, "tok");
+        let ctx = NotifyContext {
+            title: "".into(),
+            body: "Body Only".into(),
+            ..Default::default()
+        };
+        let result = synology.send(&ctx).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_send_server_error_returns_false() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/webapi/entry.cgi"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let synology = synology_for_mock(&server, "tok");
+        let result = synology.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_send_bizarre_status_code() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/webapi/entry.cgi"))
+            .respond_with(ResponseTemplate::new(418))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let synology = synology_for_mock(&server, "tok");
+        let result = synology.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn test_send_connection_failure() {
+        let url_str = "synology://127.0.0.1:1/tok";
+        let parsed = crate::utils::parse::ParsedUrl::parse(url_str).unwrap();
+        let synology = Synology::from_url(&parsed).unwrap();
+
+        let result = synology.send(&default_ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_send_includes_user_agent() {
+        use crate::notify::APP_ID;
+        use wiremock::matchers::header;
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/webapi/entry.cgi"))
+            .and(header("User-Agent", APP_ID))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let synology = synology_for_mock(&server, "tok");
+        let result = synology.send(&default_ctx()).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_with_basic_auth() {
+        use wiremock::matchers::header;
+
+        let server = MockServer::start().await;
+
+        // Create a Synology with user:pass
+        let addr = server.address();
+        let url_str = format!("synology://user:pass@{}:{}/tok", addr.ip(), addr.port());
+        let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
+        let synology = Synology::from_url(&parsed).unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/webapi/entry.cgi"))
+            .and(header("Authorization", "Basic dXNlcjpwYXNz"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = synology.send(&default_ctx()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+    }
+
+    #[test]
+    fn test_default_ports() {
+        // Insecure defaults to 5000
+        let parsed = crate::utils::parse::ParsedUrl::parse("synology://localhost/tok").unwrap();
+        let s = Synology::from_url(&parsed).unwrap();
+        assert_eq!(s.port, 5000);
+        assert!(!s.secure);
+
+        // Secure defaults to 5001
+        let parsed = crate::utils::parse::ParsedUrl::parse("synologys://localhost/tok").unwrap();
+        let s = Synology::from_url(&parsed).unwrap();
+        assert_eq!(s.port, 5001);
+        assert!(s.secure);
+    }
+
+    #[test]
+    fn test_custom_port() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("synology://localhost:8080/tok").unwrap();
+        let s = Synology::from_url(&parsed).unwrap();
+        assert_eq!(s.port, 8080);
     }
 }

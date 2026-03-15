@@ -224,6 +224,8 @@ mod tests {
     fn test_invalid_urls() {
         let invalid_urls = vec![
             "irc://",
+            // No channels or users
+            "irc://irc.example.com",
         ];
         for url in &invalid_urls {
             let result = ParsedUrl::parse(url)
@@ -234,5 +236,102 @@ mod tests {
                 url,
             );
         }
+    }
+
+    #[test]
+    fn test_irc_default_port() {
+        let parsed = ParsedUrl::parse("irc://irc.freenode.net/channel").unwrap();
+        let irc = Irc::from_url(&parsed).unwrap();
+        assert_eq!(irc.host, "irc.freenode.net");
+        assert_eq!(irc.port, 6667);
+        assert!(!irc.secure);
+    }
+
+    #[test]
+    fn test_ircs_default_port() {
+        let parsed = ParsedUrl::parse("ircs://irc.freenode.net/channel").unwrap();
+        let irc = Irc::from_url(&parsed).unwrap();
+        assert_eq!(irc.port, 6697);
+        assert!(irc.secure);
+    }
+
+    #[test]
+    fn test_irc_custom_port() {
+        let parsed = ParsedUrl::parse("irc://irc.freenode.net:7000/channel").unwrap();
+        let irc = Irc::from_url(&parsed).unwrap();
+        assert_eq!(irc.port, 7000);
+    }
+
+    #[test]
+    fn test_irc_channel_hash_prefix() {
+        let parsed = ParsedUrl::parse("irc://irc.freenode.net/channel").unwrap();
+        let irc = Irc::from_url(&parsed).unwrap();
+        assert!(irc.channels.contains(&"#channel".to_string()));
+    }
+
+    #[test]
+    fn test_irc_channel_already_prefixed() {
+        let parsed = ParsedUrl::parse("irc://irc.freenode.net/%23mychannel").unwrap();
+        let irc = Irc::from_url(&parsed).unwrap();
+        assert!(irc.channels.iter().any(|c| c.contains("mychannel")));
+    }
+
+    #[test]
+    fn test_irc_user_target() {
+        let parsed = ParsedUrl::parse("irc://irc.freenode.net/@bob").unwrap();
+        let irc = Irc::from_url(&parsed).unwrap();
+        assert!(irc.users.contains(&"bob".to_string()));
+    }
+
+    #[test]
+    fn test_irc_nick_from_url() {
+        let parsed = ParsedUrl::parse("irc://mynick@irc.freenode.net/channel").unwrap();
+        let irc = Irc::from_url(&parsed).unwrap();
+        assert_eq!(irc.nick, "mynick");
+        assert_eq!(irc.user, "mynick");
+    }
+
+    #[test]
+    fn test_irc_nick_from_query() {
+        let parsed = ParsedUrl::parse("irc://irc.freenode.net/channel?nick=CustomNick").unwrap();
+        let irc = Irc::from_url(&parsed).unwrap();
+        assert_eq!(irc.nick, "CustomNick");
+    }
+
+    #[test]
+    fn test_irc_default_nick() {
+        let parsed = ParsedUrl::parse("irc://irc.freenode.net/channel").unwrap();
+        let irc = Irc::from_url(&parsed).unwrap();
+        assert_eq!(irc.nick, "Apprise");
+    }
+
+    #[test]
+    fn test_irc_password() {
+        let parsed = ParsedUrl::parse("irc://user:mypass@irc.freenode.net/channel").unwrap();
+        let irc = Irc::from_url(&parsed).unwrap();
+        assert_eq!(irc.password.as_deref(), Some("mypass"));
+    }
+
+    #[test]
+    fn test_irc_to_query_targets() {
+        let parsed = ParsedUrl::parse("irc://irc.freenode.net/chan1?to=%23chan2,@alice").unwrap();
+        let irc = Irc::from_url(&parsed).unwrap();
+        assert!(irc.channels.len() >= 2);
+        assert!(irc.users.contains(&"alice".to_string()));
+    }
+
+    #[test]
+    fn test_irc_auth_mode_nickserv() {
+        let parsed = ParsedUrl::parse("irc://user:pass@irc.freenode.net/channel?mode=nickserv").unwrap();
+        let irc = Irc::from_url(&parsed).unwrap();
+        assert_eq!(irc.auth_mode, IrcAuthMode::NickServ);
+    }
+
+    #[test]
+    fn test_irc_static_details() {
+        let details = Irc::static_details();
+        assert_eq!(details.service_name, "IRC");
+        assert_eq!(details.protocols, vec!["irc", "ircs"]);
+        assert!(!details.attachment_support);
     }
 }

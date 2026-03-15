@@ -10,7 +10,7 @@ impl Flock {
         if token.is_empty() { return None; }
         // Validate path targets: g: and u: prefixed targets must have content after the prefix
         for p in &url.path_parts {
-            if (p == "g:" || p == "u:") { return None; }
+            if p == "g:" || p == "u:" { return None; }
         }
         // Also check ?to= targets
         if let Some(to) = url.get("to") {
@@ -42,16 +42,72 @@ impl Notify for Flock {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "flock://tttttttttttttttttttttttt",
+            "flock://tttttttttttttttttttttttt?image=True",
+            "flock://tttttttttttttttttttttttt?image=False",
+            "flock://iiiiiiiiiiiiiiiiiiiiiiii?to=u:uuuuuuuuuuuu&format=markdown",
+            "flock://iiiiiiiiiiiiiiiiiiiiiiii?format=markdown",
+            "flock://iiiiiiiiiiiiiiiiiiiiiiii?format=text",
+            "flock://iiiiiiiiiiiiiiiiiiiiiiii/u:uuuuuuuuuuuu?format=markdown",
+            "flock://iiiiiiiiiiiiiiiiiiiiiiii/u:uuuuuuuuuuuu?format=html",
+            "flock://iiiiiiiiiiiiiiiiiiiiiiii/uuuuuuuuuuuu?format=text",
+            "flock://iiiiiiiiiiiiiiiiiiiiiiii/g:gggggggggggg/u:uuuuuuuuuuuu?format=text",
+            "flock://iiiiiiiiiiiiiiiiiiiiiiii/#gggggggggggg/@uuuuuuuuuuuu?format=text",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
 
     #[test]
     fn test_invalid_urls() {
         let urls = vec![
             "flock://",
             "flock://:@/",
+            // g: and u: with no content after prefix
+            "flock://iiiiiiiiiiiiiiiiiiiiiiii/g:/u:?format=text",
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    fn parse_flock(url: &str) -> Flock {
+        let parsed = crate::utils::parse::ParsedUrl::parse(url).unwrap();
+        Flock::from_url(&parsed).unwrap()
+    }
+
+    #[test]
+    fn test_from_url_basic_token() {
+        let f = parse_flock("flock://tttttttttttttttttttttttt");
+        assert_eq!(f.token, "tttttttttttttttttttttttt");
+    }
+
+    #[test]
+    fn test_from_url_empty_token_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse("flock://").unwrap();
+        assert!(Flock::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_from_url_bare_g_prefix_returns_none() {
+        let parsed = crate::utils::parse::ParsedUrl::parse(
+            "flock://iiiiiiiiiiiiiiiiiiiiiiii/g:/u:?format=text"
+        ).unwrap();
+        assert!(Flock::from_url(&parsed).is_none());
+    }
+
+    #[test]
+    fn test_service_details() {
+        let details = Flock::static_details();
+        assert_eq!(details.service_name, "Flock");
+        assert_eq!(details.protocols, vec!["flock"]);
+        assert!(!details.attachment_support);
     }
 }

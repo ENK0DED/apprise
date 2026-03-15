@@ -45,16 +45,72 @@ impl Notify for Pushed {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::notify::registry::from_url;
+    use crate::utils::parse::ParsedUrl;
 
     #[test]
     fn test_invalid_urls() {
-        let urls = vec![
-            "pushed://",
-            "pushed://:@/",
+        let urls: Vec<String> = vec![
+            "pushed://".into(),
+            "pushed://:@/".into(),
+            // App key only, no secret
+            format!("pushed://{}", "a".repeat(32)),
+            // Dropped (invalid) entry after secret
+            format!("pushed://{}/{}/dropped_value/", "a".repeat(32), "a".repeat(64)),
         ];
         for url in &urls {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            // App key + secret
+            format!("pushed://{}/{}", "a".repeat(32), "a".repeat(64)),
+            // App key + secret + channel
+            format!("pushed://{}/{}/#channel/", "a".repeat(32), "a".repeat(64)),
+            // App key + secret + channel via to=
+            format!("pushed://{}/{}?to=channel", "a".repeat(32), "a".repeat(64)),
+            // App key + secret + 2 channels
+            format!("pushed://{}/{}/#channel1/#channel2", "a".repeat(32), "a".repeat(64)),
+            // App key + secret + user pushed ID
+            format!("pushed://{}/{}/@ABCD/", "a".repeat(32), "a".repeat(64)),
+            // App key + secret + 2 devices
+            format!("pushed://{}/{}/@ABCD/@DEFG/", "a".repeat(32), "a".repeat(64)),
+            // App key + secret + combo
+            format!("pushed://{}/{}/@ABCD/#channel", "a".repeat(32), "a".repeat(64)),
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_from_url_fields() {
+        let url_str = format!("pushed://{}/{}", "a".repeat(32), "b".repeat(64));
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let p = Pushed::from_url(&parsed).unwrap();
+        assert_eq!(p.app_key, "a".repeat(32));
+        assert_eq!(p.secret, "b".repeat(64));
+    }
+
+    #[test]
+    fn test_static_details() {
+        let details = Pushed::static_details();
+        assert_eq!(details.service_name, "Pushed");
+        assert_eq!(details.service_url, Some("https://pushed.co"));
+        assert!(details.protocols.contains(&"pushed"));
+        assert!(!details.attachment_support);
+    }
+
+    #[test]
+    fn test_channels_and_users_parsed() {
+        let url_str = format!("pushed://{}/{}/@ABCD/#channel", "a".repeat(32), "b".repeat(64));
+        let parsed = ParsedUrl::parse(&url_str).unwrap();
+        let p = Pushed::from_url(&parsed).unwrap();
+        assert_eq!(p.app_key, "a".repeat(32));
+        assert_eq!(p.secret, "b".repeat(64));
     }
 }
