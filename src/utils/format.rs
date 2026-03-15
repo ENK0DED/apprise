@@ -138,6 +138,65 @@ fn replace_links_html(s: &str) -> String {
     out
 }
 
+/// Intelligently split a message body into chunks of at most `max_len` characters.
+///
+/// Split priority:
+/// 1. Last newline before the limit
+/// 2. Last space/tab before the limit
+/// 3. Last punctuation followed by whitespace before the limit
+/// 4. Hard split at the character limit
+pub fn smart_split(text: &str, max_len: usize) -> Vec<String> {
+    if max_len == 0 || text.len() <= max_len {
+        return vec![text.to_string()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut remaining = text;
+
+    while !remaining.is_empty() {
+        if remaining.len() <= max_len {
+            chunks.push(remaining.to_string());
+            break;
+        }
+
+        let window = &remaining[..max_len];
+
+        // 1. Try to split at the last newline
+        let split_pos = if let Some(pos) = window.rfind('\n') {
+            pos + 1 // include the newline in the current chunk
+        }
+        // 2. Try to split at the last space or tab
+        else if let Some(pos) = window.rfind(|c: char| c == ' ' || c == '\t') {
+            pos + 1 // split after the whitespace
+        }
+        // 3. Try to split at punctuation followed by whitespace
+        else {
+            let mut punct_pos = None;
+            let chars: Vec<char> = window.chars().collect();
+            for i in (0..chars.len().saturating_sub(1)).rev() {
+                if matches!(chars[i], '.' | ',' | ';' | ':' | '!' | '?')
+                    && chars[i + 1].is_whitespace()
+                {
+                    // byte offset after the punctuation
+                    let byte_offset: usize = chars[..=i].iter().map(|c| c.len_utf8()).sum();
+                    punct_pos = Some(byte_offset);
+                    break;
+                }
+            }
+            // 4. Fall back to hard split
+            punct_pos.unwrap_or(max_len)
+        };
+
+        // Avoid zero-length splits (shouldn't happen, but be safe)
+        let split_pos = if split_pos == 0 { max_len } else { split_pos };
+
+        chunks.push(remaining[..split_pos].to_string());
+        remaining = &remaining[split_pos..];
+    }
+
+    chunks
+}
+
 /// Truncate text to max_len characters (appending "..." if needed)
 pub fn truncate(text: &str, max_len: usize) -> String {
     if text.len() <= max_len {
@@ -351,5 +410,62 @@ mod tests {
         // With max_len=3, we get 0 chars + "..."
         let result = truncate("abcdef", 3);
         assert_eq!(result, "...");
+    }
+
+    // ── smart_split ───────────────────────────────────────────────
+
+    #[test]
+    fn test_smart_split_short_message() {
+        let result = smart_split("hello", 100);
+        assert_eq!(result, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_smart_split_exact_length() {
+        let result = smart_split("hello", 5);
+        assert_eq!(result, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_smart_split_at_newline() {
+        let result = smart_split("hello\nworld!", 8);
+        assert_eq!(result, vec!["hello\n", "world!"]);
+    }
+
+    #[test]
+    fn test_smart_split_at_space() {
+        let result = smart_split("hello world!", 8);
+        assert_eq!(result, vec!["hello ", "world!"]);
+    }
+
+    #[test]
+    fn test_smart_split_hard_split() {
+        let result = smart_split("abcdefghij", 5);
+        assert_eq!(result, vec!["abcde", "fghij"]);
+    }
+
+    #[test]
+    fn test_smart_split_multiple_chunks() {
+        let result = smart_split("aaaa bbbb cccc dddd", 5);
+        assert_eq!(result, vec!["aaaa ", "bbbb ", "cccc ", "dddd"]);
+    }
+
+    #[test]
+    fn test_smart_split_zero_max() {
+        let result = smart_split("hello", 0);
+        assert_eq!(result, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_smart_split_empty() {
+        let result = smart_split("", 10);
+        assert_eq!(result, vec![""]);
+    }
+
+    #[test]
+    fn test_smart_split_prefers_newline_over_space() {
+        // Both a newline and a space exist before limit; newline should win
+        let result = smart_split("ab cd\nef gh", 7);
+        assert_eq!(result, vec!["ab cd\n", "ef gh"]);
     }
 }

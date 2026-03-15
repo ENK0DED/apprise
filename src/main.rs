@@ -1,3 +1,4 @@
+mod asset;
 mod cli;
 mod config;
 mod error;
@@ -9,9 +10,9 @@ mod utils;
 
 use clap::Parser;
 use cli::{Cli, Commands};
-use notify::{NotifyContext, registry};
+use notify::{NotifyContext, OverflowMode, registry};
 use types::{NotifyFormat, NotifyType};
-use utils::{emoji::interpret_emojis, escape::interpret_escapes, parse::mask_url};
+use utils::{emoji::interpret_emojis, escape::interpret_escapes, format::smart_split, parse::mask_url};
 
 #[tokio::main]
 async fn main() {
@@ -251,6 +252,7 @@ async fn main() {
         interpret_escapes: cli.interpret_escapes,
         interpret_emojis: cli.interpret_emojis,
         tags: tag_filters,
+        asset: asset::AppriseAsset::default(),
     };
 
     // Send notifications (with per-plugin format conversion)
@@ -269,39 +271,19 @@ async fn main() {
                 }
             }
             let name = svc.service_name().to_string();
-            // Per-service: format conversion → emoji/escape → truncation (matching Python order)
-            let mut svc_ctx = ctx.clone();
-            let target_format = svc.notify_format();
-            if target_format != svc_ctx.body_format {
-                svc_ctx.body = utils::format::convert_format(&svc_ctx.body, &svc_ctx.body_format, &target_format);
-                svc_ctx.body_format = target_format;
-            }
-            if svc_ctx.interpret_escapes {
-                svc_ctx.body = interpret_escapes(&svc_ctx.body);
-            }
-            if svc_ctx.interpret_emojis {
-                svc_ctx.body = interpret_emojis(&svc_ctx.body);
-            }
-            let body_max = svc.body_maxlen();
-            let title_max = svc.title_maxlen();
-            if body_max > 0 && svc_ctx.body.len() > body_max {
-                svc_ctx.body.truncate(body_max);
-            }
-            if title_max > 0 && svc_ctx.title.len() > title_max {
-                svc_ctx.title.truncate(title_max);
-            } else if title_max == 0 {
-                svc_ctx.title.clear();
-            }
-            last_send = std::time::Instant::now();
-            match svc.send(&svc_ctx).await {
-                Ok(true) => tracing::info!("Sent via {}", name),
-                Ok(false) => {
-                    eprintln!("Partial failure sending via {}", name);
-                    all_ok = false;
-                }
-                Err(e) => {
-                    eprintln!("Error sending via {}: {}", name, e);
-                    all_ok = false;
+            let contexts = prepare_contexts(svc.as_ref(), &ctx);
+            for svc_ctx in &contexts {
+                last_send = std::time::Instant::now();
+                match svc.send(svc_ctx).await {
+                    Ok(true) => tracing::info!("Sent via {}", name),
+                    Ok(false) => {
+                        eprintln!("Partial failure sending via {}", name);
+                        all_ok = false;
+                    }
+                    Err(e) => {
+                        eprintln!("Error sending via {}: {}", name, e);
+                        all_ok = false;
+                    }
                 }
             }
         }
@@ -310,31 +292,17 @@ async fn main() {
         let mut set = tokio::task::JoinSet::new();
         for svc in services {
             let name = svc.service_name().to_string();
-            // Per-service: format conversion → emoji/escape → truncation (matching Python order)
-            let mut svc_ctx = ctx.clone();
-            let target_format = svc.notify_format();
-            if target_format != svc_ctx.body_format {
-                svc_ctx.body = utils::format::convert_format(&svc_ctx.body, &svc_ctx.body_format, &target_format);
-                svc_ctx.body_format = target_format;
-            }
-            if svc_ctx.interpret_escapes {
-                svc_ctx.body = interpret_escapes(&svc_ctx.body);
-            }
-            if svc_ctx.interpret_emojis {
-                svc_ctx.body = interpret_emojis(&svc_ctx.body);
-            }
-            let body_max = svc.body_maxlen();
-            let title_max = svc.title_maxlen();
-            if body_max > 0 && svc_ctx.body.len() > body_max {
-                svc_ctx.body.truncate(body_max);
-            }
-            if title_max > 0 && svc_ctx.title.len() > title_max {
-                svc_ctx.title.truncate(title_max);
-            } else if title_max == 0 {
-                svc_ctx.title.clear();
-            }
+            let contexts = prepare_contexts(svc.as_ref(), &ctx);
             set.spawn(async move {
-                (name, svc.send(&svc_ctx).await)
+                let mut ok = true;
+                for svc_ctx in &contexts {
+                    match svc.send(svc_ctx).await {
+                        Ok(true) => {}
+                        Ok(false) => ok = false,
+                        Err(e) => return (name, Err::<bool, _>(e)),
+                    }
+                }
+                (name, Ok(ok))
             });
         }
         while let Some(result) = set.join_next().await {
@@ -358,6 +326,77 @@ async fn main() {
 
     if !all_ok {
         std::process::exit(1);
+    }
+}
+
+/// Prepare one or more NotifyContext(s) for a service, handling line-count
+/// truncation, format conversion, emoji/escape, title truncation, and overflow.
+fn prepare_contexts(svc: &dyn notify::Notify, ctx: &NotifyContext) -> Vec<NotifyContext> {
+    let mut svc_ctx = ctx.clone();
+
+    // Per-service format conversion
+    let target_format = svc.notify_format();
+    if target_format != svc_ctx.body_format {
+        svc_ctx.body = utils::format::convert_format(&svc_ctx.body, &svc_ctx.body_format, &target_format);
+        svc_ctx.body_format = target_format;
+    }
+
+    // Escape / emoji interpretation
+    if svc_ctx.interpret_escapes {
+        svc_ctx.body = interpret_escapes(&svc_ctx.body);
+    }
+    if svc_ctx.interpret_emojis {
+        svc_ctx.body = interpret_emojis(&svc_ctx.body);
+    }
+
+    // Line-count truncation (before overflow handling)
+    let max_lines = svc.body_max_line_count();
+    if max_lines > 0 {
+        let lines: Vec<&str> = svc_ctx.body.lines().collect();
+        if lines.len() > max_lines {
+            svc_ctx.body = lines[..max_lines].join("\n");
+        }
+    }
+
+    // Title truncation
+    let title_max = svc.title_maxlen();
+    if title_max > 0 && svc_ctx.title.len() > title_max {
+        svc_ctx.title.truncate(title_max);
+    } else if title_max == 0 {
+        svc_ctx.title.clear();
+    }
+
+    // Overflow handling
+    let body_max = svc.body_maxlen();
+    match svc.overflow_mode() {
+        OverflowMode::Upstream => {
+            // Send as-is
+            vec![svc_ctx]
+        }
+        OverflowMode::Truncate => {
+            if body_max > 0 && svc_ctx.body.len() > body_max {
+                svc_ctx.body.truncate(body_max);
+            }
+            vec![svc_ctx]
+        }
+        OverflowMode::Split => {
+            if body_max == 0 || svc_ctx.body.len() <= body_max {
+                return vec![svc_ctx];
+            }
+            let chunks = smart_split(&svc_ctx.body, body_max);
+            let original_title = svc_ctx.title.clone();
+            chunks.into_iter().enumerate().map(|(i, chunk)| {
+                let mut chunk_ctx = svc_ctx.clone();
+                chunk_ctx.body = chunk;
+                if i > 0 {
+                    // Subsequent chunks get empty title (overflow_display_title_once)
+                    chunk_ctx.title = String::new();
+                } else {
+                    chunk_ctx.title = original_title.clone();
+                }
+                chunk_ctx
+            }).collect()
+        }
     }
 }
 

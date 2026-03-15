@@ -1,62 +1,230 @@
+use std::collections::{HashMap, HashSet};
 use crate::error::ConfigError;
 use crate::notify::Notify;
 use crate::notify::registry::from_url;
 
+/// Parse a `tag:` or `tags:` YAML value into a comma-separated string.
+fn parse_tag_value(val: &serde_yaml::Value) -> Option<String> {
+    if let Some(s) = val.as_str() {
+        let s = s.trim();
+        if s.is_empty() { None } else { Some(s.to_string()) }
+    } else if let Some(seq) = val.as_sequence() {
+        let tags: Vec<String> = seq.iter()
+            .filter_map(|t| t.as_str().map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        if tags.is_empty() { None } else { Some(tags.join(",")) }
+    } else {
+        None
+    }
+}
+
+/// Read the top-level `tag:` or `tags:` key — these are appended to ALL URLs.
+fn parse_global_tags(doc: &serde_yaml::Value) -> Option<String> {
+    doc.get("tag")
+        .or_else(|| doc.get("tags"))
+        .and_then(parse_tag_value)
+}
+
+/// Parse the `groups:` section.  Each key maps a group name to a list of tags
+/// (comma-separated string or YAML sequence).
+fn parse_groups(doc: &serde_yaml::Value) -> HashMap<String, Vec<String>> {
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    if let Some(g) = doc.get("groups").and_then(|v| v.as_mapping()) {
+        for (k, v) in g {
+            if let Some(name) = k.as_str() {
+                let members = if let Some(s) = v.as_str() {
+                    s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
+                } else if let Some(seq) = v.as_sequence() {
+                    seq.iter()
+                        .filter_map(|t| t.as_str().map(|s| s.trim().to_string()))
+                        .filter(|t| !t.is_empty())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                groups.insert(name.to_string(), members);
+            }
+        }
+    }
+    groups
+}
+
+/// Resolve tag groups transitively: if a tag matches a group member, add the
+/// group name; repeat until stable.
+fn resolve_groups(tags: &[String], groups: &HashMap<String, Vec<String>>) -> Vec<String> {
+    let mut result: HashSet<String> = tags.iter().cloned().collect();
+    loop {
+        let mut changed = false;
+        for (group_name, members) in groups {
+            if result.contains(group_name) {
+                continue; // already have this group
+            }
+            if members.iter().any(|m| result.contains(m)) {
+                result.insert(group_name.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut v: Vec<String> = result.into_iter().collect();
+    v.sort();
+    v
+}
+
+/// Parse the `asset:` section and log its contents.
+fn parse_asset_section(doc: &serde_yaml::Value) {
+    if let Some(asset) = doc.get("asset").and_then(|v| v.as_mapping()) {
+        for (k, v) in asset {
+            if let (Some(key), Some(val)) = (k.as_str(), v.as_str()) {
+                tracing::info!("Asset config: {} = {}", key, val);
+            }
+        }
+    }
+}
+
+/// Append tags to a URL as a query parameter.
+fn append_tags_to_url(url: &str, tags: &str) -> String {
+    if tags.is_empty() {
+        return url.to_string();
+    }
+    let sep = if url.contains('?') { "&" } else { "?" };
+    format!("{}{}tag={}", url, sep, urlencoding::encode(tags))
+}
+
+/// Extract all key-value overrides from a mapping (excluding `tag`/`tags`)
+/// and append them as query parameters.
+fn append_overrides_to_url(url: &str, mapping: &serde_yaml::Mapping) -> String {
+    let mut result = url.to_string();
+    for (k, v) in mapping {
+        if let Some(key) = k.as_str() {
+            if key == "tag" || key == "tags" {
+                continue;
+            }
+            let val = if let Some(s) = v.as_str() {
+                s.to_string()
+            } else if let Some(b) = v.as_bool() {
+                b.to_string()
+            } else if let Some(i) = v.as_i64() {
+                i.to_string()
+            } else if let Some(f) = v.as_f64() {
+                f.to_string()
+            } else {
+                continue;
+            };
+            let sep = if result.contains('?') { "&" } else { "?" };
+            result = format!("{}{}{}={}", result, sep, urlencoding::encode(key), urlencoding::encode(&val));
+        }
+    }
+    result
+}
+
 /// Parse YAML config format.
-/// Supports `include:` key to recursively load other configs.
-/// Supports `tag:` / `tags:` fields per URL entry to assign tags.
+///
+/// Supports:
+/// - `urls:` key with string or mapping entries
+/// - `tag:` / `tags:` top-level global tags (appended to all URLs)
+/// - `groups:` tag groups with transitive resolution
+/// - Per-URL overrides via sequence values (multiple instances)
+/// - `asset:` section (logged, not yet propagated)
+/// - `include:` key to recursively load other configs
 pub async fn parse_yaml(content: &str, recursion_depth: u32) -> Result<Vec<Box<dyn Notify>>, ConfigError> {
     let doc: serde_yaml::Value = serde_yaml::from_str(content).map_err(|e| ConfigError::Other(e.to_string()))?;
     let mut services: Vec<Box<dyn Notify>> = Vec::new();
+
+    // A) Global tags
+    let global_tags = parse_global_tags(&doc);
+
+    // B) Tag groups
+    let groups = parse_groups(&doc);
+
+    // D) Asset section
+    parse_asset_section(&doc);
 
     // Handle "urls:" key
     if let Some(urls) = doc.get("urls") {
         if let Some(url_list) = urls.as_sequence() {
             for item in url_list {
-                let (url_str, tags) = if let Some(s) = item.as_str() {
-                    (Some(s.to_string()), None)
-                } else if let Some(m) = item.as_mapping() {
-                    // First key of the mapping is the URL
-                    let url = m.keys().next().and_then(|k| k.as_str()).map(|s| s.to_string());
-                    // Extract tags from the mapping value
-                    let tag_str = if let Some(url_key) = m.keys().next() {
-                        if let Some(inner) = m.get(url_key).and_then(|v| v.as_mapping()) {
-                            // Check for "tag:" or "tags:" in the inner mapping
-                            inner.get(&serde_yaml::Value::String("tag".to_string()))
-                                .or_else(|| inner.get(&serde_yaml::Value::String("tags".to_string())))
-                                .and_then(|v| {
-                                    if let Some(s) = v.as_str() {
-                                        Some(s.to_string())
-                                    } else if let Some(seq) = v.as_sequence() {
-                                        let tags: Vec<String> = seq.iter()
-                                            .filter_map(|t| t.as_str().map(|s| s.to_string()))
-                                            .collect();
-                                        if tags.is_empty() { None } else { Some(tags.join(",")) }
-                                    } else {
-                                        None
-                                    }
-                                })
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                    (url, tag_str)
-                } else {
-                    (None, None)
-                };
+                // Each item can be:
+                // 1. A plain string: "json://localhost"
+                // 2. A mapping with a single URL key whose value is:
+                //    a. A mapping of overrides (single instance)
+                //    b. A sequence of mappings (multiple instances, Task 1C)
+                //    c. null (just the URL)
 
-                if let Some(url) = url_str {
-                    // Append tags to URL as query param
-                    let final_url = if let Some(ref tag_val) = tags {
-                        let sep = if url.contains('?') { "&" } else { "?" };
-                        format!("{}{}tag={}", url, sep, urlencoding::encode(tag_val))
-                    } else {
-                        url
-                    };
+                if let Some(s) = item.as_str() {
+                    // Plain string URL
+                    let mut all_tags: Vec<String> = Vec::new();
+                    if let Some(ref gt) = global_tags {
+                        all_tags.extend(gt.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()));
+                    }
+                    let resolved = resolve_groups(&all_tags, &groups);
+                    let tag_str = resolved.join(",");
+                    let final_url = append_tags_to_url(s, &tag_str);
                     if let Some(svc) = from_url(&final_url) {
                         services.push(svc);
+                    }
+                } else if let Some(m) = item.as_mapping() {
+                    // Mapping: first key is the URL
+                    let url_key = match m.keys().next() {
+                        Some(k) => k,
+                        None => continue,
+                    };
+                    let url_str = match url_key.as_str() {
+                        Some(s) => s.to_string(),
+                        None => continue,
+                    };
+                    let value = m.get(url_key);
+
+                    // Determine instances
+                    let instances: Vec<Option<&serde_yaml::Mapping>> = if let Some(val) = value {
+                        if let Some(seq) = val.as_sequence() {
+                            // C) Per-URL overrides: each item in the sequence creates a separate instance
+                            seq.iter()
+                                .map(|entry| entry.as_mapping())
+                                .collect()
+                        } else if let Some(inner_map) = val.as_mapping() {
+                            // Single mapping of overrides
+                            vec![Some(inner_map)]
+                        } else {
+                            // null or scalar value
+                            vec![None]
+                        }
+                    } else {
+                        vec![None]
+                    };
+
+                    for instance in instances {
+                        // Collect tags: global + per-URL
+                        let mut all_tags: Vec<String> = Vec::new();
+                        if let Some(ref gt) = global_tags {
+                            all_tags.extend(gt.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()));
+                        }
+
+                        let mut url_with_overrides = url_str.clone();
+
+                        if let Some(inner) = instance {
+                            // Extract tag/tags from the override mapping
+                            let tag_val = inner.get(&serde_yaml::Value::String("tag".to_string()))
+                                .or_else(|| inner.get(&serde_yaml::Value::String("tags".to_string())))
+                                .and_then(parse_tag_value);
+                            if let Some(tv) = tag_val {
+                                all_tags.extend(tv.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()));
+                            }
+                            // Append non-tag overrides as query params
+                            url_with_overrides = append_overrides_to_url(&url_with_overrides, inner);
+                        }
+
+                        // Resolve groups
+                        let resolved = resolve_groups(&all_tags, &groups);
+                        let tag_str = resolved.join(",");
+                        let final_url = append_tags_to_url(&url_with_overrides, &tag_str);
+
+                        if let Some(svc) = from_url(&final_url) {
+                            services.push(svc);
+                        }
                     }
                 }
             }
@@ -86,6 +254,8 @@ pub async fn parse_yaml(content: &str, recursion_depth: u32) -> Result<Vec<Box<d
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── Basic URL parsing ───────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_yaml_urls_string_list() {
@@ -188,5 +358,209 @@ urls:
         let content = "{{{{invalid yaml";
         let result = parse_yaml(content, 1).await;
         assert!(result.is_err());
+    }
+
+    // ─── A) Global tags ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_yaml_global_tag_string() {
+        let content = r#"
+tag: admin, devops
+urls:
+  - json://localhost
+  - xml://localhost
+"#;
+        let services = parse_yaml(content, 1).await.unwrap();
+        assert_eq!(services.len(), 2);
+        // Both services should have the global tags
+        for svc in &services {
+            let tags = svc.tags();
+            assert!(tags.iter().any(|t| t == "admin"), "expected admin tag, got {:?}", tags);
+            assert!(tags.iter().any(|t| t == "devops"), "expected devops tag, got {:?}", tags);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_yaml_global_tags_list() {
+        let content = r#"
+tags:
+  - admin
+  - devops
+urls:
+  - json://localhost
+"#;
+        let services = parse_yaml(content, 1).await.unwrap();
+        assert_eq!(services.len(), 1);
+        let tags = services[0].tags();
+        assert!(tags.iter().any(|t| t == "admin"));
+        assert!(tags.iter().any(|t| t == "devops"));
+    }
+
+    #[tokio::test]
+    async fn test_yaml_global_tags_merge_with_per_url() {
+        let content = r#"
+tag: global
+urls:
+  - json://localhost:
+      tag: local
+"#;
+        let services = parse_yaml(content, 1).await.unwrap();
+        assert_eq!(services.len(), 1);
+        let tags = services[0].tags();
+        assert!(tags.iter().any(|t| t == "global"), "expected global tag, got {:?}", tags);
+        assert!(tags.iter().any(|t| t == "local"), "expected local tag, got {:?}", tags);
+    }
+
+    // ─── B) Tag groups ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_groups_simple() {
+        let mut groups = HashMap::new();
+        groups.insert("admins".to_string(), vec!["tagA".to_string(), "tagB".to_string()]);
+        let result = resolve_groups(&["tagA".to_string()], &groups);
+        assert!(result.contains(&"admins".to_string()));
+        assert!(result.contains(&"tagA".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_groups_transitive() {
+        let mut groups = HashMap::new();
+        groups.insert("team".to_string(), vec!["tagA".to_string()]);
+        groups.insert("org".to_string(), vec!["team".to_string()]);
+        let result = resolve_groups(&["tagA".to_string()], &groups);
+        assert!(result.contains(&"team".to_string()));
+        assert!(result.contains(&"org".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_groups_no_match() {
+        let mut groups = HashMap::new();
+        groups.insert("admins".to_string(), vec!["tagA".to_string()]);
+        let result = resolve_groups(&["tagZ".to_string()], &groups);
+        assert!(!result.contains(&"admins".to_string()));
+        assert!(result.contains(&"tagZ".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_yaml_groups() {
+        let content = r#"
+groups:
+  admins: tagA, tagB
+  devops:
+    - tagX
+    - tagY
+urls:
+  - json://localhost:
+      tag: tagA
+"#;
+        let services = parse_yaml(content, 1).await.unwrap();
+        assert_eq!(services.len(), 1);
+        let tags = services[0].tags();
+        assert!(tags.iter().any(|t| t == "tagA"), "expected tagA, got {:?}", tags);
+        assert!(tags.iter().any(|t| t == "admins"), "expected admins group, got {:?}", tags);
+        // Should NOT have devops since tagX/tagY are not present
+        assert!(!tags.iter().any(|t| t == "devops"), "should not have devops, got {:?}", tags);
+    }
+
+    // ─── C) Per-URL overrides (multiple instances) ──────────────────────
+
+    #[tokio::test]
+    async fn test_yaml_per_url_overrides_multiple_instances() {
+        let content = r#"
+urls:
+  - json://localhost:
+    - to: person1@example.com
+      tag: tag1
+    - to: person2@example.com
+      tag: tag2
+"#;
+        let services = parse_yaml(content, 1).await.unwrap();
+        assert_eq!(services.len(), 2, "expected 2 instances, got {}", services.len());
+    }
+
+    #[tokio::test]
+    async fn test_yaml_per_url_overrides_single_instance() {
+        let content = r#"
+urls:
+  - json://localhost:
+      to: person1@example.com
+      tag: tag1
+"#;
+        let services = parse_yaml(content, 1).await.unwrap();
+        assert_eq!(services.len(), 1);
+    }
+
+    // ─── D) Asset section ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_yaml_asset_section_parsed() {
+        let content = r#"
+asset:
+  app_id: MyApp
+  app_desc: My Application
+  app_url: https://example.com
+urls:
+  - json://localhost
+"#;
+        // Should not error; asset section is logged but otherwise ignored
+        let services = parse_yaml(content, 1).await.unwrap();
+        assert_eq!(services.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_yaml_asset_section_empty() {
+        let content = r#"
+asset: {}
+urls:
+  - json://localhost
+"#;
+        let services = parse_yaml(content, 1).await.unwrap();
+        assert_eq!(services.len(), 1);
+    }
+
+    // ─── Helper unit tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_tag_value_string() {
+        let v = serde_yaml::Value::String("a, b".to_string());
+        assert_eq!(parse_tag_value(&v), Some("a, b".to_string()));
+    }
+
+    #[test]
+    fn test_parse_tag_value_sequence() {
+        let v = serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::String("x".to_string()),
+            serde_yaml::Value::String("y".to_string()),
+        ]);
+        assert_eq!(parse_tag_value(&v), Some("x,y".to_string()));
+    }
+
+    #[test]
+    fn test_parse_tag_value_empty() {
+        let v = serde_yaml::Value::String("".to_string());
+        assert_eq!(parse_tag_value(&v), None);
+    }
+
+    #[test]
+    fn test_append_tags_to_url() {
+        assert_eq!(append_tags_to_url("json://localhost", "a,b"), "json://localhost?tag=a%2Cb");
+        assert_eq!(append_tags_to_url("json://localhost?x=1", "a"), "json://localhost?x=1&tag=a");
+        assert_eq!(append_tags_to_url("json://localhost", ""), "json://localhost");
+    }
+
+    #[test]
+    fn test_append_overrides_to_url() {
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("to".to_string()),
+            serde_yaml::Value::String("user@example.com".to_string()),
+        );
+        m.insert(
+            serde_yaml::Value::String("tag".to_string()),
+            serde_yaml::Value::String("ignored".to_string()),
+        );
+        let result = append_overrides_to_url("json://localhost", &m);
+        assert!(result.contains("to=user%40example.com"));
+        assert!(!result.contains("tag=ignored"));
     }
 }

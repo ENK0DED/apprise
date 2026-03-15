@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+use crate::asset::AppriseAsset;
 use crate::error::NotifyError;
 use crate::types::{NotifyFormat, NotifyType};
 use crate::utils::parse::ParsedUrl;
@@ -146,6 +147,15 @@ pub mod rsyslog_mod {
     pub use super::rsyslog::*;
 }
 
+// ── Overflow mode ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OverflowMode {
+    Upstream,  // send as-is, let service handle
+    Truncate,  // hard truncate to body_maxlen
+    Split,     // split into multiple messages
+}
+
 // ── Core types ────────────────────────────────────────────────────────────────
 
 /// An attachment (file path or URL)
@@ -167,6 +177,7 @@ pub struct NotifyContext {
     pub interpret_escapes: bool,
     pub interpret_emojis: bool,
     pub tags: Vec<String>,
+    pub asset: AppriseAsset,
 }
 
 impl Default for NotifyContext {
@@ -180,6 +191,7 @@ impl Default for NotifyContext {
             interpret_escapes: false,
             interpret_emojis: false,
             tags: Vec::new(),
+            asset: AppriseAsset::default(),
         }
     }
 }
@@ -253,6 +265,13 @@ pub trait Notify: Send + Sync {
     /// The orchestrator sleeps between sends to respect this.
     /// Python default is 5.5 but we only throttle in sequential mode.
     fn request_rate_per_sec(&self) -> f64 { 0.0 }
+
+    /// How to handle messages that exceed body_maxlen (default: Upstream).
+    fn overflow_mode(&self) -> OverflowMode { OverflowMode::Upstream }
+
+    /// Maximum number of lines in the body (default: 0 = unlimited).
+    /// When > 0, truncate to N lines BEFORE overflow handling.
+    fn body_max_line_count(&self) -> usize { 0 }
 }
 
 // ── Helper: build a reqwest client ───────────────────────────────────────────

@@ -12,8 +12,18 @@ impl Pushbullet {
         let targets = url.path_parts.clone();
         Some(Self { apikey, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
+
+    fn set_target(payload: &mut serde_json::Value, t: &str) {
+        if t.contains('@') {
+            payload["email"] = json!(t);
+        } else if t.starts_with('#') {
+            payload["channel_tag"] = json!(&t[1..]);
+        } else {
+            payload["device_iden"] = json!(t);
+        }
+    }
     pub fn static_details() -> ServiceDetails {
-        ServiceDetails { service_name: "Pushbullet", service_url: Some("https://pushbullet.com"), setup_url: None, protocols: vec!["pbul"], description: "Send push notifications via Pushbullet.", attachment_support: false }
+        ServiceDetails { service_name: "Pushbullet", service_url: Some("https://pushbullet.com"), setup_url: None, protocols: vec!["pbul"], description: "Send push notifications via Pushbullet.", attachment_support: true }
     }
 }
 
@@ -23,6 +33,8 @@ impl Notify for Pushbullet {
     fn service_name(&self) -> &str { "Pushbullet" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }
+
+    fn attachment_support(&self) -> bool { true }
 
     async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
         let client = build_client(self.verify_certificate)?;
@@ -35,27 +47,91 @@ impl Notify for Pushbullet {
             self.targets.iter().map(Some).collect()
         };
 
-        for target in targets {
-            let mut payload = json!({ "type": "note", "title": ctx.title, "body": ctx.body });
-
-            if let Some(t) = target {
-                // Determine target type: email, channel_tag, or device_iden
-                if t.contains('@') {
-                    payload["email"] = json!(t);
-                } else if t.starts_with('#') {
-                    payload["channel_tag"] = json!(&t[1..]);
-                } else {
-                    payload["device_iden"] = json!(t);
-                }
-            }
-
-            let resp = client.post("https://api.pushbullet.com/v2/pushes")
+        // Upload attachments first (if any)
+        let mut uploaded_files: Vec<(String, String, String)> = Vec::new(); // (file_url, file_name, file_type)
+        for attachment in &ctx.attachments {
+            // Step 1: Request upload URL
+            let upload_req = json!({
+                "file_name": attachment.name,
+                "file_type": attachment.mime_type,
+            });
+            let resp = client.post("https://api.pushbullet.com/v2/upload-request")
                 .header("User-Agent", APP_ID)
                 .header("Access-Token", self.apikey.as_str())
-                .json(&payload)
+                .json(&upload_req)
                 .send().await?;
 
-            if !resp.status().is_success() { all_ok = false; }
+            if !resp.status().is_success() {
+                all_ok = false;
+                continue;
+            }
+
+            let upload_resp: serde_json::Value = resp.json().await?;
+            let upload_url = match upload_resp["upload_url"].as_str() {
+                Some(u) => u.to_string(),
+                None => { all_ok = false; continue; }
+            };
+            let file_url = match upload_resp["file_url"].as_str() {
+                Some(u) => u.to_string(),
+                None => { all_ok = false; continue; }
+            };
+
+            // Step 2: Upload file via multipart form
+            let part = reqwest::multipart::Part::bytes(attachment.data.clone())
+                .file_name(attachment.name.clone())
+                .mime_str(&attachment.mime_type)
+                .unwrap_or_else(|_| {
+                    reqwest::multipart::Part::bytes(attachment.data.clone())
+                        .file_name(attachment.name.clone())
+                });
+            let form = reqwest::multipart::Form::new().part("file", part);
+            let resp = client.post(&upload_url)
+                .header("User-Agent", APP_ID)
+                .multipart(form)
+                .send().await?;
+
+            if !resp.status().is_success() {
+                all_ok = false;
+                continue;
+            }
+
+            uploaded_files.push((file_url, attachment.name.clone(), attachment.mime_type.clone()));
+        }
+
+        for target in &targets {
+            if uploaded_files.is_empty() {
+                // Standard note push (no attachments)
+                let mut payload = json!({ "type": "note", "title": ctx.title, "body": ctx.body });
+                if let Some(t) = target {
+                    Self::set_target(&mut payload, t);
+                }
+                let resp = client.post("https://api.pushbullet.com/v2/pushes")
+                    .header("User-Agent", APP_ID)
+                    .header("Access-Token", self.apikey.as_str())
+                    .json(&payload)
+                    .send().await?;
+                if !resp.status().is_success() { all_ok = false; }
+            } else {
+                // Step 3: Send a "file" type push for each uploaded file
+                for (file_url, file_name, file_type) in &uploaded_files {
+                    let mut payload = json!({
+                        "type": "file",
+                        "file_url": file_url,
+                        "file_name": file_name,
+                        "file_type": file_type,
+                        "body": ctx.body,
+                    });
+                    if let Some(t) = target {
+                        Self::set_target(&mut payload, t);
+                    }
+                    let resp = client.post("https://api.pushbullet.com/v2/pushes")
+                        .header("User-Agent", APP_ID)
+                        .header("Access-Token", self.apikey.as_str())
+                        .json(&payload)
+                        .send().await?;
+                    if !resp.status().is_success() { all_ok = false; }
+                }
+            }
         }
         Ok(all_ok)
     }
