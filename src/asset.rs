@@ -9,6 +9,9 @@ pub struct AppriseAsset {
     pub app_url: String,
     pub image_url_mask: Option<String>,
     pub image_url_logo: Option<String>,
+    pub theme: String,
+    pub body_format: Option<String>,
+    pub secure_logging: bool,
 }
 
 impl Default for AppriseAsset {
@@ -19,6 +22,9 @@ impl Default for AppriseAsset {
             app_url: "https://github.com/caronc/apprise".to_string(),
             image_url_mask: None,
             image_url_logo: None,
+            theme: "default".to_string(),
+            body_format: None,
+            secure_logging: true,
         }
     }
 }
@@ -35,6 +41,9 @@ mod tests {
         assert_eq!(asset.app_url, "https://github.com/caronc/apprise");
         assert!(asset.image_url_mask.is_none());
         assert!(asset.image_url_logo.is_none());
+        assert_eq!(asset.theme, "default");
+        assert!(asset.body_format.is_none());
+        assert!(asset.secure_logging);
     }
 
     #[test]
@@ -45,8 +54,14 @@ mod tests {
             app_url: "https://example.com".to_string(),
             image_url_mask: Some("https://example.com/mask.png".to_string()),
             image_url_logo: Some("https://example.com/logo.png".to_string()),
+            theme: "dark".to_string(),
+            body_format: Some("html".to_string()),
+            secure_logging: false,
         };
         assert_eq!(asset.app_id, "MyApp");
         assert!(asset.image_url_mask.is_some());
+        assert_eq!(asset.theme, "dark");
+        assert_eq!(asset.body_format, Some("html".to_string()));
+        assert!(!asset.secure_logging);
     }
 }

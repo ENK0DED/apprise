@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use crate::asset::AppriseAsset;
 use crate::error::ConfigError;
 use crate::notify::Notify;
 use crate::notify::registry::from_url;
@@ -74,15 +75,43 @@ fn resolve_groups(tags: &[String], groups: &HashMap<String, Vec<String>>) -> Vec
     v
 }
 
-/// Parse the `asset:` section and log its contents.
-fn parse_asset_section(doc: &serde_yaml::Value) {
-    if let Some(asset) = doc.get("asset").and_then(|v| v.as_mapping()) {
-        for (k, v) in asset {
-            if let (Some(key), Some(val)) = (k.as_str(), v.as_str()) {
-                tracing::info!("Asset config: {} = {}", key, val);
-            }
+/// Parse the `asset:` section and build an `AppriseAsset`.
+fn parse_asset_section(doc: &serde_yaml::Value) -> Option<AppriseAsset> {
+    let a = doc.get("asset").and_then(|v| v.as_mapping())?;
+    let mut asset = AppriseAsset::default();
+
+    let str_key = |k: &str| serde_yaml::Value::String(k.into());
+
+    if let Some(v) = a.get(&str_key("app_id")).and_then(|v| v.as_str()) {
+        asset.app_id = v.to_string();
+    }
+    if let Some(v) = a.get(&str_key("app_desc")).and_then(|v| v.as_str()) {
+        asset.app_desc = v.to_string();
+    }
+    if let Some(v) = a.get(&str_key("app_url")).and_then(|v| v.as_str()) {
+        asset.app_url = v.to_string();
+    }
+    if let Some(v) = a.get(&str_key("image_url_mask")).and_then(|v| v.as_str()) {
+        asset.image_url_mask = Some(v.to_string());
+    }
+    if let Some(v) = a.get(&str_key("image_url_logo")).and_then(|v| v.as_str()) {
+        asset.image_url_logo = Some(v.to_string());
+    }
+    if let Some(v) = a.get(&str_key("theme")).and_then(|v| v.as_str()) {
+        asset.theme = v.to_string();
+    }
+    if let Some(v) = a.get(&str_key("body_format")).and_then(|v| v.as_str()) {
+        asset.body_format = Some(v.to_string());
+    }
+    if let Some(v) = a.get(&str_key("secure_logging")) {
+        if let Some(b) = v.as_bool() {
+            asset.secure_logging = b;
+        } else if let Some(s) = v.as_str() {
+            asset.secure_logging = matches!(s.to_lowercase().as_str(), "yes" | "true" | "1");
         }
     }
+
+    Some(asset)
 }
 
 /// Append tags to a URL as a query parameter.
@@ -128,9 +157,9 @@ fn append_overrides_to_url(url: &str, mapping: &serde_yaml::Mapping) -> String {
 /// - `tag:` / `tags:` top-level global tags (appended to all URLs)
 /// - `groups:` tag groups with transitive resolution
 /// - Per-URL overrides via sequence values (multiple instances)
-/// - `asset:` section (logged, not yet propagated)
+/// - `asset:` section (parsed and returned)
 /// - `include:` key to recursively load other configs
-pub async fn parse_yaml(content: &str, recursion_depth: u32) -> Result<Vec<Box<dyn Notify>>, ConfigError> {
+pub async fn parse_yaml(content: &str, recursion_depth: u32) -> Result<(Vec<Box<dyn Notify>>, Option<AppriseAsset>), ConfigError> {
     let doc: serde_yaml::Value = serde_yaml::from_str(content).map_err(|e| ConfigError::Other(e.to_string()))?;
     let mut services: Vec<Box<dyn Notify>> = Vec::new();
 
@@ -141,7 +170,7 @@ pub async fn parse_yaml(content: &str, recursion_depth: u32) -> Result<Vec<Box<d
     let groups = parse_groups(&doc);
 
     // D) Asset section
-    parse_asset_section(&doc);
+    let asset = parse_asset_section(&doc);
 
     // Handle "urls:" key
     if let Some(urls) = doc.get("urls") {
@@ -242,13 +271,13 @@ pub async fn parse_yaml(content: &str, recursion_depth: u32) -> Result<Vec<Box<d
         };
         for source in sources {
             match super::load_config(&source, recursion_depth - 1).await {
-                Ok(mut included) => services.append(&mut included),
+                Ok((mut included, _)) => services.append(&mut included),
                 Err(e) => tracing::warn!("Failed to load included config '{}': {}", source, e),
             }
         }
     }
 
-    Ok(services)
+    Ok((services, asset))
 }
 
 #[cfg(test)]
@@ -264,7 +293,7 @@ urls:
   - json://localhost
   - xml://localhost
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 2);
     }
 
@@ -274,7 +303,7 @@ urls:
 urls:
   - json://localhost
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 1);
     }
 
@@ -285,7 +314,7 @@ urls:
   - json://localhost:
       tag: my_tag
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 1);
     }
 
@@ -296,7 +325,7 @@ urls:
   - json://localhost:
       tags: tag1,tag2
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 1);
     }
 
@@ -309,7 +338,7 @@ urls:
         - tag_a
         - tag_b
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 1);
     }
 
@@ -318,7 +347,7 @@ urls:
         let content = r#"
 urls: []
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert!(services.is_empty());
     }
 
@@ -327,7 +356,7 @@ urls: []
         let content = r#"
 version: 1
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert!(services.is_empty());
     }
 
@@ -337,7 +366,7 @@ version: 1
 urls:
   - totallyunknownschema://whatever
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert!(services.is_empty());
     }
 
@@ -349,7 +378,7 @@ urls:
   - xml://localhost:
       tag: special
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 2);
     }
 
@@ -370,7 +399,7 @@ urls:
   - json://localhost
   - xml://localhost
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 2);
         // Both services should have the global tags
         for svc in &services {
@@ -389,7 +418,7 @@ tags:
 urls:
   - json://localhost
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 1);
         let tags = services[0].tags();
         assert!(tags.iter().any(|t| t == "admin"));
@@ -404,7 +433,7 @@ urls:
   - json://localhost:
       tag: local
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 1);
         let tags = services[0].tags();
         assert!(tags.iter().any(|t| t == "global"), "expected global tag, got {:?}", tags);
@@ -453,7 +482,7 @@ urls:
   - json://localhost:
       tag: tagA
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 1);
         let tags = services[0].tags();
         assert!(tags.iter().any(|t| t == "tagA"), "expected tagA, got {:?}", tags);
@@ -474,7 +503,7 @@ urls:
     - to: person2@example.com
       tag: tag2
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 2, "expected 2 instances, got {}", services.len());
     }
 
@@ -486,7 +515,7 @@ urls:
       to: person1@example.com
       tag: tag1
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, _) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 1);
     }
 
@@ -499,12 +528,21 @@ asset:
   app_id: MyApp
   app_desc: My Application
   app_url: https://example.com
+  theme: dark
+  body_format: html
+  secure_logging: false
 urls:
   - json://localhost
 "#;
-        // Should not error; asset section is logged but otherwise ignored
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, asset) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 1);
+        let asset = asset.expect("asset should be present");
+        assert_eq!(asset.app_id, "MyApp");
+        assert_eq!(asset.app_desc, "My Application");
+        assert_eq!(asset.app_url, "https://example.com");
+        assert_eq!(asset.theme, "dark");
+        assert_eq!(asset.body_format, Some("html".to_string()));
+        assert!(!asset.secure_logging);
     }
 
     #[tokio::test]
@@ -514,8 +552,22 @@ asset: {}
 urls:
   - json://localhost
 "#;
-        let services = parse_yaml(content, 1).await.unwrap();
+        let (services, asset) = parse_yaml(content, 1).await.unwrap();
         assert_eq!(services.len(), 1);
+        // Empty mapping still parses into a default asset
+        let asset = asset.expect("empty asset section still returns Some");
+        assert_eq!(asset.app_id, "Apprise");
+    }
+
+    #[tokio::test]
+    async fn test_yaml_no_asset_section() {
+        let content = r#"
+urls:
+  - json://localhost
+"#;
+        let (services, asset) = parse_yaml(content, 1).await.unwrap();
+        assert_eq!(services.len(), 1);
+        assert!(asset.is_none());
     }
 
     // ─── Helper unit tests ──────────────────────────────────────────────

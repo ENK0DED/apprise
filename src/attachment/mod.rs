@@ -1,5 +1,6 @@
 pub mod file;
 pub mod http;
+pub mod memory;
 
 use crate::error::AttachError;
 use crate::notify::Attachment;

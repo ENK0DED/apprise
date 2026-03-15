@@ -27,7 +27,7 @@ pub async fn parse_text(content: &str, recursion_depth: u32) -> Result<Vec<Box<d
             let source = source.trim();
             if !source.is_empty() {
                 match super::load_config(source, recursion_depth - 1).await {
-                    Ok(mut included) => services.append(&mut included),
+                    Ok((mut included, _)) => services.append(&mut included),
                     Err(e) => tracing::warn!("Failed to load included config '{}': {}", source, e),
                 }
             }

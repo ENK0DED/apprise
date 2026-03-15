@@ -1,3 +1,4 @@
+use crate::asset::AppriseAsset;
 use crate::error::ConfigError;
 use crate::notify::Notify;
 use std::path::PathBuf;
@@ -83,7 +84,7 @@ async fn write_cache(url: &str, content: &str) {
 
 /// Load config from an HTTP(S) URL.
 /// Supports `?format=text|yaml` and `?cache=yes|no|SECONDS` query parameters.
-pub async fn load_from_http(url: &str, recursion_depth: u32) -> Result<Vec<Box<dyn Notify>>, ConfigError> {
+pub async fn load_from_http(url: &str, recursion_depth: u32) -> Result<(Vec<Box<dyn Notify>>, Option<AppriseAsset>), ConfigError> {
     let cache_ttl = parse_cache_param(url);
     let fetch_url = strip_control_params(url);
 
@@ -111,7 +112,8 @@ pub async fn load_from_http(url: &str, recursion_depth: u32) -> Result<Vec<Box<d
             ));
         }
         super::ConfigFormat::Text => {
-            super::text::parse_text(&content, recursion_depth).await
+            let services = super::text::parse_text(&content, recursion_depth).await?;
+            Ok((services, None))
         }
     }
 }

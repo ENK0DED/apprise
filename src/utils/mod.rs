@@ -5,3 +5,7 @@ pub mod escape;
 pub mod aws;
 pub mod locale;
 pub mod validate;
+pub mod templates;
+pub mod pem;
+pub mod pgp;
+pub mod socket;

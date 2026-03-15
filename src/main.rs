@@ -101,6 +101,7 @@ async fn main() {
 
     // Collect notification services
     let mut services: Vec<Box<dyn notify::Notify>> = Vec::new();
+    let mut config_asset: Option<asset::AppriseAsset> = None;
 
     // From direct URLs on command line (split on ;,\n\s for APPRISE_URLS compat)
     for raw in &cli.urls {
@@ -122,7 +123,12 @@ async fn main() {
             let cfg_path = cfg_path.trim();
             if cfg_path.is_empty() { continue; }
             match config::load_config(cfg_path, recursion_depth).await {
-                Ok(mut svcs) => services.append(&mut svcs),
+                Ok((mut svcs, parsed_asset)) => {
+                    services.append(&mut svcs);
+                    if config_asset.is_none() {
+                        config_asset = parsed_asset;
+                    }
+                }
                 Err(e) => eprintln!("Warning: failed to load config {}: {}", cfg_path, e),
             }
         }
@@ -155,8 +161,11 @@ async fn main() {
                 let path_str = path.to_string_lossy().to_string();
                 tracing::debug!("Loading default config: {}", path_str);
                 match config::load_config(&path_str, recursion_depth).await {
-                    Ok(mut svcs) if !svcs.is_empty() => {
+                    Ok((mut svcs, parsed_asset)) if !svcs.is_empty() => {
                         services.append(&mut svcs);
+                        if config_asset.is_none() {
+                            config_asset = parsed_asset;
+                        }
                         break;
                     }
                     _ => {}
@@ -252,7 +261,7 @@ async fn main() {
         interpret_escapes: cli.interpret_escapes,
         interpret_emojis: cli.interpret_emojis,
         tags: tag_filters,
-        asset: asset::AppriseAsset::default(),
+        asset: config_asset.unwrap_or_default(),
     };
 
     // Send notifications (with per-plugin format conversion)

@@ -4,6 +4,7 @@ pub mod text;
 #[cfg(feature = "yaml")]
 pub mod yaml;
 
+use crate::asset::AppriseAsset;
 use crate::error::ConfigError;
 use crate::notify::Notify;
 use crate::notify::registry::from_url;
@@ -94,7 +95,7 @@ pub(crate) fn extract_query_param(source: &str, key: &str) -> Option<String> {
 
 /// Load notification services from a config file path or URL.
 /// Uses `Box::pin` to support recursive async calls from include directives.
-pub fn load_config(source: &str, recursion_depth: u32) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Box<dyn Notify>>, ConfigError>> + Send + '_>> {
+pub fn load_config(source: &str, recursion_depth: u32) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Vec<Box<dyn Notify>>, Option<AppriseAsset>), ConfigError>> + Send + '_>> {
     load_config_with_mode(source, recursion_depth, None, CrossIncludeMode::default())
 }
 
@@ -105,7 +106,7 @@ pub fn load_config_with_mode<'a>(
     recursion_depth: u32,
     parent_source: Option<&'a str>,
     cross_include_mode: CrossIncludeMode,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Box<dyn Notify>>, ConfigError>> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Vec<Box<dyn Notify>>, Option<AppriseAsset>), ConfigError>> + Send + 'a>> {
     Box::pin(async move {
         if recursion_depth == 0 {
             return Err(ConfigError::RecursionDepth);
@@ -120,7 +121,7 @@ pub fn load_config_with_mode<'a>(
                     source,
                     cross_include_mode,
                 );
-                return Ok(Vec::new());
+                return Ok((Vec::new(), None));
             }
         }
 

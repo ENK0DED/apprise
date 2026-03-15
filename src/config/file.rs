@@ -1,10 +1,11 @@
+use crate::asset::AppriseAsset;
 use crate::error::ConfigError;
 use crate::notify::Notify;
 use tokio::fs;
 
 /// Load config from a local file.
 /// Supports `?format=text|yaml` query parameter to override auto-detection.
-pub async fn load_from_file(path: &str, recursion_depth: u32) -> Result<Vec<Box<dyn Notify>>, ConfigError> {
+pub async fn load_from_file(path: &str, recursion_depth: u32) -> Result<(Vec<Box<dyn Notify>>, Option<AppriseAsset>), ConfigError> {
     // Strip query params from the path for reading the actual file
     let file_path = path.split('?').next().unwrap_or(path);
     let content = fs::read_to_string(file_path).await.map_err(|e| ConfigError::Other(e.to_string()))?;
@@ -19,7 +20,8 @@ pub async fn load_from_file(path: &str, recursion_depth: u32) -> Result<Vec<Box<
             ));
         }
         super::ConfigFormat::Text => {
-            super::text::parse_text(&content, recursion_depth).await
+            let services = super::text::parse_text(&content, recursion_depth).await?;
+            Ok((services, None))
         }
     }
 }
