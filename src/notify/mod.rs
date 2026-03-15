@@ -234,6 +234,25 @@ pub trait Notify: Send + Sync {
     fn tags(&self) -> Vec<String> {
         vec![]
     }
+
+    /// The notification format this plugin expects (default: Text).
+    /// The orchestrator converts the body from the user's input format
+    /// to this format before calling send().
+    fn notify_format(&self) -> NotifyFormat {
+        NotifyFormat::Text
+    }
+
+    /// Maximum body length in characters (default: 32768, matching Python)
+    fn body_maxlen(&self) -> usize { 32768 }
+
+    /// Maximum title length in characters (default: 250, matching Python)
+    /// Return 0 if the service doesn't support titles.
+    fn title_maxlen(&self) -> usize { 250 }
+
+    /// Request rate limit in requests per second (default: 1.0).
+    /// The orchestrator sleeps between sends to respect this.
+    /// Python default is 5.5 but we only throttle in sequential mode.
+    fn request_rate_per_sec(&self) -> f64 { 0.0 }
 }
 
 // ── Helper: build a reqwest client ───────────────────────────────────────────

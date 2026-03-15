@@ -21,9 +21,29 @@ impl Notify for D7Networks {
     fn tags(&self) -> Vec<String> { self.tags.clone() }
     async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
         let msg = format!("{}{}", if ctx.title.is_empty() { String::new() } else { format!("{}: ", ctx.title) }, ctx.body);
-        let payload = json!({ "message_globals": { "content": msg }, "messages": [{ "recipients": self.targets }] });
+        let payload = json!({
+            "message_globals": { "channel": "sms" },
+            "messages": [{ "recipients": self.targets, "content": msg, "data_coding": "auto" }]
+        });
         let client = build_client(self.verify_certificate)?;
         let resp = client.post("https://api.d7networks.com/messages/v1/send").header("User-Agent", APP_ID).header("Authorization", format!("Bearer {}", self.token)).json(&payload).send().await?;
         if resp.status().is_success() || resp.status().as_u16() == 200 { Ok(true) } else { Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() }) }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "d7sms://",
+            "d7sms://:@/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

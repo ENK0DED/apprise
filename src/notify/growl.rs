@@ -94,3 +94,46 @@ Notification-Text: {}
         Ok(resp.contains("-OK"))
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::parse::ParsedUrl;
+
+    #[test]
+    fn test_valid_urls() {
+        let valid_urls = vec![
+            "growl://localhost",
+            "growl://192.168.1.1",
+            "growl://user:pass@localhost",
+            "growl://localhost:23053",
+        ];
+        for url in &valid_urls {
+            let parsed = ParsedUrl::parse(url);
+            assert!(parsed.is_some(), "ParsedUrl::parse failed for: {}", url);
+            let parsed = parsed.unwrap();
+            assert!(
+                Growl::from_url(&parsed).is_some(),
+                "Growl::from_url returned None for valid URL: {}",
+                url,
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let invalid_urls = vec![
+            "growl://",
+        ];
+        for url in &invalid_urls {
+            let result = ParsedUrl::parse(url)
+                .and_then(|p| Growl::from_url(&p));
+            assert!(
+                result.is_none(),
+                "Growl::from_url should return None for: {}",
+                url,
+            );
+        }
+    }
+}

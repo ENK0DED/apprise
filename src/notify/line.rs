@@ -6,9 +6,16 @@ use crate::utils::parse::ParsedUrl;
 pub struct Line { token: String, targets: Vec<String>, verify_certificate: bool, tags: Vec<String> }
 impl Line {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let token = url.host.clone()?;
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        let token = url.host.clone()
+            .filter(|h| !h.is_empty())
+            .or_else(|| url.get("token").map(|s| s.to_string()))?;
+        // Decode and validate
+        let decoded = urlencoding::decode(&token).unwrap_or_default().into_owned();
+        if decoded.trim().is_empty() { return None; }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         Some(Self { token, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "LINE", service_url: Some("https://line.me"), setup_url: None, protocols: vec!["line"], description: "Send LINE messages via bot.", attachment_support: false } }
@@ -29,5 +36,37 @@ impl Notify for Line {
             if !resp.status().is_success() { all_ok = false; }
         }
         Ok(all_ok)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "line://token",
+            "line://token=/target",
+            "line://token/target?image=no",
+            "line://a/very/long/token=/target?image=no",
+            "line://?token=token&to=target1",
+            "line://token/target",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "line://",
+            "line://%20/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

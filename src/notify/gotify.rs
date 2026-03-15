@@ -85,10 +85,12 @@ impl Notify for Gotify {
             "priority": self.priority,
         });
 
-        // Include markdown extras if applicable
-        payload["extras"] = json!({
-            "client::display": { "contentType": "text/markdown" }
-        });
+        // Include markdown extras only when format is Markdown (matching Python)
+        if ctx.body_format == crate::types::NotifyFormat::Markdown {
+            payload["extras"] = json!({
+                "client::display": { "contentType": "text/markdown" }
+            });
+        }
 
         let client = build_client(self.verify_certificate)?;
         let resp = client
@@ -106,6 +108,24 @@ impl Notify for Gotify {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
             Err(NotifyError::ServiceError { status, body })
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "gotify://",
+            "gotify://hostname",
+            "gotify://:@/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
     }
 }

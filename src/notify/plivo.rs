@@ -24,9 +24,25 @@ impl Notify for Plivo {
     async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
         let msg = format!("{}{}", if ctx.title.is_empty() { String::new() } else { format!("{}: ", ctx.title) }, ctx.body);
         let url = format!("https://api.plivo.com/v1/Account/{}/Message/", self.auth_id);
-        let payload = json!({ "src": self.from_phone, "dst": self.targets.join("<"), "text": msg });
+        let payload = json!({ "src": self.from_phone, "recipients": self.targets.join(","), "text": msg });
         let client = build_client(self.verify_certificate)?;
         let resp = client.post(&url).header("User-Agent", APP_ID).basic_auth(&self.auth_id, Some(&self.auth_token)).json(&payload).send().await?;
         if resp.status().is_success() { Ok(true) } else { Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() }) }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "plivo://",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

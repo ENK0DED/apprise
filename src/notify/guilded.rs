@@ -26,3 +26,20 @@ impl Notify for Guilded {
         if resp.status().is_success() || resp.status().as_u16() == 204 { Ok(true) } else { Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() }) }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "guilded://",
+            "guilded://:@/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
+    }
+}

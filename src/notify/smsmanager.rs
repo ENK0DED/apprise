@@ -23,10 +23,35 @@ impl Notify for SmsManager {
         let client = build_client(self.verify_certificate)?;
         let mut all_ok = true;
         for target in &self.targets {
-            let url = format!("https://http.smsmanager.cz/send?apikey={}&number={}&message={}&type=promotional", self.apikey, urlencoding::encode(target), urlencoding::encode(&msg));
-            let resp = client.get(&url).header("User-Agent", APP_ID).send().await?;
+            let params = [
+                ("apikey", self.apikey.as_str()),
+                ("number", target.as_str()),
+                ("message", msg.as_str()),
+                ("type", "promotional"),
+            ];
+            let resp = client.post("https://http-api.smsmanager.cz/Send")
+                .header("User-Agent", APP_ID)
+                .form(&params)
+                .send().await?;
             if !resp.status().is_success() { all_ok = false; }
         }
         Ok(all_ok)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "smsmgr://",
+            "smsmgr://:@/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

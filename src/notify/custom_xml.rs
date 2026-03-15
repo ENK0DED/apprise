@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use base64::Engine;
 use crate::error::NotifyError;
 use crate::notify::{build_client, Notify, NotifyContext, ServiceDetails, APP_ID};
 use crate::utils::parse::ParsedUrl;
@@ -10,6 +11,7 @@ pub struct Xml {
     secure: bool,
     user: Option<String>,
     password: Option<String>,
+    method: String,
     headers: Vec<(String, String)>,
     verify_certificate: bool,
     tags: Vec<String>,
@@ -20,14 +22,20 @@ impl Xml {
         let host = url.host.clone()?;
         let secure = url.schema == "xmls";
         let path = if url.path.is_empty() { "/".to_string() } else { format!("/{}", url.path) };
+        let method = url.get("method").unwrap_or("POST").to_uppercase();
+        // Validate HTTP method
+        match method.as_str() {
+            "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" => {}
+            _ => return None,
+        }
         let headers: Vec<(String, String)> = url.qsd.iter()
             .filter(|(k, _)| k.starts_with('+'))
             .map(|(k, v)| (k[1..].to_string(), v.clone()))
             .collect();
-        Some(Self { host, port: url.port, path, secure, user: url.user.clone(), password: url.password.clone(), headers, verify_certificate: url.verify_certificate(), tags: url.tags() })
+        Some(Self { host, port: url.port, path, secure, user: url.user.clone(), password: url.password.clone(), method, headers, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails {
-        ServiceDetails { service_name: "XML", service_url: None, setup_url: None, protocols: vec!["xml", "xmls"], description: "Send an XML notification to any HTTP endpoint.", attachment_support: false }
+        ServiceDetails { service_name: "XML", service_url: None, setup_url: None, protocols: vec!["xml", "xmls"], description: "Send an XML notification to any HTTP endpoint.", attachment_support: true }
     }
 }
 
@@ -42,12 +50,33 @@ impl Notify for Xml {
         let schema = if self.secure { "https" } else { "http" };
         let port_str = self.port.map(|p| format!(":{}", p)).unwrap_or_default();
         let url = format!("{}://{}{}{}", schema, self.host, port_str, self.path);
-        let body = format!(
-            "<?xml version='1.0' encoding='UTF-8'?><notification><version>1.0</version><title>{}</title><message>{}</message><type>{}</type></notification>",
+        let mut body = format!(
+            "<?xml version='1.0' encoding='UTF-8'?><notification><version>1.0</version><title>{}</title><message>{}</message><type>{}</type>",
             xml_escape(&ctx.title), xml_escape(&ctx.body), ctx.notify_type.as_str()
         );
+        if !ctx.attachments.is_empty() {
+            body.push_str("<attachments>");
+            for att in &ctx.attachments {
+                body.push_str(&format!(
+                    "<attachment><filename>{}</filename><mimetype>{}</mimetype><base64>{}</base64></attachment>",
+                    xml_escape(&att.name),
+                    xml_escape(&att.mime_type),
+                    base64::engine::general_purpose::STANDARD.encode(&att.data),
+                ));
+            }
+            body.push_str("</attachments>");
+        }
+        body.push_str("</notification>");
         let client = build_client(self.verify_certificate)?;
-        let mut req = client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/xml").body(body);
+        let mut req = match self.method.as_str() {
+            "GET" => client.get(&url),
+            "PUT" => client.put(&url),
+            "PATCH" => client.patch(&url),
+            "DELETE" => client.delete(&url),
+            "HEAD" => client.head(&url),
+            _ => client.post(&url),
+        };
+        req = req.header("User-Agent", APP_ID).header("Content-Type", "application/xml").body(body);
         if let (Some(u), Some(p)) = (&self.user, &self.password) { req = req.basic_auth(u, Some(p)); }
         for (k, v) in &self.headers { req = req.header(k.as_str(), v.as_str()); }
         let resp = req.send().await?;
@@ -57,4 +86,55 @@ impl Notify for Xml {
 
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "xml://localhost",
+            "xml://user@localhost",
+            "xml://user:pass@localhost",
+            "xml://user@localhost?method=put",
+            "xml://user@localhost?method=get",
+            "xml://user@localhost?method=post",
+            "xml://user@localhost?method=head",
+            "xml://user@localhost?method=delete",
+            "xml://user@localhost?method=patch",
+            "xml://localhost:8080",
+            "xml://user:pass@localhost:8080",
+            "xmls://localhost",
+            "xmls://user:pass@localhost",
+            "xml://localhost:8080",
+            "xml://user:pass@localhost:8080",
+            "xml://localhost",
+            "xmls://user:pass@localhost",
+            "xml://user@localhost:8080/path/",
+            "xmls://localhost:8080/path/",
+            "xmls://user:pass@localhost:8080",
+            "xml://localhost:8080/path?-ParamA=Value",
+            "xml://localhost:8080/path?+HeaderKey=HeaderValue",
+            "xml://user:pass@localhost:8083",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "xml://:@/",
+            "xml://",
+            "xmls://",
+            "xml://user@localhost?method=invalid",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
+    }
 }

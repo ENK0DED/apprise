@@ -34,3 +34,46 @@ impl Notify for Aprs {
         Ok(true)
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::parse::ParsedUrl;
+
+    #[test]
+    fn test_valid_urls() {
+        let valid_urls = vec![
+            "aprs://user:pass@localhost/target1",
+            "aprs://user:pass@localhost/target1/target2",
+        ];
+        for url in &valid_urls {
+            let parsed = ParsedUrl::parse(url);
+            assert!(parsed.is_some(), "ParsedUrl::parse failed for: {}", url);
+            let parsed = parsed.unwrap();
+            assert!(
+                Aprs::from_url(&parsed).is_some(),
+                "Aprs::from_url returned None for valid URL: {}",
+                url,
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let invalid_urls = vec![
+            "aprs://user:pass@localhost",
+            "aprs://localhost/target",
+            "aprs://:@localhost/target",
+        ];
+        for url in &invalid_urls {
+            let result = ParsedUrl::parse(url)
+                .and_then(|p| Aprs::from_url(&p));
+            assert!(
+                result.is_none(),
+                "Aprs::from_url should return None for: {}",
+                url,
+            );
+        }
+    }
+}

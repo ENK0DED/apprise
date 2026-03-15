@@ -13,15 +13,16 @@ pub struct Discord {
     avatar_url: Option<String>,
     username: Option<String>,
     footer: bool,
+    footer_logo: Option<String>,
     include_image: bool,
+    thread_id: Option<String>,
+    href: Option<String>,
     verify_certificate: bool,
     tags: Vec<String>,
 }
 
 impl Discord {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        // discord://webhook_id/webhook_token
-        // discord://botname@webhook_id/webhook_token
         let webhook_id = url.host.clone()?;
         let webhook_token = url.path_parts.first()?.clone();
         if webhook_token.is_empty() {
@@ -32,18 +33,15 @@ impl Discord {
         let tts = url.get("tts").map(crate::utils::parse::parse_bool).unwrap_or(false);
         let avatar_url = url.get("avatar_url").or_else(|| url.get("avatar")).map(|s| s.to_string());
         let footer = url.get("footer").map(crate::utils::parse::parse_bool).unwrap_or(false);
+        let footer_logo = url.get("footer_logo").map(|s| s.to_string());
         let include_image = url.get("image").map(crate::utils::parse::parse_bool).unwrap_or(false);
+        let thread_id = url.get("thread").map(|s| s.to_string());
+        let href = url.get("href").or_else(|| url.get("url")).map(|s| s.to_string());
 
         Some(Self {
-            webhook_id,
-            webhook_token,
-            tts,
-            avatar_url,
-            username,
-            footer,
-            include_image,
-            verify_certificate: url.verify_certificate(),
-            tags: url.tags(),
+            webhook_id, webhook_token, tts, avatar_url, username, footer,
+            footer_logo, include_image, thread_id, href,
+            verify_certificate: url.verify_certificate(), tags: url.tags(),
         })
     }
 
@@ -61,31 +59,23 @@ impl Discord {
 
 #[async_trait]
 impl Notify for Discord {
-    fn schemas(&self) -> &[&str] {
-        &["discord"]
-    }
-
-    fn service_name(&self) -> &str {
-        "Discord"
-    }
-
-    fn details(&self) -> ServiceDetails {
-        Self::static_details()
-    }
-
-    fn tags(&self) -> Vec<String> {
-        self.tags.clone()
-    }
-
-    fn attachment_support(&self) -> bool {
-        true
-    }
+    fn schemas(&self) -> &[&str] { &["discord"] }
+    fn service_name(&self) -> &str { "Discord" }
+    fn details(&self) -> ServiceDetails { Self::static_details() }
+    fn tags(&self) -> Vec<String> { self.tags.clone() }
+    fn attachment_support(&self) -> bool { true }
+    fn body_maxlen(&self) -> usize { 2000 }
 
     async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
-        let url = format!(
+        let mut url = format!(
             "https://discord.com/api/webhooks/{}/{}",
             self.webhook_id, self.webhook_token
         );
+
+        // Add thread_id as query parameter if specified
+        if let Some(ref tid) = self.thread_id {
+            url = format!("{}?thread_id={}", url, tid);
+        }
 
         let color = match ctx.notify_type {
             NotifyType::Info => 0x3498DB_u32,
@@ -115,32 +105,89 @@ impl Notify for Discord {
         if !ctx.title.is_empty() {
             embed["title"] = json!(ctx.title);
         }
+
+        // Support href/url linking in embed title
+        if let Some(ref href) = self.href {
+            embed["url"] = json!(href);
+        }
+
         if self.footer {
-            embed["footer"] = json!({ "text": APP_ID });
+            let mut footer_obj = json!({ "text": APP_ID });
+            if let Some(ref logo) = self.footer_logo {
+                footer_obj["icon_url"] = json!(logo);
+            }
+            embed["footer"] = footer_obj;
         }
 
         payload["embeds"] = json!([embed]);
 
         let client = build_client(self.verify_certificate)?;
-        let resp = client
-            .post(&url)
-            .header("User-Agent", APP_ID)
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .send()
-            .await?;
+        let resp = if !ctx.attachments.is_empty() {
+            // Use multipart form when attachments are present
+            let payload_str = serde_json::to_string(&payload).unwrap_or_default();
+            let mut form = reqwest::multipart::Form::new()
+                .text("payload_json", payload_str);
+            for (i, att) in ctx.attachments.iter().enumerate() {
+                let part = reqwest::multipart::Part::bytes(att.data.clone())
+                    .file_name(att.name.clone())
+                    .mime_str(&att.mime_type)
+                    .unwrap_or_else(|_| reqwest::multipart::Part::bytes(att.data.clone()));
+                form = form.part(format!("files[{}]", i), part);
+            }
+            client.post(&url).header("User-Agent", APP_ID).multipart(form).send().await?
+        } else {
+            client.post(&url).header("User-Agent", APP_ID)
+                .header("Content-Type", "application/json")
+                .json(&payload).send().await?
+        };
 
         let status = resp.status();
+
+        // Handle rate limiting
+        if status.as_u16() == 429 {
+            if let Some(retry_after) = resp.headers().get("Retry-After") {
+                if let Ok(secs) = retry_after.to_str().unwrap_or("1").parse::<f64>() {
+                    tracing::warn!("Discord rate limited, retrying after {}s", secs);
+                    tokio::time::sleep(tokio::time::Duration::from_secs_f64(secs)).await;
+                    // Retry once
+                    let resp2 = client
+                        .post(format!("https://discord.com/api/webhooks/{}/{}", self.webhook_id, self.webhook_token))
+                        .header("User-Agent", APP_ID)
+                        .header("Content-Type", "application/json")
+                        .json(&payload)
+                        .send()
+                        .await?;
+                    return if resp2.status().is_success() || resp2.status().as_u16() == 204 {
+                        Ok(true)
+                    } else {
+                        Err(NotifyError::ServiceError { status: resp2.status().as_u16(), body: resp2.text().await.unwrap_or_default() })
+                    };
+                }
+            }
+        }
+
         if status.is_success() || status.as_u16() == 204 {
-            tracing::info!("Discord notification sent successfully");
             Ok(true)
         } else {
             let body = resp.text().await.unwrap_or_default();
-            tracing::warn!("Discord notification failed: {} - {}", status, body);
-            Err(NotifyError::ServiceError {
-                status: status.as_u16(),
-                body,
-            })
+            Err(NotifyError::ServiceError { status: status.as_u16(), body })
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "discord://",
+            "discord://:@/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
     }
 }

@@ -28,3 +28,28 @@ impl Notify for RSyslog {
         Ok(true)
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::parse::ParsedUrl;
+
+    #[test]
+    fn test_valid_urls() {
+        let valid_urls = vec![
+            "rsyslog://localhost",
+            "rsyslog://localhost:514",
+        ];
+        for url in &valid_urls {
+            let parsed = ParsedUrl::parse(url);
+            assert!(parsed.is_some(), "ParsedUrl::parse failed for: {}", url);
+            let parsed = parsed.unwrap();
+            assert!(
+                RSyslog::from_url(&parsed).is_some(),
+                "RSyslog::from_url returned None for valid URL: {}",
+                url,
+            );
+        }
+    }
+}

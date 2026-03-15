@@ -8,6 +8,8 @@ pub struct Mailgun {
     domain: String,
     from: String,
     to: Vec<String>,
+    cc: Vec<String>,
+    bcc: Vec<String>,
     region: String,
     verify_certificate: bool,
     tags: Vec<String>,
@@ -15,16 +17,17 @@ pub struct Mailgun {
 
 impl Mailgun {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        // mailgun://user@domain/apikey/to1/to2
         let domain = url.host.clone()?;
         let apikey = url.path_parts.first()?.clone();
         let to: Vec<String> = url.path_parts.get(1..).unwrap_or(&[]).to_vec();
         let from = url.user.clone().map(|u| format!("{}@{}", u, domain)).unwrap_or_else(|| format!("noreply@{}", domain));
         let region = url.get("region").unwrap_or("us").to_string();
-        Some(Self { apikey, domain, from, to, region, verify_certificate: url.verify_certificate(), tags: url.tags() })
+        let cc: Vec<String> = url.get("cc").map(|s| s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
+        let bcc: Vec<String> = url.get("bcc").map(|s| s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
+        Some(Self { apikey, domain, from, to, cc, bcc, region, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails {
-        ServiceDetails { service_name: "Mailgun", service_url: Some("https://mailgun.com"), setup_url: None, protocols: vec!["mailgun"], description: "Send email via Mailgun.", attachment_support: false }
+        ServiceDetails { service_name: "Mailgun", service_url: Some("https://mailgun.com"), setup_url: None, protocols: vec!["mailgun"], description: "Send email via Mailgun.", attachment_support: true }
     }
 }
 
@@ -39,9 +42,50 @@ impl Notify for Mailgun {
         let base = if self.region == "eu" { "https://api.eu.mailgun.net" } else { "https://api.mailgun.net" };
         let url = format!("{}/v3/{}/messages", base, self.domain);
         let to_str = self.to.join(",");
-        let params = [("from", self.from.as_str()), ("to", to_str.as_str()), ("subject", ctx.title.as_str()), ("text", ctx.body.as_str())];
+        let cc_str = self.cc.join(",");
+        let bcc_str = self.bcc.join(",");
         let client = build_client(self.verify_certificate)?;
-        let resp = client.post(&url).header("User-Agent", APP_ID).basic_auth("api", Some(&self.apikey)).form(&params).send().await?;
+
+        let resp = if !ctx.attachments.is_empty() {
+            let mut form = reqwest::multipart::Form::new()
+                .text("from", self.from.clone())
+                .text("to", to_str.clone())
+                .text("subject", ctx.title.clone())
+                .text("text", ctx.body.clone());
+            if !self.cc.is_empty() { form = form.text("cc", cc_str.clone()); }
+            if !self.bcc.is_empty() { form = form.text("bcc", bcc_str.clone()); }
+            for att in &ctx.attachments {
+                let part = reqwest::multipart::Part::bytes(att.data.clone())
+                    .file_name(att.name.clone())
+                    .mime_str(&att.mime_type)
+                    .unwrap_or_else(|_| reqwest::multipart::Part::bytes(att.data.clone()));
+                form = form.part("attachment", part);
+            }
+            client.post(&url).header("User-Agent", APP_ID).basic_auth("api", Some(&self.apikey)).multipart(form).send().await?
+        } else {
+            let mut params: Vec<(&str, &str)> = vec![("from", self.from.as_str()), ("to", to_str.as_str()), ("subject", ctx.title.as_str()), ("text", ctx.body.as_str())];
+            if !self.cc.is_empty() { params.push(("cc", cc_str.as_str())); }
+            if !self.bcc.is_empty() { params.push(("bcc", bcc_str.as_str())); }
+            client.post(&url).header("User-Agent", APP_ID).basic_auth("api", Some(&self.apikey)).form(&params).send().await?
+        };
         if resp.status().is_success() { Ok(true) } else { Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() }) }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "mailgun://",
+            "mailgun://:@/",
+            "mailgun://user@localhost.localdomain",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

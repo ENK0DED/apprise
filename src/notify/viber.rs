@@ -7,9 +7,14 @@ use crate::utils::parse::ParsedUrl;
 pub struct Viber { token: String, targets: Vec<String>, verify_certificate: bool, tags: Vec<String> }
 impl Viber {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let token = url.host.clone()?;
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        let token = url.host.clone()
+            .filter(|h| !h.is_empty())
+            .or_else(|| url.get("token").map(|s| s.to_string()))?;
+        if token.trim().is_empty() { return None; }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         Some(Self { token, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Viber", service_url: Some("https://www.viber.com"), setup_url: None, protocols: vec!["viber"], description: "Send messages via Viber Bot API.", attachment_support: false } }
@@ -31,4 +36,33 @@ impl Notify for Viber {
         }
         Ok(all_ok)
     }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "viber://tokena",
+            "viber://?token=tokenb",
+            "viber://token/targetx",
+            "viber://token/t1/t2?from=Viber%20Bot",
+            "viber://t1/t2?token=token",
+            "viber://?token=token&to=t5",
+            "viber://token/t3?avatar=value",
+            "viber://token/?to=abc,def",
+            "viber://?token=token&to=hij,klm",
+            "viber://?token=token&to=nop,qrs",
+            "viber://?token=token&to=tuv,wxy",
+            "viber://token/t10",
+            "viber://token/targetY",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
 }

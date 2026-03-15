@@ -7,7 +7,16 @@ use crate::utils::parse::ParsedUrl;
 pub struct Spike { channel_key: String, verify_certificate: bool, tags: Vec<String> }
 impl Spike {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let channel_key = url.host.clone()?;
+        let channel_key = if url.schema == "https" || url.schema == "http" {
+            // Extract token from path: /v1/alerts/TOKEN or similar
+            url.path_parts.last().cloned()
+        } else {
+            url.host.clone().filter(|h| !h.is_empty())
+        }.or_else(|| url.get("token").map(|s| s.to_string()))?;
+        // Validate: must be alphanumeric (no hyphens, special chars)
+        if channel_key.trim().is_empty() || !channel_key.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return None;
+        }
         Some(Self { channel_key, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Spike", service_url: Some("https://spike.sh"), setup_url: None, protocols: vec!["spike"], description: "Send alerts via Spike.sh.", attachment_support: false } }
@@ -24,5 +33,35 @@ impl Notify for Spike {
         let url = format!("https://api.spike.sh/api/v1/integration/webhook/{}", self.channel_key);
         let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
         Ok(resp.status().is_success())
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "spike://1234567890abcdef1234567890abcdef",
+            "spike://?token=1234567890abcdef1234567890abcdef",
+            "https://api.spike.sh/v1/alerts/1234567890abcdef1234567890abcdef",
+            "spike://ffffffffffffffffffffffffffffffff",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "spike://",
+            "spike://invalid-key",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

@@ -5,11 +5,22 @@ use crate::utils::parse::ParsedUrl;
 pub struct FortySixElks { user: String, password: String, from_phone: String, targets: Vec<String>, verify_certificate: bool, tags: Vec<String> }
 impl FortySixElks {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let user = url.user.clone()?;
-        let password = url.password.clone()?;
-        let from_phone = url.host.clone().unwrap_or_else(|| "Apprise".to_string());
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        // Support https://user:pass@api.46elks.com/a1/sms?to=...&from=...
+        let (user, password, from_phone) = if url.host.as_deref() == Some("api.46elks.com") {
+            let u = url.user.clone()?;
+            let p = url.password.clone()?;
+            let from = url.get("from").unwrap_or("Apprise").to_string();
+            (u, p, from)
+        } else {
+            let u = url.user.clone()?;
+            let p = url.password.clone()?;
+            let from = url.host.clone().unwrap_or_else(|| "Apprise".to_string());
+            (u, p, from)
+        };
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         Some(Self { user, password, from_phone, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "46elks", service_url: Some("https://46elks.com"), setup_url: None, protocols: vec!["46elks", "elks"], description: "Send SMS via 46elks.", attachment_support: false } }
@@ -31,4 +42,28 @@ impl Notify for FortySixElks {
         }
         Ok(all_ok)
     }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "46elks://user:pass@/",
+            "46elks://user:pass@+15551234556",
+            "46elks://user:pass@+15551234567/+46701234534?from=Acme",
+            "elks://user:pass@+15551234123/",
+            "46elks://user:pass@+15551234512",
+            "46elks://user:pass@Acme/234512",
+            "https://user1:pass@api.46elks.com/a1/sms?to=+15551234511&from=Acme",
+            "46elks://user:pass@+15551234578",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
 }

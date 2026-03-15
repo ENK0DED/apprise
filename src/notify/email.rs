@@ -16,6 +16,9 @@ pub struct Email {
     from: String,
     from_name: Option<String>,
     to: Vec<String>,
+    cc: Vec<String>,
+    bcc: Vec<String>,
+    reply_to: Vec<String>,
     user: Option<String>,
     password: Option<String>,
     verify_certificate: bool,
@@ -29,37 +32,37 @@ enum SecureMode {
     StartTls,
 }
 
+/// Known email provider SMTP templates (matching Python's EMAIL_TEMPLATES)
+struct SmtpDefaults {
+    smtp_host: &'static str,
+    port: u16,
+    secure: SecureMode,
+}
+
+fn detect_smtp_defaults(domain: &str) -> Option<SmtpDefaults> {
+    let d = domain.to_lowercase();
+    match d.as_str() {
+        "gmail.com" | "googlemail.com" => Some(SmtpDefaults { smtp_host: "smtp.gmail.com", port: 587, secure: SecureMode::StartTls }),
+        "yahoo.com" | "yahoo.ca" | "yahoo.co.uk" | "yahoo.co.jp" | "ymail.com" | "rocketmail.com"
+            => Some(SmtpDefaults { smtp_host: "smtp.mail.yahoo.com", port: 465, secure: SecureMode::Ssl }),
+        "hotmail.com" | "live.com" | "outlook.com" | "msn.com" => Some(SmtpDefaults { smtp_host: "smtp-mail.outlook.com", port: 587, secure: SecureMode::StartTls }),
+        "fastmail.com" | "fastmail.fm" => Some(SmtpDefaults { smtp_host: "smtp.fastmail.com", port: 465, secure: SecureMode::Ssl }),
+        "protonmail.com" | "proton.me" | "pm.me" => Some(SmtpDefaults { smtp_host: "smtp.protonmail.ch", port: 587, secure: SecureMode::StartTls }),
+        "zoho.com" | "zohomail.com" => Some(SmtpDefaults { smtp_host: "smtp.zoho.com", port: 465, secure: SecureMode::Ssl }),
+        "aol.com" => Some(SmtpDefaults { smtp_host: "smtp.aol.com", port: 465, secure: SecureMode::Ssl }),
+        "icloud.com" | "mac.com" | "me.com" => Some(SmtpDefaults { smtp_host: "smtp.mail.me.com", port: 587, secure: SecureMode::StartTls }),
+        "mail.com" | "email.com" => Some(SmtpDefaults { smtp_host: "smtp.mail.com", port: 587, secure: SecureMode::StartTls }),
+        "gmx.com" | "gmx.de" | "gmx.net" => Some(SmtpDefaults { smtp_host: "mail.gmx.com", port: 465, secure: SecureMode::Ssl }),
+        "163.com" => Some(SmtpDefaults { smtp_host: "smtp.163.com", port: 465, secure: SecureMode::Ssl }),
+        "qq.com" => Some(SmtpDefaults { smtp_host: "smtp.qq.com", port: 465, secure: SecureMode::Ssl }),
+        "sendgrid.net" => Some(SmtpDefaults { smtp_host: "smtp.sendgrid.net", port: 587, secure: SecureMode::StartTls }),
+        _ => None,
+    }
+}
+
 impl Email {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        // mailto://user:password@host/target1/target2?from=from@example.com
-        // mailtos://... (SMTPS/SSL)
         let host = url.host.clone()?;
-
-        let secure = match url.schema.as_str() {
-            "mailtos" => {
-                let mode = url.get("mode").unwrap_or("");
-                match mode {
-                    "ssl" => SecureMode::Ssl,
-                    "insecure" | "plain" => SecureMode::Plain,
-                    _ => SecureMode::StartTls,
-                }
-            }
-            _ => {
-                let mode = url.get("mode").unwrap_or("");
-                match mode {
-                    "ssl" => SecureMode::Ssl,
-                    "starttls" => SecureMode::StartTls,
-                    _ => SecureMode::Plain,
-                }
-            }
-        };
-
-        let default_port = match &secure {
-            SecureMode::Ssl => 465,
-            SecureMode::StartTls => 587,
-            SecureMode::Plain => 25,
-        };
-        let smtp_port = url.port.unwrap_or(default_port);
 
         let user = url.user.clone();
         let password = url.password.clone();
@@ -69,15 +72,48 @@ impl Email {
             .get("from")
             .map(|s| s.to_string())
             .or_else(|| user.as_ref().map(|u| {
-                if u.contains('@') {
-                    u.clone()
-                } else {
-                    format!("{}@{}", u, host)
-                }
+                if u.contains('@') { u.clone() } else { format!("{}@{}", u, host) }
             }))
             .unwrap_or_else(|| format!("noreply@{}", host));
 
         let from_name = url.get("name").map(|s| s.to_string());
+
+        // Try auto-detecting SMTP settings from email domain
+        let from_domain = from.rsplit('@').next().unwrap_or("");
+        let defaults = detect_smtp_defaults(from_domain);
+
+        // Override SMTP host if ?smtp= is set, otherwise try auto-detect, fallback to host
+        let smtp_host = url.get("smtp").map(|s| s.to_string())
+            .or_else(|| defaults.as_ref().map(|d| d.smtp_host.to_string()))
+            .unwrap_or_else(|| host.clone());
+
+        let secure = match url.schema.as_str() {
+            "mailtos" => {
+                let mode = url.get("mode").unwrap_or("");
+                match mode {
+                    "ssl" => SecureMode::Ssl,
+                    "insecure" | "plain" => SecureMode::Plain,
+                    _ => defaults.as_ref().map(|d| d.secure.clone()).unwrap_or(SecureMode::StartTls),
+                }
+            }
+            _ => {
+                let mode = url.get("mode").unwrap_or("");
+                match mode {
+                    "ssl" => SecureMode::Ssl,
+                    "starttls" => SecureMode::StartTls,
+                    _ => defaults.as_ref().map(|d| d.secure.clone()).unwrap_or(SecureMode::Plain),
+                }
+            }
+        };
+
+        let default_port = match &secure {
+            SecureMode::Ssl => 465,
+            SecureMode::StartTls => 587,
+            SecureMode::Plain => 25,
+        };
+        let smtp_port = url.port
+            .or_else(|| defaults.as_ref().map(|d| d.port))
+            .unwrap_or(default_port);
 
         // Collect targets from path + "to" param
         let mut to: Vec<String> = url.path_parts.clone();
@@ -88,17 +124,24 @@ impl Email {
             to.push(from.clone());
         }
 
+        // CC recipients
+        let cc: Vec<String> = url.get("cc")
+            .map(|s| s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+
+        // BCC recipients
+        let bcc: Vec<String> = url.get("bcc")
+            .map(|s| s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+
+        // Reply-To addresses
+        let reply_to: Vec<String> = url.get("reply")
+            .map(|s| s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+
         Some(Self {
-            smtp_host: host,
-            smtp_port,
-            secure,
-            from,
-            from_name,
-            to,
-            user,
-            password,
-            verify_certificate: url.verify_certificate(),
-            tags: url.tags(),
+            smtp_host, smtp_port, secure, from, from_name, to, cc, bcc, reply_to,
+            user, password, verify_certificate: url.verify_certificate(), tags: url.tags(),
         })
     }
 
@@ -146,12 +189,52 @@ impl Notify for Email {
                 .parse()
                 .map_err(|e| NotifyError::Email(format!("Invalid to address {}: {}", to_addr, e)))?;
 
-            let email = Message::builder()
+            let mut builder = Message::builder()
                 .from(from_mailbox.clone())
                 .to(to_mailbox)
-                .subject(&subject)
-                .body(ctx.body.clone())
-                .map_err(|e| NotifyError::Email(e.to_string()))?;
+                .subject(&subject);
+
+            // Add CC recipients
+            for cc_addr in &self.cc {
+                if let Ok(mb) = cc_addr.parse::<Mailbox>() {
+                    builder = builder.cc(mb);
+                }
+            }
+
+            // Add BCC recipients
+            for bcc_addr in &self.bcc {
+                if let Ok(mb) = bcc_addr.parse::<Mailbox>() {
+                    builder = builder.bcc(mb);
+                }
+            }
+
+            // Add Reply-To addresses
+            for reply_addr in &self.reply_to {
+                if let Ok(mb) = reply_addr.parse::<Mailbox>() {
+                    builder = builder.reply_to(mb);
+                }
+            }
+
+            let email = if ctx.attachments.is_empty() {
+                builder.body(ctx.body.clone())
+                    .map_err(|e| NotifyError::Email(e.to_string()))?
+            } else {
+                // Build multipart message with attachments
+                let text_part = SinglePart::builder()
+                    .header(ContentType::TEXT_PLAIN)
+                    .body(ctx.body.clone());
+                let mut mp = MultiPart::mixed().singlepart(text_part);
+                for att in &ctx.attachments {
+                    let ct = att.mime_type.parse::<ContentType>().unwrap_or(ContentType::TEXT_PLAIN);
+                    let att_part = SinglePart::builder()
+                        .header(ct)
+                        .header(lettre::message::header::ContentDisposition::attachment(&att.name))
+                        .body(att.data.clone());
+                    mp = mp.singlepart(att_part);
+                }
+                builder.multipart(mp)
+                    .map_err(|e| NotifyError::Email(e.to_string()))?
+            };
 
             let result = match &self.secure {
                 SecureMode::Ssl => {
@@ -197,6 +280,49 @@ impl Email {
             (Some(u), Some(p)) => Credentials::new(u.clone(), p.clone()),
             (Some(u), None) => Credentials::new(u.clone(), String::new()),
             _ => Credentials::new(String::new(), String::new()),
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::parse::ParsedUrl;
+
+    #[test]
+    fn test_valid_urls() {
+        let valid_urls = vec![
+            "mailto://user:pass@gmail.com",
+            "mailtos://user:pass@gmail.com",
+            "mailto://user:pass@gmail.com/recipient@example.com",
+        ];
+        for url in &valid_urls {
+            let parsed = ParsedUrl::parse(url);
+            assert!(parsed.is_some(), "ParsedUrl::parse failed for: {}", url);
+            let parsed = parsed.unwrap();
+            assert!(
+                Email::from_url(&parsed).is_some(),
+                "Email::from_url returned None for valid URL: {}",
+                url,
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let invalid_urls = vec![
+            "mailto://",
+            "mailto://:@/",
+        ];
+        for url in &invalid_urls {
+            let result = ParsedUrl::parse(url)
+                .and_then(|p| Email::from_url(&p));
+            assert!(
+                result.is_none(),
+                "Email::from_url should return None for: {}",
+                url,
+            );
         }
     }
 }

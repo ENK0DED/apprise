@@ -32,3 +32,49 @@ impl Notify for Enigma2 {
         Ok(resp.status().is_success())
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "enigma2://localhost",
+            "enigma2://localhost",
+            "enigma2://localhost",
+            "enigma2://localhost",
+            "enigma2://user@localhost",
+            "enigma2://user@localhost?timeout=-1",
+            "enigma2://user@localhost?timeout=-1000",
+            "enigma2://user@localhost?timeout=invalid",
+            "enigma2://user:pass@localhost",
+            "enigma2://localhost:8080",
+            "enigma2://user:pass@localhost:8080",
+            "enigma2s://localhost",
+            "enigma2s://user:pass@localhost",
+            "enigma2s://localhost:8080/path/",
+            "enigma2s://user:pass@localhost:8080",
+            "enigma2://localhost:8080/path?+HeaderKey=HeaderValue",
+            "enigma2://user:pass@localhost:8081",
+            "enigma2://user:pass@localhost:8082",
+            "enigma2://user:pass@localhost:8083",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "enigma2://:@/",
+            "enigma2://",
+            "enigma2s://",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
+    }
+}

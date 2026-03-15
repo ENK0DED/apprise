@@ -15,9 +15,35 @@ pub struct Fcm {
 
 impl Fcm {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let api_key = url.host.clone()?;
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        // apikey from host or ?apikey= param
+        let api_key = url.host.clone()
+            .map(|h| urlencoding::decode(&h).unwrap_or_default().into_owned())
+            .filter(|h| !h.is_empty() && !h.trim().is_empty())
+            .or_else(|| url.get("apikey").map(|s| s.to_string()))?;
+        // Reject whitespace-only api keys
+        if api_key.trim().is_empty() { return None; }
+
+        let mut targets: Vec<String> = url.path_parts.iter()
+            .filter(|s| !s.trim().is_empty())
+            .cloned()
+            .collect();
+        // Support ?to= query param
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
+
+        // Validate mode if provided
+        if let Some(mode) = url.get("mode") {
+            match mode.to_lowercase().as_str() {
+                "legacy" | "oauth2" => {}
+                _ => return None,
+            }
+            // oauth2 mode requires project and keyfile
+            if mode.to_lowercase() == "oauth2" {
+                if url.get("keyfile").is_none() { return None; }
+            }
+        }
+
         let project = url.get("project").map(|s| s.to_string());
         let priority = url.get("priority").unwrap_or("normal").to_string();
         Some(Self { api_key, project, targets, priority, verify_certificate: url.verify_certificate(), tags: url.tags() })
@@ -73,5 +99,48 @@ impl Notify for Fcm {
             if !resp.status().is_success() { all_ok = false; }
         }
         Ok(all_ok)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "fcm://apikey/",
+            "fcm://apikey/device",
+            "fcm://apikey/#topic",
+            "fcm://apikey/#topic1/device/%20/",
+            "fcm://apikey?to=#topic1,device",
+            "fcm://?apikey=abc123&to=device",
+            "fcm://?apikey=abc123&to=device&image=yes",
+            "fcm://?apikey=abc123&to=device&color=no",
+            "fcm://?apikey=abc123&to=device&color=aabbcc",
+            "fcm://?apikey=abc123&to=device&image_url=http://example.com/interesting.jpg",
+            "fcm://?apikey=abc123&to=device&image_url=http://example.com/interesting.jpg&image=no",
+            "fcm://?apikey=abc123&to=device&+key=value&+key2=value2",
+            "fcm://apikey/#topic1/device/?mode=legacy",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "fcm://",
+            "fcm://:@/",
+            "fcm://project@%20%20/",
+            "fcm://apikey/device?mode=invalid",
+            "fcm://%20?to=device&keyfile=/invalid/path",
+            "fcm://project_id?to=device&mode=oauth2",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

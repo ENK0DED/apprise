@@ -5,6 +5,13 @@ use crate::utils::parse::ParsedUrl;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
+#[derive(Debug, Clone, PartialEq)]
+enum IrcAuthMode {
+    None,
+    Server,    // PASS during registration
+    NickServ,  // IDENTIFY via NickServ after registration
+}
+
 pub struct Irc {
     host: String,
     port: u16,
@@ -15,6 +22,7 @@ pub struct Irc {
     channels: Vec<String>,
     users: Vec<String>,
     secure: bool,
+    auth_mode: IrcAuthMode,
     tags: Vec<String>,
 }
 
@@ -23,9 +31,16 @@ impl Irc {
         let host = url.host.clone()?;
         let secure = url.schema == "ircs";
         let port = url.port.unwrap_or(if secure { 6697 } else { 6667 });
-        let nick = url.user.clone().unwrap_or_else(|| "Apprise".to_string());
-        let user = nick.clone();
+        let nick = url.get("nick").map(|s| s.to_string()).or_else(|| url.user.clone()).unwrap_or_else(|| "Apprise".to_string());
+        let user = url.user.clone().unwrap_or_else(|| nick.clone());
         let realname = url.get("name").unwrap_or("Apprise Notification").to_string();
+        let auth_mode_str = url.get("mode").unwrap_or("server").to_string();
+
+        let auth_mode = match auth_mode_str.to_lowercase().as_str() {
+            "none" => IrcAuthMode::None,
+            "nickserv" => IrcAuthMode::NickServ,
+            _ => IrcAuthMode::Server,
+        };
 
         let mut channels = Vec::new();
         let mut users = Vec::new();
@@ -35,8 +50,18 @@ impl Irc {
             } else if part.starts_with('@') {
                 users.push(part[1..].to_string());
             } else {
-                // Treat as channel by default
                 channels.push(format!("#{}", part));
+            }
+        }
+        if let Some(to) = url.get("to") {
+            for t in to.split(',').map(|s| s.trim()) {
+                if t.starts_with('#') || t.starts_with('&') {
+                    channels.push(t.to_string());
+                } else if t.starts_with('@') {
+                    users.push(t[1..].to_string());
+                } else if !t.is_empty() {
+                    channels.push(format!("#{}", t));
+                }
             }
         }
         if channels.is_empty() && users.is_empty() { return None; }
@@ -45,7 +70,7 @@ impl Irc {
             host, port,
             password: url.password.clone(),
             nick, user, realname,
-            channels, users, secure,
+            channels, users, secure, auth_mode,
             tags: url.tags(),
         })
     }
@@ -62,27 +87,25 @@ impl Irc {
     }
 }
 
-async fn irc_send_line(writer: &mut (impl AsyncWriteExt + Unpin), line: &str) -> Result<(), NotifyError> {
-    let data = format!("{}\r\n", line);
-    writer.write_all(data.as_bytes()).await.map_err(|e| NotifyError::Other(e.to_string()))
+async fn irc_send(writer: &mut (impl AsyncWriteExt + Unpin), line: &str) -> Result<(), NotifyError> {
+    writer.write_all(format!("{}\r\n", line).as_bytes()).await
+        .map_err(|e| NotifyError::Other(e.to_string()))
 }
 
-async fn irc_wait_for(reader: &mut (impl AsyncBufReadExt + Unpin), code: &str) -> Result<(), NotifyError> {
-    let mut buf = String::new();
+async fn irc_wait_for(reader: &mut (impl AsyncBufReadExt + Unpin), writer: &mut (impl AsyncWriteExt + Unpin), code: &str) -> Result<(), NotifyError> {
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
+    let mut buf = String::new();
     loop {
         buf.clear();
-        let read_fut = reader.read_line(&mut buf);
-        match tokio::time::timeout_at(deadline, read_fut).await {
+        match tokio::time::timeout_at(deadline, reader.read_line(&mut buf)).await {
             Ok(Ok(0)) => return Err(NotifyError::Other("IRC connection closed".into())),
             Ok(Ok(_)) => {
-                // Respond to PING
                 if buf.starts_with("PING") {
-                    // Can't write back here, but we'll handle PING in the main loop
+                    let pong = buf.replace("PING", "PONG");
+                    let _ = irc_send(writer, pong.trim()).await;
                 }
                 if buf.contains(code) { return Ok(()); }
-                // Check for errors
-                if buf.contains("ERROR") || buf.contains("433") || buf.contains("462") {
+                if buf.contains("ERROR") || buf.contains(" 433 ") || buf.contains(" 462 ") {
                     return Err(NotifyError::Other(format!("IRC error: {}", buf.trim())));
                 }
             }
@@ -102,45 +125,114 @@ impl Notify for Irc {
     async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
         let msg = format!("{}{}", if ctx.title.is_empty() { String::new() } else { format!("{}: ", ctx.title) }, ctx.body);
 
-        let stream = TcpStream::connect(format!("{}:{}", self.host, self.port))
+        let tcp = TcpStream::connect(format!("{}:{}", self.host, self.port))
             .await
             .map_err(|e| NotifyError::Other(format!("IRC connect failed: {}", e)))?;
 
-        let (reader, mut writer) = tokio::io::split(stream);
-        let mut reader = BufReader::new(reader);
-
-        // Send PASS if we have a password
-        if let Some(ref pass) = self.password {
-            irc_send_line(&mut writer, &format!("PASS {}", pass)).await?;
+        if self.secure {
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let config = rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+            let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+            let domain = rustls::pki_types::ServerName::try_from(self.host.clone())
+                .map_err(|e| NotifyError::Other(format!("Invalid hostname for TLS: {}", e)))?;
+            let tls_stream = connector.connect(domain, tcp).await
+                .map_err(|e| NotifyError::Other(format!("IRC TLS handshake failed: {}", e)))?;
+            let (reader, mut writer) = tokio::io::split(tls_stream);
+            let mut reader = BufReader::new(reader);
+            self.irc_session(&mut reader, &mut writer, &msg).await
+        } else {
+            let (reader, mut writer) = tokio::io::split(tcp);
+            let mut reader = BufReader::new(reader);
+            self.irc_session(&mut reader, &mut writer, &msg).await
         }
+    }
+}
 
-        // Register
-        irc_send_line(&mut writer, &format!("NICK {}", self.nick)).await?;
-        irc_send_line(&mut writer, &format!("USER {} 0 * :{}", self.user, self.realname)).await?;
-
-        // Wait for welcome (001) or MOTD end (376/422)
-        irc_wait_for(&mut reader, "001").await?;
-
-        // Join channels and send messages
-        for channel in &self.channels {
-            irc_send_line(&mut writer, &format!("JOIN {}", channel)).await?;
-            // Send message in chunks of 380 bytes (IRC line limit)
-            for chunk in msg.as_bytes().chunks(380) {
-                let chunk_str = String::from_utf8_lossy(chunk);
-                irc_send_line(&mut writer, &format!("PRIVMSG {} :{}", channel, chunk_str)).await?;
+impl Irc {
+    async fn irc_session(
+        &self,
+        reader: &mut (impl AsyncBufReadExt + Unpin),
+        writer: &mut (impl AsyncWriteExt + Unpin),
+        msg: &str,
+    ) -> Result<bool, NotifyError> {
+        if self.auth_mode == IrcAuthMode::Server {
+            if let Some(ref pass) = self.password {
+                irc_send(writer, &format!("PASS {}", pass)).await?;
             }
         }
 
-        // Send to users
+        irc_send(writer, &format!("NICK {}", self.nick)).await?;
+        irc_send(writer, &format!("USER {} 0 * :{}", self.user, self.realname)).await?;
+        irc_wait_for(reader, writer, "001").await?;
+
+        if self.auth_mode == IrcAuthMode::NickServ {
+            if let Some(ref pass) = self.password {
+                irc_send(writer, &format!("PRIVMSG NickServ :IDENTIFY {}", pass)).await?;
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+        }
+
+        for channel in &self.channels {
+            irc_send(writer, &format!("JOIN {}", channel)).await?;
+            for chunk in msg.as_bytes().chunks(380) {
+                let chunk_str = String::from_utf8_lossy(chunk);
+                irc_send(writer, &format!("PRIVMSG {} :{}", channel, chunk_str)).await?;
+            }
+        }
+
         for user in &self.users {
             for chunk in msg.as_bytes().chunks(380) {
                 let chunk_str = String::from_utf8_lossy(chunk);
-                irc_send_line(&mut writer, &format!("PRIVMSG {} :{}", user, chunk_str)).await?;
+                irc_send(writer, &format!("PRIVMSG {} :{}", user, chunk_str)).await?;
             }
         }
 
-        // Quit
-        irc_send_line(&mut writer, "QUIT :Apprise notification sent").await?;
+        irc_send(writer, "QUIT :Apprise notification sent").await?;
         Ok(true)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::parse::ParsedUrl;
+
+    #[test]
+    fn test_valid_urls() {
+        let valid_urls = vec![
+            "irc://irc.freenode.net/channel",
+            "ircs://irc.freenode.net/channel",
+            "irc://irc.freenode.net:6667/channel",
+        ];
+        for url in &valid_urls {
+            let parsed = ParsedUrl::parse(url);
+            assert!(parsed.is_some(), "ParsedUrl::parse failed for: {}", url);
+            let parsed = parsed.unwrap();
+            assert!(
+                Irc::from_url(&parsed).is_some(),
+                "Irc::from_url returned None for valid URL: {}",
+                url,
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let invalid_urls = vec![
+            "irc://",
+        ];
+        for url in &invalid_urls {
+            let result = ParsedUrl::parse(url)
+                .and_then(|p| Irc::from_url(&p));
+            assert!(
+                result.is_none(),
+                "Irc::from_url should return None for: {}",
+                url,
+            );
+        }
     }
 }

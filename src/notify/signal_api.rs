@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use base64::Engine;
 use serde_json::json;
 use crate::error::NotifyError;
 use crate::notify::{build_client, Notify, NotifyContext, ServiceDetails, APP_ID};
@@ -12,7 +13,7 @@ impl SignalApi {
         if targets.is_empty() { return None; }
         Some(Self { host, port: url.port, source, targets, secure: url.schema == "signals", user: url.user.clone(), password: url.password.clone(), verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Signal API", service_url: Some("https://signal.org"), setup_url: None, protocols: vec!["signal", "signals"], description: "Send Signal messages via signal-cli REST API.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Signal API", service_url: Some("https://signal.org"), setup_url: None, protocols: vec!["signal", "signals"], description: "Send Signal messages via signal-cli REST API.", attachment_support: true } }
 }
 #[async_trait]
 impl Notify for SignalApi {
@@ -25,11 +26,36 @@ impl Notify for SignalApi {
         let port_str = self.port.map(|p| format!(":{}", p)).unwrap_or_default();
         let url = format!("{}://{}{}/v2/send", schema, self.host, port_str);
         let msg = if ctx.title.is_empty() { ctx.body.clone() } else { format!("{}\n{}", ctx.title, ctx.body) };
-        let payload = json!({ "message": msg, "number": self.source, "recipients": self.targets });
+        let mut payload = json!({ "message": msg, "number": self.source, "recipients": self.targets });
+        if !ctx.attachments.is_empty() {
+            payload["base64_attachments"] = json!(ctx.attachments.iter().map(|att| {
+                base64::engine::general_purpose::STANDARD.encode(&att.data)
+            }).collect::<Vec<_>>());
+        }
         let client = build_client(self.verify_certificate)?;
         let mut req = client.post(&url).header("User-Agent", APP_ID).json(&payload);
         if let (Some(u), Some(p)) = (&self.user, &self.password) { req = req.basic_auth(u, Some(p)); }
         let resp = req.send().await?;
         if resp.status().is_success() { Ok(true) } else { Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() }) }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "signal://",
+            "signal://:@/",
+            "signal://localhost",
+            "signal://localhost",
+            "signal://localhost/123",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

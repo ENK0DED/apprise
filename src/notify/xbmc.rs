@@ -33,3 +33,58 @@ impl Notify for Xbmc {
         Ok(resp.status().is_success())
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "kodi://localhost",
+            "kodi://192.168.4.1",
+            "kodi://[2001:db8:002a:3256:adfe:05c0:0003:0006]",
+            "kodi://[2001:db8:002a:3256:adfe:05c0:0003:0006]:8282",
+            "kodi://user:pass@localhost",
+            "kodi://localhost:8080",
+            "kodi://user:pass@localhost:8080",
+            "kodis://localhost",
+            "kodis://user:pass@localhost",
+            "kodis://localhost:8080/path/",
+            "kodis://user:password@localhost:8080",
+            "kodi://localhost",
+            "kodi://localhost",
+            "kodis://localhost:443",
+            "kodi://user:pass@localhost:8083",
+            "xbmc://localhost",
+            "xbmc://localhost?duration=14",
+            "xbmc://localhost?duration=invalid",
+            "xbmc://localhost?duration=-1",
+            "xbmc://user:pass@localhost",
+            "xbmc://localhost:8080",
+            "xbmc://user:pass@localhost:8080",
+            "xbmc://user@localhost",
+            "xbmc://localhost",
+            "xbmc://localhost",
+            "xbmc://user:pass@localhost:8083",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "kodi://",
+            "kodis://",
+            "kodi://:@/",
+            "xbmc://",
+            "xbmc://:@/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
+    }
+}

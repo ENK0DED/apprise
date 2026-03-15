@@ -5,7 +5,11 @@ use crate::utils::parse::ParsedUrl;
 pub struct Chanify { token: String, verify_certificate: bool, tags: Vec<String> }
 impl Chanify {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let token = url.host.clone()?;
+        let token = url.host.clone()
+            .filter(|h| !h.is_empty())
+            .or_else(|| url.get("token").map(|s| s.to_string()))?;
+        // Reject tokens with invalid percent-encoding or whitespace-only
+        if token.trim().is_empty() || token.contains('%') { return None; }
         Some(Self { token, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Chanify", service_url: Some("https://chanify.net"), setup_url: None, protocols: vec!["chanify"], description: "Send notifications via Chanify.", attachment_support: false } }
@@ -22,5 +26,35 @@ impl Notify for Chanify {
         let client = build_client(self.verify_certificate)?;
         let resp = client.post(&url).header("User-Agent", APP_ID).form(&params).send().await?;
         if resp.status().is_success() { Ok(true) } else { Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() }) }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "chanify://abc123",
+            "chanify://?token=abc123",
+            "chanify://token",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "chanify://",
+            "chanify://:@/",
+            "chanify://%badtoken%",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

@@ -25,9 +25,30 @@ impl Notify for Sinch {
     async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
         let msg = format!("{}{}", if ctx.title.is_empty() { String::new() } else { format!("{}: ", ctx.title) }, ctx.body);
         let url = format!("https://{}.sms.api.sinch.com/xms/v1/{}/batches", self.region, self.service_plan_id);
-        let payload = json!({ "from": self.from_phone, "to": self.targets, "body": msg });
         let client = build_client(self.verify_certificate)?;
-        let resp = client.post(&url).header("User-Agent", APP_ID).header("Authorization", format!("Bearer {}", self.api_token)).json(&payload).send().await?;
-        if resp.status().is_success() || resp.status().as_u16() == 201 { Ok(true) } else { Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() }) }
+        let mut all_ok = true;
+        for target in &self.targets {
+            let payload = json!({ "from": self.from_phone, "to": [target], "body": msg });
+            let resp = client.post(&url).header("User-Agent", APP_ID).header("Authorization", format!("Bearer {}", self.api_token)).json(&payload).send().await?;
+            if !resp.status().is_success() && resp.status().as_u16() != 201 { all_ok = false; }
+        }
+        Ok(all_ok)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "sinch://",
+            "sinch://:@/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

@@ -3,7 +3,7 @@ use serde_json::json;
 use crate::error::NotifyError;
 use crate::notify::{build_client, Notify, NotifyContext, ServiceDetails, APP_ID};
 use crate::utils::parse::ParsedUrl;
-pub struct Dapnet { user: String, password: String, targets: Vec<String>, txgroups: Vec<String>, verify_certificate: bool, tags: Vec<String> }
+pub struct Dapnet { user: String, password: String, targets: Vec<String>, txgroups: Vec<String>, priority: i32, verify_certificate: bool, tags: Vec<String> }
 impl Dapnet {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let user = url.user.clone()?;
@@ -11,7 +11,8 @@ impl Dapnet {
         let targets = url.path_parts.clone();
         if targets.is_empty() { return None; }
         let txgroups: Vec<String> = url.get("txgroups").map(|s| s.split(',').map(|g| g.trim().to_string()).collect()).unwrap_or_else(|| vec!["dl-all".to_string()]);
-        Some(Self { user, password, targets, txgroups, verify_certificate: url.verify_certificate(), tags: url.tags() })
+        let priority = url.get("priority").and_then(|p| p.parse().ok()).unwrap_or(0);
+        Some(Self { user, password, targets, txgroups, priority, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "DAPNET", service_url: Some("https://hampager.de"), setup_url: None, protocols: vec!["dapnet"], description: "Send pager messages via DAPNET.", attachment_support: false } }
 }
@@ -23,9 +24,38 @@ impl Notify for Dapnet {
     fn tags(&self) -> Vec<String> { self.tags.clone() }
     async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
         let msg = format!("{}{}", if ctx.title.is_empty() { String::new() } else { format!("{}: ", ctx.title) }, ctx.body);
-        let payload = json!({ "text": msg, "callSignNames": self.targets, "transmitterGroupNames": self.txgroups, "emergency": false });
+        let payload = json!({ "text": msg, "callSignNames": self.targets, "transmitterGroupNames": self.txgroups, "emergency": self.priority >= 1 });
         let client = build_client(self.verify_certificate)?;
         let resp = client.post("http://www.hampager.de:8080/calls").header("User-Agent", APP_ID).basic_auth(&self.user, Some(&self.password)).json(&payload).send().await?;
         if resp.status().is_success() || resp.status().as_u16() == 201 { Ok(true) } else { Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() }) }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "dapnet://user:pass@DF1ABC-1/DF1ABC/DF1ABC-15",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "dapnet://",
+            "dapnet://:@/",
+            "dapnet://user:pass",
+            "dapnet://user@host",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

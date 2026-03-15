@@ -33,6 +33,8 @@ impl Notify for Twilio {
     fn service_name(&self) -> &str { "Twilio" }
     fn details(&self) -> ServiceDetails { Self::static_details() }
     fn tags(&self) -> Vec<String> { self.tags.clone() }
+    fn body_maxlen(&self) -> usize { 160 }
+    fn title_maxlen(&self) -> usize { 0 }
 
     async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
         let url = format!("https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json", self.account_sid);
@@ -45,5 +47,22 @@ impl Notify for Twilio {
             if !resp.status().is_success() { all_ok = false; }
         }
         Ok(all_ok)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "twilio://",
+            "twilio://:@/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

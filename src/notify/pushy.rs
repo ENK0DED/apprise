@@ -7,8 +7,11 @@ pub struct Pushy { apikey: String, targets: Vec<String>, verify_certificate: boo
 impl Pushy {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let apikey = url.host.clone()?;
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        if apikey.is_empty() { return None; }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         Some(Self { apikey, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Pushy", service_url: Some("https://pushy.me"), setup_url: None, protocols: vec!["pushy"], description: "Send push notifications via Pushy.", attachment_support: false } }
@@ -25,5 +28,44 @@ impl Notify for Pushy {
         let client = build_client(self.verify_certificate)?;
         let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
         if resp.status().is_success() { Ok(true) } else { Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() }) }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "pushy://apikey",
+            "pushy://apikey/topic",
+            "pushy://apikey/topic",
+            "pushy://apikey/%20(",
+            "pushy://apikey/@device",
+            "pushy://apikey/topic",
+            "pushy://apikey/device/?sound=alarm.aiff",
+            "pushy://apikey/device/?badge=100",
+            "pushy://apikey/device/?badge=invalid",
+            "pushy://apikey/device/?badge=-12",
+            "pushy://_/@device/#topic?key=apikey",
+            "pushy://apikey/?to=@device",
+            "pushy://_/@device/#topic?key=apikey",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "pushy://",
+            "pushy://:@/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

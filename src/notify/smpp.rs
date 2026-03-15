@@ -142,3 +142,27 @@ impl Notify for Smpp {
         Ok(all_ok)
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "smpp://",
+            "smpp:///",
+            "smpp://@/",
+            "smpp://user@/",
+            "smpp://user:pass/",
+            "smpp://user:pass@/",
+            "smpp://user@hostname",
+            "smpp://user:pass@host:/",
+            "smpp://user:pass@host:2775/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
+    }
+}

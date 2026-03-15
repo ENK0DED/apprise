@@ -17,13 +17,56 @@ pub struct Reddit {
 impl Reddit {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         // reddit://app_id:app_secret@user:password/subreddit1/subreddit2
-        let app_id = url.user.clone()?;
-        let app_secret = url.password.clone()?;
-        let host_parts: Vec<&str> = url.host.as_deref()?.splitn(2, ':').collect();
-        let user = host_parts.get(0)?.to_string();
-        let password = host_parts.get(1).unwrap_or(&"").to_string();
-        let subreddits = url.path_parts.clone();
+        // or reddit://?user=u&pass=p&app_id=id&app_secret=s&to=sub1,sub2
+        // If user@host format was used, the host must be valid (non-empty)
+        let has_userinfo = url.raw.contains('@') && url.user.is_some();
+        if has_userinfo {
+            if let Some(ref h) = url.host {
+                if h.trim().is_empty() { return None; }
+            } else {
+                return None;
+            }
+        }
+
+        let app_id = url.user.clone()
+            .or_else(|| url.get("app_id").map(|s| s.to_string()))?;
+        // Validate app_id (reject invalid percent-encoding)
+        if app_id.contains('%') { return None; }
+        let app_secret = url.password.clone()
+            .or_else(|| url.get("app_secret").map(|s| s.to_string()))?;
+
+        let (user, password) = if let Some(ref h) = url.host {
+            // Reject invalid percent-encoding in host
+            if h.contains('%') {
+                let decoded = urlencoding::decode(h).unwrap_or_default().into_owned();
+                if decoded.contains('%') || decoded == *h { return None; }
+            }
+            if h.contains(':') {
+                let parts: Vec<&str> = h.splitn(2, ':').collect();
+                (parts[0].to_string(), parts.get(1).unwrap_or(&"").to_string())
+            } else {
+                let u = url.get("user").map(|s| s.to_string()).unwrap_or_else(|| h.clone());
+                let p = url.get("pass").map(|s| s.to_string()).unwrap_or_default();
+                (u, p)
+            }
+        } else {
+            let u = url.get("user").map(|s| s.to_string())?;
+            let p = url.get("pass").map(|s| s.to_string()).unwrap_or_default();
+            (u, p)
+        };
+
+        let mut subreddits = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            subreddits.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         if subreddits.is_empty() { return None; }
+        // Validate kind if provided
+        if let Some(kind) = url.get("kind") {
+            match kind.to_lowercase().as_str() {
+                "auto" | "self" | "link" | "" => {}
+                _ => return None,
+            }
+        }
         Some(Self { app_id, app_secret, user, password, subreddits, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails {
@@ -54,5 +97,45 @@ impl Notify for Reddit {
             if !resp.status().is_success() { all_ok = false; }
         }
         Ok(all_ok)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "reddit://user:password@app-id/app-secret/apprise",
+            "reddit://user:password@app-id/app-secret",
+            "reddit://user:password@app-id/app-secret/apprise",
+            "reddit://user:password@app-id/app-secret/apprise",
+            "reddit://user:password@app-id/app-secret/apprise/subreddit2",
+            "reddit://user:pass@id/secret/sub/?ad=yes&nsfw=yes&replies=no&resubmit=yes&spoiler=yes&kind=self",
+            "reddit://?user=l2g&pass=pass&app_secret=abc123&app_id=54321&to=sub1,sub2",
+            "reddit://user:pass@id/secret/sub7/sub6/sub5/?flair_id=wonder&flair_text=not%20for%20you",
+            "reddit://user:password@app-id/app-secret/apprise",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "reddit://",
+            "reddit://:@/",
+            "reddit://user@app_id/app_secret/",
+            "reddit://user:password@app_id/",
+            "reddit://user:password@app%id/appsecret/apprise",
+            "reddit://user:password@app%id/app_secret/apprise",
+            "reddit://user:password@app-id/app-secret/apprise?kind=invalid",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

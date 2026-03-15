@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use base64::Engine;
 use serde_json::json;
 use crate::error::NotifyError;
 use crate::notify::{build_client, Notify, NotifyContext, ServiceDetails, APP_ID};
@@ -9,11 +10,26 @@ impl SmsEagle {
         let host = url.host.clone()?;
         let user = url.user.clone().unwrap_or_else(|| "admin".to_string());
         let password = url.password.clone().unwrap_or_default();
-        let targets = url.path_parts.clone();
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
+        // Reject invalid targets (@ prefix with no name)
+        targets.retain(|t| {
+            let stripped = t.trim_start_matches('@');
+            !stripped.is_empty()
+        });
         if targets.is_empty() { return None; }
+        // Validate priority if provided
+        if let Some(priority) = url.get("priority") {
+            match priority.to_lowercase().as_str() {
+                "0" | "1" | "2" | "3" | "low" | "normal" | "high" | "" => {}
+                _ => return None,
+            }
+        }
         Some(Self { host, port: url.port, user, password, targets, secure: url.schema == "smseagles", verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "SMSEagle", service_url: Some("https://smseagle.eu"), setup_url: None, protocols: vec!["smseagle", "smseagles"], description: "Send SMS via SMSEagle hardware gateway.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "SMSEagle", service_url: Some("https://smseagle.eu"), setup_url: None, protocols: vec!["smseagle", "smseagles"], description: "Send SMS via SMSEagle hardware gateway.", attachment_support: true } }
 }
 #[async_trait]
 impl Notify for SmsEagle {
@@ -28,11 +44,54 @@ impl Notify for SmsEagle {
         let client = build_client(self.verify_certificate)?;
         let mut all_ok = true;
         for target in &self.targets {
-            let payload = json!([{"method": "sms.send_sms", "params": { "login": self.user, "pass": self.password, "to": target, "message": msg }}]);
+            let mut params = json!({ "login": self.user, "pass": self.password, "to": target, "message": msg });
+            if !ctx.attachments.is_empty() {
+                params["attachments"] = json!(ctx.attachments.iter().map(|att| json!({
+                    "content_type": att.mime_type,
+                    "content": base64::engine::general_purpose::STANDARD.encode(&att.data),
+                })).collect::<Vec<_>>());
+            }
+            let payload = json!([{"method": "sms.send_sms", "params": params}]);
             let url = format!("{}://{}{}/index.php/jsonrpc/sms", schema, self.host, port_str);
             let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
             if !resp.status().is_success() { all_ok = false; }
         }
         Ok(all_ok)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "smseagle://tokenb@localhost/%20/%20/",
+            "smseagle://token@localhost/@user/?priority=high",
+            "smseagle://token@localhost/@user/?priority=1",
+            "smseagle://token@localhost:8082/#abcd/",
+            "smseagle://token@localhost:8082/@abcd/",
+            "smseagles://token@localhost:8081/contact/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "smseagle://",
+            "smseagle://:@/",
+            "smseagle://localhost",
+            "smseagle://%20@localhost",
+            "smseagle://token@localhost/@user/?priority=invalid",
+            "smseagle://token@localhost/@user/?priority=25",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

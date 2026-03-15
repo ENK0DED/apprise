@@ -33,3 +33,27 @@ impl Notify for Sfr {
         Ok(all_ok)
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "sfr://",
+            "sfr://:@/",
+            "sfr://:service_password",
+            "sfr://testing:serv@ice_password",
+            "sfr://testing:service_password@/5555555555",
+            "sfr://testing:service_password@12345/",
+            "sfr://:service_password@space_id/targets?media=TEST",
+            "sfr://service_id:",
+            "sfr://service_id:@",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
+    }
+}

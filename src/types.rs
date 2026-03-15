@@ -21,13 +21,13 @@ impl NotifyType {
         }
     }
 
-    /// Return a color hex code (for services that support color)
+    /// Return a color hex code (matching Python's AppriseAsset html_notify_map)
     pub fn color(&self) -> u32 {
         match self {
-            Self::Info => 0x3498DB,
-            Self::Success => 0x2ECC71,
-            Self::Warning => 0xE67E22,
-            Self::Failure => 0xE74C3C,
+            Self::Info => 0x3AA3E3,
+            Self::Success => 0x3AA337,
+            Self::Warning => 0xCACF29,
+            Self::Failure => 0xA32037,
         }
     }
 

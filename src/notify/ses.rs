@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use base64::Engine;
 use crate::error::NotifyError;
 use crate::notify::{Notify, NotifyContext, ServiceDetails, APP_ID};
 use crate::utils::aws::sigv4;
@@ -7,17 +8,43 @@ use crate::utils::parse::ParsedUrl;
 pub struct Ses { access_key: String, secret_key: String, region: String, from: String, targets: Vec<String>, tags: Vec<String> }
 impl Ses {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let access_key = url.user.clone()?;
-        let secret_key = url.password.clone()?;
-        let region = url.host.clone().unwrap_or_else(|| "us-east-1".to_string());
-        let from = url.get("from").unwrap_or("apprise@example.com").to_string();
-        let targets: Vec<String> = url.path_parts.iter()
-            .map(|s| if s.contains('@') { s.clone() } else { format!("{}@example.com", s) })
+        // ses://user@domain/access_key/secret_key/region
+        // or ses://access_key:secret_key@region/to@email
+        let (access_key, secret_key, region, from) = if url.password.is_some() {
+            let ak = url.user.clone()?;
+            let sk = url.password.clone()?;
+            let region = url.host.clone().unwrap_or_else(|| "us-east-1".to_string());
+            let from = url.get("from").unwrap_or("apprise@example.com").to_string();
+            (ak, sk, region, from)
+        } else if let Some(ref user) = url.user {
+            // ses://user@domain/access_key/secret_key/region
+            let from = format!("{}@{}", user, url.host.as_deref().unwrap_or("example.com"));
+            let access_key = url.path_parts.get(0)?.clone();
+            let secret_key = url.path_parts.get(1)?.clone();
+            // Region must be a valid AWS region (e.g., us-east-1, eu-west-2)
+            // It cannot contain '@' (that would be an email address target)
+            let region = url.path_parts.get(2).cloned()
+                .filter(|r| !r.contains('@'))
+                .or_else(|| url.get("region").map(|s| s.to_string()))
+                .filter(|r| !r.is_empty())?;
+            (access_key, secret_key, region, from)
+        } else {
+            return None;
+        };
+        let mut targets: Vec<String> = url.path_parts.iter()
+            .filter(|s| s.contains('@'))
+            .cloned()
             .collect();
-        if targets.is_empty() { return None; }
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
+        // Validate reply address if provided
+        if let Some(reply) = url.get("reply") {
+            if !reply.contains('@') { return None; }
+        }
         Some(Self { access_key, secret_key, region, from, targets, tags: url.tags() })
     }
-    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "AWS SES", service_url: Some("https://aws.amazon.com/ses/"), setup_url: None, protocols: vec!["ses"], description: "Send email via AWS SES.", attachment_support: false } }
+    pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "AWS SES", service_url: Some("https://aws.amazon.com/ses/"), setup_url: None, protocols: vec!["ses"], description: "Send email via AWS SES.", attachment_support: true } }
 }
 #[async_trait]
 impl Notify for Ses {
@@ -28,18 +55,105 @@ impl Notify for Ses {
     async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
         let endpoint = format!("https://email.{}.amazonaws.com/", self.region);
         let content_type = "application/x-www-form-urlencoded";
-        let mut body = format!(
-            "Action=SendEmail&Source={}&Message.Subject.Data={}&Message.Body.Text.Data={}",
-            urlencoding::encode(&self.from),
-            urlencoding::encode(&ctx.title),
-            urlencoding::encode(&ctx.body),
-        );
-        for (i, target) in self.targets.iter().enumerate() {
-            body.push_str(&format!("&Destination.ToAddresses.member.{}={}", i + 1, urlencoding::encode(target)));
-        }
+
+        let body = if !ctx.attachments.is_empty() {
+            // Build a raw MIME message with attachments
+            let boundary = format!("----=_Part_{}", chrono::Utc::now().timestamp_millis());
+            let mut mime_msg = String::new();
+            // Headers
+            mime_msg.push_str(&format!("From: {}\r\n", self.from));
+            mime_msg.push_str(&format!("To: {}\r\n", self.targets.join(", ")));
+            mime_msg.push_str(&format!("Subject: {}\r\n", ctx.title));
+            mime_msg.push_str("MIME-Version: 1.0\r\n");
+            mime_msg.push_str(&format!("Content-Type: multipart/mixed; boundary=\"{}\"\r\n", boundary));
+            mime_msg.push_str("\r\n");
+            // Text body part
+            mime_msg.push_str(&format!("--{}\r\n", boundary));
+            mime_msg.push_str("Content-Type: text/plain; charset=UTF-8\r\n");
+            mime_msg.push_str("Content-Transfer-Encoding: 7bit\r\n");
+            mime_msg.push_str("\r\n");
+            mime_msg.push_str(&ctx.body);
+            mime_msg.push_str("\r\n");
+            // Attachment parts
+            for att in &ctx.attachments {
+                mime_msg.push_str(&format!("--{}\r\n", boundary));
+                mime_msg.push_str(&format!("Content-Type: {}; name=\"{}\"\r\n", att.mime_type, att.name));
+                mime_msg.push_str("Content-Transfer-Encoding: base64\r\n");
+                mime_msg.push_str(&format!("Content-Disposition: attachment; filename=\"{}\"\r\n", att.name));
+                mime_msg.push_str("\r\n");
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&att.data);
+                // Write base64 in 76-char lines per MIME spec
+                for chunk in b64.as_bytes().chunks(76) {
+                    mime_msg.push_str(std::str::from_utf8(chunk).unwrap_or_default());
+                    mime_msg.push_str("\r\n");
+                }
+            }
+            mime_msg.push_str(&format!("--{}--\r\n", boundary));
+
+            let raw_b64 = base64::engine::general_purpose::STANDARD.encode(mime_msg.as_bytes());
+            let mut body = format!(
+                "Action=SendRawEmail&Source={}&RawMessage.Data={}",
+                urlencoding::encode(&self.from),
+                urlencoding::encode(&raw_b64),
+            );
+            for (i, target) in self.targets.iter().enumerate() {
+                body.push_str(&format!("&Destinations.member.{}={}", i + 1, urlencoding::encode(target)));
+            }
+            body
+        } else {
+            let mut body = format!(
+                "Action=SendEmail&Source={}&Message.Subject.Data={}&Message.Body.Text.Data={}",
+                urlencoding::encode(&self.from),
+                urlencoding::encode(&ctx.title),
+                urlencoding::encode(&ctx.body),
+            );
+            for (i, target) in self.targets.iter().enumerate() {
+                body.push_str(&format!("&Destination.ToAddresses.member.{}={}", i + 1, urlencoding::encode(target)));
+            }
+            body
+        };
+
         let (auth, datetime) = sigv4("POST", &endpoint, body.as_bytes(), &self.access_key, &self.secret_key, &self.region, "ses", content_type);
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().map_err(NotifyError::Http)?;
         let resp = client.post(&endpoint).header("User-Agent", APP_ID).header("Content-Type", content_type).header("X-Amz-Date", &datetime).header("Authorization", &auth).body(body).send().await?;
         if resp.status().is_success() { Ok(true) } else { Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() }) }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcevi7FQ/us-west-2",
+            "ses://user@example.com/T1JJ3TD4JD/TIiajkdnlazk7FQ/us-west-2/user2@example.ca/user3@example.eu",
+            "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiajkdnlaevi7FQ/us-east-1?to=user2@example.ca",
+            "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiacevi7FQ/us-west-2/?name=From%20Name&to=user2@example.ca,invalid-email",
+            "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiacevi7FQ/us-west-2/?format=text",
+            "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiacevi7FQ/us-west-2/?to=invalid-email",
+            "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiajkdnlavi7FQ/us-west-2/user2@example.com",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "ses://",
+            "ses://:@/",
+            "ses://user@example.com/T1JJ3T3L2",
+            "ses://user@example.com/T1JJ3TD4JD/TIiajkdnlazk7FQ/",
+            "ses://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcevi7FQ/us-west-2",
+            "ses://user@example.com/T1JJ3TD4JD/TIiajkdnlazk7FQ/user2@example.com",
+            "ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcevi7FQ/us-west-2?reply=invalid-email",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

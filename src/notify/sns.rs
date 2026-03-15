@@ -7,11 +7,36 @@ use crate::utils::parse::ParsedUrl;
 pub struct Sns { access_key: String, secret_key: String, region: String, targets: Vec<String>, tags: Vec<String> }
 impl Sns {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let access_key = url.user.clone()?;
-        let secret_key = url.password.clone()?;
-        let region = url.host.clone().unwrap_or_else(|| "us-east-1".to_string());
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        // sns://access_key:secret_key@region/target
+        // or sns://access_key_id/secret_key/region/target
+        let (access_key, secret_key, region, targets) = if url.password.is_some() {
+            let ak = url.user.clone()?;
+            let sk = url.password.clone()?;
+            let region = url.host.clone().unwrap_or_else(|| "us-east-1".to_string());
+            let targets = url.path_parts.clone();
+            (ak, sk, region, targets)
+        } else if url.get("access").is_some() || url.get("secret").is_some() {
+            // sns://?access=KEY&secret=SECRET&region=REGION&to=TARGET
+            let ak = url.get("access").map(|s| s.to_string())?;
+            let sk = url.get("secret").map(|s| s.to_string())?;
+            let region = url.get("region").unwrap_or("us-east-1").to_string();
+            let mut tgts = Vec::new();
+            if let Some(to) = url.get("to") {
+                tgts.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+            }
+            (ak, sk, region, tgts)
+        } else {
+            // All from host + path: sns://KEY/SECRET/REGION/TARGET...
+            let ak = url.host.clone()?;
+            if url.path_parts.len() < 2 { return None; }
+            let sk = url.path_parts.get(0)?.clone();
+            let region = url.path_parts.get(1)?.clone();
+            let mut targets: Vec<String> = url.path_parts.get(2..).unwrap_or(&[]).to_vec();
+            if let Some(to) = url.get("to") {
+                targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+            }
+            (ak, sk, region, targets)
+        };
         Some(Self { access_key, secret_key, region, targets, tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "AWS SNS", service_url: Some("https://aws.amazon.com/sns/"), setup_url: None, protocols: vec!["sns"], description: "Send notifications via AWS SNS.", attachment_support: false } }
@@ -39,5 +64,38 @@ impl Notify for Sns {
             if !resp.status().is_success() { all_ok = false; }
         }
         Ok(all_ok)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "sns://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcevi7FQ/us-west-2/12223334444",
+            "sns://?access=T1JJ3T3L2&secret=A1BRTD4JD/TIiajkdnlazkcevi7FQ&region=us-west-2&to=12223334444",
+            "sns://T1JJ3TD4JD/TIiajkdnlazk7FQ/us-west-2/12223334444/12223334445",
+            "sns://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/us-east-1?to=12223334444",
+            "sns://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcevi7FQ/us-west-2/15556667777",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "sns://",
+            "sns://:@/",
+            "sns://T1JJ3T3L2",
+            "sns://T1JJ3TD4JD/TIiajkdnlazk7FQ/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

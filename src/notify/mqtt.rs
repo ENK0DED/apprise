@@ -40,3 +40,46 @@ impl Notify for Mqtt {
         Ok(true)
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::parse::ParsedUrl;
+
+    #[test]
+    fn test_valid_urls() {
+        let valid_urls = vec![
+            "mqtt://localhost",
+            "mqtt://localhost/topic",
+            "mqtts://localhost/topic",
+            "mqtt://user:pass@localhost/topic",
+        ];
+        for url in &valid_urls {
+            let parsed = ParsedUrl::parse(url);
+            assert!(parsed.is_some(), "ParsedUrl::parse failed for: {}", url);
+            let parsed = parsed.unwrap();
+            assert!(
+                Mqtt::from_url(&parsed).is_some(),
+                "Mqtt::from_url returned None for valid URL: {}",
+                url,
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let invalid_urls = vec![
+            "mqtt://",
+        ];
+        for url in &invalid_urls {
+            let result = ParsedUrl::parse(url)
+                .and_then(|p| Mqtt::from_url(&p));
+            assert!(
+                result.is_none(),
+                "Mqtt::from_url should return None for: {}",
+                url,
+            );
+        }
+    }
+}

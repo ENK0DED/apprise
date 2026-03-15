@@ -8,6 +8,15 @@ pub struct Workflows { workflow_url: String, verify_certificate: bool, tags: Vec
 impl Workflows {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let host = url.host.clone()?;
+        if host.is_empty() { return None; }
+        // Need at least 2 path parts (workflow_id + signature) or query params with id/signature
+        let has_query_workflow = url.get("id").is_some() || url.get("workflow").is_some();
+        let has_query_sig = url.get("signature").is_some();
+        if url.path_parts.len() < 2 && !has_query_workflow && !has_query_sig { return None; }
+        // Validate path parts — reject special chars
+        for pp in &url.path_parts {
+            if pp.contains('^') || pp.contains('(') || pp.contains(')') { return None; }
+        }
         let path = if url.path.is_empty() { String::new() } else { format!("/{}", url.path) };
         let workflow_url = format!("https://{}{}", host, path);
         Some(Self { workflow_url, verify_certificate: url.verify_certificate(), tags: url.tags() })
@@ -25,5 +34,45 @@ impl Notify for Workflows {
         let payload = json!({ "title": ctx.title, "text": ctx.body, "type": ctx.notify_type.to_string() });
         let resp = client.post(&self.workflow_url).header("User-Agent", APP_ID).json(&payload).send().await?;
         Ok(resp.status().is_success())
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "workflow://host:443/workflow1a/signature/?image=no",
+            "workflows://host:443/workflow1b/signature/",
+            "workflows://host:443/signature/?id=workflow1c",
+            "workflows://host:443/signature/?workflow=workflow1d&wrap=yes",
+            "workflows://host:443/signature/?workflow=workflow1d&wrap=no",
+            "workflows://host:443/workflow1e/signature/?api-version=2024-01-01",
+            "workflows://host:443/workflow1b/signature/?ver=2016-06-01",
+            "workflows://host:443/?id=workflow1b&signature=signature",
+            "workflows://host:443/workflow1e/signature/?powerautomate=yes",
+            "workflows://host:443/workflow1e/signature/?pa=yes&ver=1995-01-01",
+            "workflows://host:443/workflow1e/signature/?pa=yes",
+            "workflow://host:443/workflow4/signature/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "workflow://",
+            "workflow://:@/",
+            "workflow://host/workflow",
+            "workflow://host:443/^(/signature",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

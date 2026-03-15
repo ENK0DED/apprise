@@ -7,8 +7,17 @@ pub struct Nextcloud { host: String, port: Option<u16>, targets: Vec<String>, se
 impl Nextcloud {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
         let host = url.host.clone()?;
-        let targets = url.path_parts.clone();
-        if targets.is_empty() { return None; }
+        let mut targets = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
+        // Validate version if provided
+        if let Some(ver) = url.get("version") {
+            match ver.parse::<u32>() {
+                Ok(v) if v >= 1 => {}
+                _ => return None,
+            }
+        }
         Some(Self { host, port: url.port, targets, secure: url.schema == "nclouds", user: url.user.clone(), password: url.password.clone(), verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "Nextcloud", service_url: Some("https://nextcloud.com"), setup_url: None, protocols: vec!["ncloud", "nclouds"], description: "Send Nextcloud notifications.", attachment_support: false } }
@@ -33,5 +42,51 @@ impl Notify for Nextcloud {
             if !resp.status().is_success() { all_ok = false; }
         }
         Ok(all_ok)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "ncloud://localhost",
+            "ncloud://localhost/admin",
+            "ncloud://user@localhost/admin",
+            "ncloud://user@localhost?to=user1,user2",
+            "ncloud://user@localhost?to=user1,user2&version=20",
+            "ncloud://user@localhost?to=user1,user2&version=21",
+            "ncloud://user@localhost?to=user1&version=20&url_prefix=/abcd",
+            "ncloud://user@localhost?to=user1&version=21&url_prefix=/abcd",
+            "ncloud://user:pass@localhost/user1/user2",
+            "ncloud://user:pass@localhost/#group1/#group2/#group1",
+            "ncloud://user:pass@localhost:8080/admin",
+            "nclouds://user:pass@localhost/admin",
+            "nclouds://user:pass@localhost:8080/admin/",
+            "nclouds://user:pass@localhost:8080/#group/",
+            "ncloud://localhost:8080/admin?+HeaderKey=HeaderValue",
+            "ncloud://user:pass@localhost:8083/user1/user2/user3",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "ncloud://:@/",
+            "ncloud://",
+            "nclouds://",
+            "ncloud://user@localhost?to=user1,user2&version=invalid",
+            "ncloud://user@localhost?to=user1,user2&version=0",
+            "ncloud://user@localhost?to=user1,user2&version=-23",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

@@ -191,7 +191,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
     reg!(discord::Discord::from_url, "discord");
     reg!(dot::Dot::from_url, "dot");
     reg!(emby::Emby::from_url, "emby", "embys");
-    reg!(enigma2::Enigma2::from_url, "enigma2");
+    reg!(enigma2::Enigma2::from_url, "enigma2", "enigma2s");
     reg!(fcm::Fcm::from_url, "fcm");
     reg!(feishu::FeiShu::from_url, "feishu");
     reg!(flock::Flock::from_url, "flock");
@@ -308,6 +308,66 @@ fn build_registry() -> HashMap<String, FactoryFn> {
 /// Instantiate a notifier from a URL string
 pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
     let parsed = ParsedUrl::parse(url)?;
-    let factory = registry().get(&parsed.schema)?;
-    factory(&parsed)
+
+    // Direct schema match
+    if let Some(factory) = registry().get(&parsed.schema) {
+        if let Some(notifier) = factory(&parsed) {
+            return Some(notifier);
+        }
+    }
+
+    // For https:// and http:// URLs, try to match by hostname to known services
+    if parsed.schema == "https" || parsed.schema == "http" {
+        if let Some(ref host) = parsed.host {
+            let host_lower = host.to_lowercase();
+            let reg = registry();
+
+            // Host-based service matching
+            let host_patterns: &[(&str, &str)] = &[
+                ("ntfy.sh", "ntfy"),
+                ("chat.googleapis.com", "gchat"),
+                ("alert.victorops.com", "splunk"),
+                ("api.spike.sh", "spike"),
+                ("www.pushplus.plus", "pushplus"),
+                ("pushplus.plus", "pushplus"),
+                ("qmsg.zendee.cn", "qq"),
+                ("push.spug.cc", "spugpush"),
+                ("push.spug.dev", "spugpush"),
+                ("qyapi.weixin.qq.com", "wecombot"),
+                ("n.tkte.ch", "notifico"),
+                ("api.46elks.com", "46elks"),
+                ("maker.ifttt.com", "ifttt"),
+            ];
+
+            for (pattern, schema_key) in host_patterns {
+                if host_lower == *pattern || host_lower.ends_with(&format!(".{}", pattern)) {
+                    if let Some(factory) = reg.get(*schema_key) {
+                        if let Some(notifier) = factory(&parsed) {
+                            return Some(notifier);
+                        }
+                    }
+                }
+            }
+
+            // Ryver: *.ryver.com
+            if host_lower.ends_with(".ryver.com") {
+                if let Some(factory) = reg.get("ryver") {
+                    if let Some(notifier) = factory(&parsed) {
+                        return Some(notifier);
+                    }
+                }
+            }
+
+            // Mattermost: URLs containing /hooks/ in the path
+            if parsed.path.starts_with("hooks/") || parsed.path.contains("/hooks/") || parsed.path.contains("hooks") {
+                if let Some(factory) = reg.get("mmost") {
+                    if let Some(notifier) = factory(&parsed) {
+                        return Some(notifier);
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }

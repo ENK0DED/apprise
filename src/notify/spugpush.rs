@@ -7,7 +7,15 @@ use crate::utils::parse::ParsedUrl;
 pub struct SpugPush { token: String, verify_certificate: bool, tags: Vec<String> }
 impl SpugPush {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let token = url.host.clone()?;
+        let token = url.get("token").map(|s| s.to_string())
+            .or_else(|| {
+                if url.schema == "https" || url.schema == "http" {
+                    url.path_parts.last().cloned()
+                } else {
+                    url.host.clone().filter(|h| !h.is_empty())
+                }
+            })?;
+        if token.contains('!') || token.contains('%') || token.trim().is_empty() { return None; }
         Some(Self { token, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
     pub fn static_details() -> ServiceDetails { ServiceDetails { service_name: "SpugPush", service_url: Some("https://spug.cc"), setup_url: None, protocols: vec!["spugpush"], description: "Send push via Spug.", attachment_support: false } }
@@ -24,5 +32,35 @@ impl Notify for SpugPush {
         let url = format!("https://push.spug.cc/send/{}", self.token);
         let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
         Ok(resp.status().is_success())
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "spugpush://abc123def456ghi789jkl012mno345pq",
+            "spugpush://?token=abc123def456ghi789jkl012mno345pq",
+            "https://push.spug.dev/send/abc123def456ghi789jkl012mno345pq",
+            "spugpush://ffffffffffffffffffffffffffffffff",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "spugpush://",
+            "spugpush://invalid!",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

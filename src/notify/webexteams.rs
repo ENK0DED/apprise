@@ -28,11 +28,32 @@ impl Notify for WebexTeams {
     fn tags(&self) -> Vec<String> { self.tags.clone() }
 
     async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
-        let text = if ctx.title.is_empty() { ctx.body.clone() } else { format!("**{}**\n{}", ctx.title, ctx.body) };
-        let payload = json!({ "markdown": text });
+        // Python sends body only (no title), and chooses text vs markdown based on format
+        let payload = if ctx.body_format == crate::types::NotifyFormat::Text {
+            json!({ "text": ctx.body })
+        } else {
+            json!({ "markdown": ctx.body })
+        };
         let client = build_client(self.verify_certificate)?;
         let url = format!("https://api.ciscospark.com/v1/webhooks/incoming/{}", self.token);
         let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
         if resp.status().is_success() { Ok(true) } else { Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() }) }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "wxteams://",
+            "wxteams://:@/",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }

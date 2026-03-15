@@ -20,14 +20,31 @@ pub struct Vapid {
 
 impl Vapid {
     pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-        let subscriber = url.user.clone().or_else(|| url.host.clone())?;
-        let subscriber = if subscriber.contains('@') {
-            format!("mailto:{}", subscriber)
+        // vapid://user@example.com/endpoint or vapid://email/endpoint
+        let subscriber = if let Some(ref user) = url.user {
+            if let Some(ref host) = url.host {
+                // user@host format -> email
+                format!("mailto:{}@{}", user, host)
+            } else {
+                user.clone()
+            }
+        } else if let Some(ref host) = url.host {
+            if host.contains('@') {
+                format!("mailto:{}", host)
+            } else {
+                host.clone()
+            }
         } else {
-            subscriber
+            return None;
         };
-        let endpoints = url.path_parts.clone();
-        if endpoints.is_empty() { return None; }
+        // Subscriber must be a valid email (mailto:) or URL
+        if !subscriber.contains('@') && !subscriber.starts_with("http") {
+            return None;
+        }
+        let mut endpoints = url.path_parts.clone();
+        if let Some(to) = url.get("to") {
+            endpoints.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
         Some(Self { subscriber, endpoints, verify_certificate: url.verify_certificate(), tags: url.tags() })
     }
 
@@ -74,5 +91,36 @@ impl Notify for Vapid {
             if !resp.status().is_success() { all_ok = false; }
         }
         Ok(all_ok)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::notify::registry::from_url;
+
+    #[test]
+    fn test_valid_urls() {
+        let urls = vec![
+            "vapid://user@example.com",
+            "vapid://user@example.com?keyfile=invalid&subfile=invalid",
+            "vapid://user@example.com/newuser@example.com",
+            "vapid://user@example.au/newuser@example.au",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_some(), "Should parse: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let urls = vec![
+            "vapid://",
+            "vapid://:@/",
+            "vapid://invalid-subscriber",
+        ];
+        for url in &urls {
+            assert!(from_url(url).is_none(), "Should not parse: {}", url);
+        }
     }
 }
