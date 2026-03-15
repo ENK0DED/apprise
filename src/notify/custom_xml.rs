@@ -133,4 +133,112 @@ mod tests {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
     }
+
+    use crate::notify::{Notify, NotifyContext, Attachment};
+    use crate::types::{NotifyType, NotifyFormat};
+    use crate::asset::AppriseAsset;
+    use wiremock::{MockServer, Mock, ResponseTemplate};
+    use wiremock::matchers::{method, path, header};
+
+    fn make_ctx(body: &str, title: &str) -> NotifyContext {
+        NotifyContext {
+            body: body.to_string(),
+            title: title.to_string(),
+            notify_type: NotifyType::Info,
+            body_format: NotifyFormat::Text,
+            attachments: vec![],
+            interpret_escapes: false,
+            interpret_emojis: false,
+            tags: vec![],
+            asset: AppriseAsset::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_xml_basic_post() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(header("Content-Type", "application/xml"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("xml://localhost:{}", server.address().port());
+        let svc = from_url(&url).unwrap();
+        let ctx = make_ctx("test body", "test title");
+        let result = svc.send(&ctx).await.unwrap();
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_xml_get_method() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("xml://localhost:{}?method=GET", server.address().port());
+        let svc = from_url(&url).unwrap();
+        let ctx = make_ctx("body", "title");
+        let result = svc.send(&ctx).await.unwrap();
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_xml_custom_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/notify"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("xml://localhost:{}/api/notify", server.address().port());
+        let svc = from_url(&url).unwrap();
+        let ctx = make_ctx("body", "title");
+        let result = svc.send(&ctx).await.unwrap();
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_xml_http_500_returns_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("xml://localhost:{}", server.address().port());
+        let svc = from_url(&url).unwrap();
+        let ctx = make_ctx("body", "title");
+        let result = svc.send(&ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_xml_with_attachments_base64() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("xml://localhost:{}", server.address().port());
+        let svc = from_url(&url).unwrap();
+        let mut ctx = make_ctx("body", "title");
+        ctx.attachments.push(Attachment {
+            name: "test.txt".to_string(),
+            data: b"hello world".to_vec(),
+            mime_type: "text/plain".to_string(),
+        });
+        let result = svc.send(&ctx).await.unwrap();
+        assert!(result);
+    }
 }

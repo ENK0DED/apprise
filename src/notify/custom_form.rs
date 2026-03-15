@@ -129,4 +129,129 @@ mod tests {
             assert!(from_url(url).is_none(), "Should not parse: {}", url);
         }
     }
+
+    use crate::notify::{Notify, NotifyContext};
+    use crate::types::{NotifyType, NotifyFormat};
+    use crate::asset::AppriseAsset;
+    use wiremock::{MockServer, Mock, ResponseTemplate};
+    use wiremock::matchers::{method, path};
+
+    fn make_ctx(body: &str, title: &str) -> NotifyContext {
+        NotifyContext {
+            body: body.to_string(),
+            title: title.to_string(),
+            notify_type: NotifyType::Info,
+            body_format: NotifyFormat::Text,
+            attachments: vec![],
+            interpret_escapes: false,
+            interpret_emojis: false,
+            tags: vec![],
+            asset: AppriseAsset::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_form_basic_post() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("form://localhost:{}", server.address().port());
+        let svc = from_url(&url).unwrap();
+        let ctx = make_ctx("test body", "test title");
+        let result = svc.send(&ctx).await.unwrap();
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_form_get_method() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("form://localhost:{}?method=GET", server.address().port());
+        let svc = from_url(&url).unwrap();
+        let ctx = make_ctx("body", "title");
+        let result = svc.send(&ctx).await.unwrap();
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_form_put_method() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("form://localhost:{}?method=PUT", server.address().port());
+        let svc = from_url(&url).unwrap();
+        let ctx = make_ctx("body", "title");
+        let result = svc.send(&ctx).await.unwrap();
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_form_custom_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/webhook/notify"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("form://localhost:{}/webhook/notify", server.address().port());
+        let svc = from_url(&url).unwrap();
+        let ctx = make_ctx("body", "title");
+        let result = svc.send(&ctx).await.unwrap();
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_form_http_500_returns_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("form://localhost:{}", server.address().port());
+        let svc = from_url(&url).unwrap();
+        let ctx = make_ctx("body", "title");
+        let result = svc.send(&ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_form_with_attachments() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("form://localhost:{}", server.address().port());
+        let svc = from_url(&url).unwrap();
+        let mut ctx = make_ctx("body", "title");
+        ctx.attachments.push(crate::notify::Attachment {
+            name: "test.txt".to_string(),
+            data: b"hello world".to_vec(),
+            mime_type: "text/plain".to_string(),
+        });
+        let result = svc.send(&ctx).await.unwrap();
+        assert!(result);
+    }
 }
