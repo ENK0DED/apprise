@@ -11,6 +11,7 @@ pub mod registry;
 // ── Plugin modules ────────────────────────────────────────────────────────────
 pub mod africas_talking;
 pub mod apprise_api;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod aprs;
 pub mod bark;
 pub mod bluesky;
@@ -29,7 +30,7 @@ pub mod dapnet;
 pub mod dingtalk;
 pub mod discord;
 pub mod dot;
-#[cfg(feature = "email")]
+#[cfg(all(feature = "email", not(target_arch = "wasm32")))]
 pub mod email;
 pub mod emby;
 pub mod enigma2;
@@ -41,11 +42,13 @@ pub mod fortysixelks;
 pub mod freemobile;
 pub mod google_chat;
 pub mod gotify;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod growl;
 pub mod guilded;
 pub mod home_assistant;
 pub mod httpsms;
 pub mod ifttt;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod irc;
 pub mod jellyfin;
 pub mod join;
@@ -60,7 +63,7 @@ pub mod matrix;
 pub mod mattermost;
 pub mod messagebird;
 pub mod misskey;
-#[cfg(feature = "mqtt")]
+#[cfg(all(feature = "mqtt", not(target_arch = "wasm32")))]
 pub mod mqtt;
 pub mod msg91;
 pub mod msteams;
@@ -94,6 +97,7 @@ pub mod reddit;
 pub mod resend;
 pub mod revolt;
 pub mod rocketchat;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod rsyslog;
 pub mod ryver;
 pub mod sendgrid;
@@ -107,6 +111,7 @@ pub mod signl4;
 pub mod simplepush;
 pub mod sinch;
 pub mod slack;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod smpp;
 pub mod smseagle;
 pub mod smsmanager;
@@ -118,6 +123,7 @@ pub mod splunk;
 pub mod spugpush;
 pub mod streamlabs;
 pub mod synology;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod syslog;
 pub mod techuluspush;
 pub mod telegram;
@@ -135,6 +141,7 @@ pub mod whatsapp;
 pub mod workflows;
 pub mod wxpusher;
 pub mod xbmc;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod xmpp;
 pub mod zulip;
 
@@ -142,6 +149,7 @@ pub mod zulip;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub mod desktop;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod rsyslog_mod {
   pub use super::rsyslog::*;
 }

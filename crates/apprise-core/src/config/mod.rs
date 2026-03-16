@@ -1,3 +1,4 @@
+#[cfg(not(target_arch = "wasm32"))]
 pub mod file;
 pub mod http;
 pub mod text;
@@ -115,7 +116,14 @@ pub fn load_config_with_mode<'a>(
     if source.starts_with("http://") || source.starts_with("https://") {
       http::load_from_http(source, recursion_depth).await
     } else {
-      file::load_from_file(source, recursion_depth).await
+      #[cfg(not(target_arch = "wasm32"))]
+      {
+        file::load_from_file(source, recursion_depth).await
+      }
+      #[cfg(target_arch = "wasm32")]
+      {
+        Err(ConfigError::Other(format!("File-based config not supported on WASM: {}", source)))
+      }
     }
   })
 }

@@ -1,26 +1,13 @@
 use crate::asset::AppriseAsset;
 use crate::error::ConfigError;
 use crate::notify::Notify;
-use std::path::PathBuf;
-
-/// Return the cache directory for config HTTP responses.
-fn cache_dir() -> PathBuf {
-  dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp")).join("apprise").join("config_cache")
-}
-
-/// Hash a URL to produce a deterministic cache filename.
-fn cache_key(url: &str) -> String {
-  use sha2::{Digest, Sha256};
-  let mut hasher = Sha256::new();
-  hasher.update(url.as_bytes());
-  format!("{:x}", hasher.finalize())
-}
 
 /// Parse the `cache` query parameter.
 /// Returns `None` if caching is disabled, or `Some(ttl_secs)`.
 /// `cache=yes` => default TTL of 600 s (10 min).
 /// `cache=no`  => disabled.
 /// `cache=120` => 120 s TTL.
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_cache_param(url: &str) -> Option<u64> {
   let val = super::extract_query_param(url, "cache")?;
   match val.to_lowercase().as_str() {
@@ -49,51 +36,69 @@ fn strip_control_params(url: &str) -> String {
   }
 }
 
-/// Try reading a cached response. Returns `Some(content)` if the cache file
-/// exists and is within TTL.
-async fn read_cache(url: &str, ttl_secs: u64) -> Option<String> {
-  let path = cache_dir().join(cache_key(url));
-  let meta = tokio::fs::metadata(&path).await.ok()?;
-  let modified = meta.modified().ok()?;
-  let age = modified.elapsed().ok()?;
-  if age.as_secs() > ttl_secs {
-    return None;
-  }
-  tokio::fs::read_to_string(&path).await.ok()
-}
+#[cfg(not(target_arch = "wasm32"))]
+mod cache {
+  use std::path::PathBuf;
 
-/// Write content to the cache.
-async fn write_cache(url: &str, content: &str) {
-  let dir = cache_dir();
-  if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-    tracing::debug!("Could not create cache dir {:?}: {}", dir, e);
-    return;
+  pub fn cache_dir() -> PathBuf {
+    dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp")).join("apprise").join("config_cache")
   }
-  let path = dir.join(cache_key(url));
-  if let Err(e) = tokio::fs::write(&path, content).await {
-    tracing::debug!("Could not write cache file {:?}: {}", path, e);
+
+  fn cache_key(url: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(url.as_bytes());
+    format!("{:x}", hasher.finalize())
+  }
+
+  pub async fn read_cache(url: &str, ttl_secs: u64) -> Option<String> {
+    let path = cache_dir().join(cache_key(url));
+    let meta = tokio::fs::metadata(&path).await.ok()?;
+    let modified = meta.modified().ok()?;
+    let age = modified.elapsed().ok()?;
+    if age.as_secs() > ttl_secs {
+      return None;
+    }
+    tokio::fs::read_to_string(&path).await.ok()
+  }
+
+  pub async fn write_cache(url: &str, content: &str) {
+    let dir = cache_dir();
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+      tracing::debug!("Could not create cache dir {:?}: {}", dir, e);
+      return;
+    }
+    let path = dir.join(cache_key(url));
+    if let Err(e) = tokio::fs::write(&path, content).await {
+      tracing::debug!("Could not write cache file {:?}: {}", path, e);
+    }
   }
 }
 
 /// Load config from an HTTP(S) URL.
 /// Supports `?format=text|yaml` and `?cache=yes|no|SECONDS` query parameters.
 pub async fn load_from_http(url: &str, recursion_depth: u32) -> Result<(Vec<Box<dyn Notify>>, Option<AppriseAsset>), ConfigError> {
-  let cache_ttl = parse_cache_param(url);
   let fetch_url = strip_control_params(url);
 
-  // Try cache first
-  let content = if let Some(ttl) = cache_ttl {
-    if let Some(cached) = read_cache(&fetch_url, ttl).await {
-      tracing::debug!("Using cached config for {}", fetch_url);
-      cached
+  #[cfg(not(target_arch = "wasm32"))]
+  let content = {
+    let cache_ttl = parse_cache_param(url);
+    if let Some(ttl) = cache_ttl {
+      if let Some(cached) = cache::read_cache(&fetch_url, ttl).await {
+        tracing::debug!("Using cached config for {}", fetch_url);
+        cached
+      } else {
+        let body = fetch_http(&fetch_url).await?;
+        cache::write_cache(&fetch_url, &body).await;
+        body
+      }
     } else {
-      let body = fetch_http(&fetch_url).await?;
-      write_cache(&fetch_url, &body).await;
-      body
+      fetch_http(&fetch_url).await?
     }
-  } else {
-    fetch_http(&fetch_url).await?
   };
+
+  #[cfg(target_arch = "wasm32")]
+  let content = fetch_http(&fetch_url).await?;
 
   match super::detect_format(url) {
     super::ConfigFormat::Yaml => {
@@ -122,6 +127,14 @@ mod tests {
 
   #[test]
   fn test_parse_cache_param() {
+    fn parse_cache_param(url: &str) -> Option<u64> {
+      let val = crate::config::extract_query_param(url, "cache")?;
+      match val.to_lowercase().as_str() {
+        "no" | "false" | "0" => None,
+        "yes" | "true" => Some(600),
+        other => other.parse::<u64>().ok(),
+      }
+    }
     assert_eq!(parse_cache_param("https://x.com/cfg?cache=yes"), Some(600));
     assert_eq!(parse_cache_param("https://x.com/cfg?cache=no"), None);
     assert_eq!(parse_cache_param("https://x.com/cfg?cache=120"), Some(120));
@@ -140,6 +153,12 @@ mod tests {
 
   #[test]
   fn test_cache_key_deterministic() {
+    use sha2::{Digest, Sha256};
+    let cache_key = |url: &str| -> String {
+      let mut hasher = Sha256::new();
+      hasher.update(url.as_bytes());
+      format!("{:x}", hasher.finalize())
+    };
     let k1 = cache_key("https://example.com/config");
     let k2 = cache_key("https://example.com/config");
     assert_eq!(k1, k2);

@@ -30,6 +30,7 @@ pub mod attachment;
 pub mod config;
 pub mod error;
 pub mod notify;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod storage;
 pub mod types;
 pub mod utils;
@@ -134,6 +135,7 @@ impl Apprise {
 
   /// Try loading from default config file paths (~/.apprise, /etc/apprise, etc.).
   /// Stops at the first path that yields services.
+  #[cfg(not(target_arch = "wasm32"))]
   pub async fn load_default_configs(&mut self, recursion_depth: u32) -> usize {
     let mut default_paths: Vec<std::path::PathBuf> = Vec::new();
     if let Some(home) = dirs::home_dir() {
@@ -399,6 +401,7 @@ impl Apprise {
 }
 
 /// Default storage path for persistent cache.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn default_storage_path() -> String {
   dirs::data_local_dir().map(|p| p.join("apprise").join("cache").to_string_lossy().to_string()).unwrap_or_else(|| "/tmp/apprise/cache".to_string())
 }

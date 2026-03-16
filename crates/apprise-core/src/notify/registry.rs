@@ -29,6 +29,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   use super::*;
   collect!(africas_talking::AfricasTalking::static_details());
   collect!(apprise_api::AppriseApi::static_details());
+  #[cfg(not(target_arch = "wasm32"))]
   collect!(aprs::Aprs::static_details());
   collect!(bark::Bark::static_details());
   collect!(bluesky::BlueSky::static_details());
@@ -54,11 +55,13 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(freemobile::FreeMobile::static_details());
   collect!(google_chat::GoogleChat::static_details());
   collect!(gotify::Gotify::static_details());
+  #[cfg(not(target_arch = "wasm32"))]
   collect!(growl::Growl::static_details());
   collect!(guilded::Guilded::static_details());
   collect!(home_assistant::HomeAssistant::static_details());
   collect!(httpsms::HttpSms::static_details());
   collect!(ifttt::Ifttt::static_details());
+  #[cfg(not(target_arch = "wasm32"))]
   collect!(irc::Irc::static_details());
   collect!(jellyfin::Jellyfin::static_details());
   collect!(join::Join::static_details());
@@ -76,7 +79,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(mattermost::Mattermost::static_details());
   collect!(messagebird::MessageBird::static_details());
   collect!(misskey::Misskey::static_details());
-  #[cfg(feature = "mqtt")]
+  #[cfg(all(feature = "mqtt", not(target_arch = "wasm32")))]
   collect!(mqtt::Mqtt::static_details());
   collect!(msg91::Msg91::static_details());
   collect!(msteams::MsTeams::static_details());
@@ -110,6 +113,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(resend::Resend::static_details());
   collect!(revolt::Revolt::static_details());
   collect!(rocketchat::RocketChat::static_details());
+  #[cfg(not(target_arch = "wasm32"))]
   collect!(rsyslog::RSyslog::static_details());
   collect!(ryver::Ryver::static_details());
   collect!(sendgrid::SendGrid::static_details());
@@ -123,6 +127,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(simplepush::SimplePush::static_details());
   collect!(sinch::Sinch::static_details());
   collect!(slack::Slack::static_details());
+  #[cfg(not(target_arch = "wasm32"))]
   collect!(smpp::Smpp::static_details());
   collect!(smseagle::SmsEagle::static_details());
   collect!(smsmanager::SmsManager::static_details());
@@ -134,6 +139,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(spugpush::SpugPush::static_details());
   collect!(streamlabs::Streamlabs::static_details());
   collect!(synology::Synology::static_details());
+  #[cfg(not(target_arch = "wasm32"))]
   collect!(syslog::Syslog::static_details());
   collect!(techuluspush::TechulusPush::static_details());
   collect!(telegram::Telegram::static_details());
@@ -151,9 +157,10 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(workflows::Workflows::static_details());
   collect!(wxpusher::WxPusher::static_details());
   collect!(xbmc::Xbmc::static_details());
+  #[cfg(not(target_arch = "wasm32"))]
   collect!(xmpp::Xmpp::static_details());
   collect!(zulip::Zulip::static_details());
-  #[cfg(feature = "email")]
+  #[cfg(all(feature = "email", not(target_arch = "wasm32")))]
   collect!(email::Email::static_details());
 
   details.sort_by(|a, b| a.service_name.cmp(b.service_name));
@@ -173,6 +180,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
 
   reg!(africas_talking::AfricasTalking::from_url, "atalk");
   reg!(apprise_api::AppriseApi::from_url, "apprise", "apprises");
+  #[cfg(not(target_arch = "wasm32"))]
   reg!(aprs::Aprs::from_url, "aprs");
   reg!(bark::Bark::from_url, "bark", "barks");
   reg!(bluesky::BlueSky::from_url, "bsky", "bluesky");
@@ -198,11 +206,13 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(freemobile::FreeMobile::from_url, "freemobile");
   reg!(google_chat::GoogleChat::from_url, "gchat");
   reg!(gotify::Gotify::from_url, "gotify", "gotifys");
+  #[cfg(not(target_arch = "wasm32"))]
   reg!(growl::Growl::from_url, "growl");
   reg!(guilded::Guilded::from_url, "guilded");
   reg!(home_assistant::HomeAssistant::from_url, "hassio", "hassios");
   reg!(httpsms::HttpSms::from_url, "httpsms");
   reg!(ifttt::Ifttt::from_url, "ifttt");
+  #[cfg(not(target_arch = "wasm32"))]
   reg!(irc::Irc::from_url, "irc", "ircs");
   reg!(jellyfin::Jellyfin::from_url, "jellyfin", "jellyfins");
   reg!(join::Join::from_url, "join");
@@ -220,7 +230,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(mattermost::Mattermost::from_url, "mmost", "mmosts");
   reg!(messagebird::MessageBird::from_url, "msgbird");
   reg!(misskey::Misskey::from_url, "misskey", "misskeys");
-  #[cfg(feature = "mqtt")]
+  #[cfg(all(feature = "mqtt", not(target_arch = "wasm32")))]
   reg!(mqtt::Mqtt::from_url, "mqtt", "mqtts");
   reg!(msg91::Msg91::from_url, "msg91");
   reg!(msteams::MsTeams::from_url, "msteams");
@@ -254,6 +264,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(resend::Resend::from_url, "resend");
   reg!(revolt::Revolt::from_url, "revolt");
   reg!(rocketchat::RocketChat::from_url, "rocket", "rockets");
+  #[cfg(not(target_arch = "wasm32"))]
   reg!(rsyslog::RSyslog::from_url, "rsyslog");
   reg!(ryver::Ryver::from_url, "ryver");
   reg!(sendgrid::SendGrid::from_url, "sendgrid");
@@ -267,6 +278,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(simplepush::SimplePush::from_url, "spush");
   reg!(sinch::Sinch::from_url, "sinch");
   reg!(slack::Slack::from_url, "slack");
+  #[cfg(not(target_arch = "wasm32"))]
   reg!(smpp::Smpp::from_url, "smpp", "smpps");
   reg!(smseagle::SmsEagle::from_url, "smseagle", "smseagles");
   reg!(smsmanager::SmsManager::from_url, "smsmanager", "smsmgr");
@@ -278,6 +290,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(spugpush::SpugPush::from_url, "spugpush");
   reg!(streamlabs::Streamlabs::from_url, "strmlabs");
   reg!(synology::Synology::from_url, "synology", "synologys");
+  #[cfg(not(target_arch = "wasm32"))]
   reg!(syslog::Syslog::from_url, "syslog");
   reg!(techuluspush::TechulusPush::from_url, "techulus");
   reg!(telegram::Telegram::from_url, "tgram");
@@ -295,9 +308,10 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(workflows::Workflows::from_url, "workflow", "workflows");
   reg!(wxpusher::WxPusher::from_url, "wxpusher");
   reg!(xbmc::Xbmc::from_url, "xbmc", "xbmcs", "kodi", "kodis");
+  #[cfg(not(target_arch = "wasm32"))]
   reg!(xmpp::Xmpp::from_url, "xmpp", "xmpps");
   reg!(zulip::Zulip::from_url, "zulip");
-  #[cfg(feature = "email")]
+  #[cfg(all(feature = "email", not(target_arch = "wasm32")))]
   reg!(email::Email::from_url, "mailto", "mailtos");
 
   m

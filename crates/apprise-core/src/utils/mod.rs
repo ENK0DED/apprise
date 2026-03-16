@@ -10,6 +10,7 @@ pub mod parse;
 pub mod pem;
 pub mod pgp;
 pub mod sanitize;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod socket;
 pub mod templates;
 pub mod time;
