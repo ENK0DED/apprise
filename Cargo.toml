@@ -5,7 +5,7 @@ resolver = "2"
 [workspace.package]
 version = "1.9.8"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.94"
 license = "MIT"
 
 [workspace.dependencies]
@@ -13,7 +13,7 @@ license = "MIT"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "fs"] }
 
 # HTTP client
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots", "multipart"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "multipart", "form", "query"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -63,7 +63,7 @@ libc = "0.2"
 # TLS for raw TCP plugins (IRC, XMPP)
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
-webpki-roots = "0.26"
+webpki-roots = "1"
 
 # MQTT (optional)
 rumqttc = { version = "0.25", features = ["use-rustls"] }
