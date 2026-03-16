@@ -55,36 +55,25 @@ const PEM_BEGIN_MARKER: &[u8] = b"-----BEGIN";
 ///
 /// Returns an error if the file cannot be read or exceeds `MAX_PEM_KEY_SIZE`.
 pub fn load_pem_key(path: &str) -> Result<Vec<u8>, std::io::Error> {
-    let data = std::fs::read(path)?;
-    if data.len() > MAX_PEM_KEY_SIZE {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "PEM key file exceeds maximum size ({} > {})",
-                data.len(),
-                MAX_PEM_KEY_SIZE
-            ),
-        ));
-    }
-    Ok(data)
+  let data = std::fs::read(path)?;
+  if data.len() > MAX_PEM_KEY_SIZE {
+    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("PEM key file exceeds maximum size ({} > {})", data.len(), MAX_PEM_KEY_SIZE)));
+  }
+  Ok(data)
 }
 
 /// Check if data looks like PEM-encoded content.
 ///
 /// Returns `true` if the data starts with the standard `-----BEGIN` marker.
 pub fn is_pem(data: &[u8]) -> bool {
-    // Strip leading whitespace before checking
-    let trimmed = data
-        .iter()
-        .position(|&b| !b.is_ascii_whitespace())
-        .map(|pos| &data[pos..])
-        .unwrap_or(data);
-    trimmed.starts_with(PEM_BEGIN_MARKER)
+  // Strip leading whitespace before checking
+  let trimmed = data.iter().position(|&b| !b.is_ascii_whitespace()).map(|pos| &data[pos..]).unwrap_or(data);
+  trimmed.starts_with(PEM_BEGIN_MARKER)
 }
 
 /// Check whether a PEM key file exists at the given path.
 pub fn pem_key_exists(path: &str) -> bool {
-    Path::new(path).is_file()
+  Path::new(path).is_file()
 }
 
 /// Search for a public key file in the given directory, trying common names.
@@ -97,30 +86,22 @@ pub fn pem_key_exists(path: &str) -> bool {
 ///
 /// Returns the full path to the first match found, or `None`.
 pub fn find_public_keyfile(dir: &str, name: Option<&str>) -> Option<String> {
-    let mut candidates: Vec<String> = Vec::new();
+  let mut candidates: Vec<String> = Vec::new();
 
-    if let Some(n) = name {
-        let clean = n.trim_matches(|c: char| " \t/-+!$@#*".contains(c)).to_lowercase();
-        if !clean.is_empty() {
-            candidates.push(format!("{}-public_key.pem", clean));
-        }
+  if let Some(n) = name {
+    let clean = n.trim_matches(|c: char| " \t/-+!$@#*".contains(c)).to_lowercase();
+    if !clean.is_empty() {
+      candidates.push(format!("{}-public_key.pem", clean));
     }
+  }
 
-    candidates.extend_from_slice(&[
-        "public_key.pem".to_string(),
-        "public.pem".to_string(),
-        "pub.pem".to_string(),
-    ]);
+  candidates.extend_from_slice(&["public_key.pem".to_string(), "public.pem".to_string(), "pub.pem".to_string()]);
 
-    let base = Path::new(dir);
-    candidates.into_iter().find_map(|fname| {
-        let full = base.join(&fname);
-        if full.is_file() {
-            full.to_str().map(|s| s.to_string())
-        } else {
-            None
-        }
-    })
+  let base = Path::new(dir);
+  candidates.into_iter().find_map(|fname| {
+    let full = base.join(&fname);
+    if full.is_file() { full.to_str().map(|s| s.to_string()) } else { None }
+  })
 }
 
 /// Search for a private key file in the given directory, trying common names.
@@ -133,135 +114,127 @@ pub fn find_public_keyfile(dir: &str, name: Option<&str>) -> Option<String> {
 ///
 /// Returns the full path to the first match found, or `None`.
 pub fn find_private_keyfile(dir: &str, name: Option<&str>) -> Option<String> {
-    let mut candidates: Vec<String> = Vec::new();
+  let mut candidates: Vec<String> = Vec::new();
 
-    if let Some(n) = name {
-        let clean = n.trim_matches(|c: char| " \t/-+!$@#*".contains(c)).to_lowercase();
-        if !clean.is_empty() {
-            candidates.push(format!("{}-private_key.pem", clean));
-        }
+  if let Some(n) = name {
+    let clean = n.trim_matches(|c: char| " \t/-+!$@#*".contains(c)).to_lowercase();
+    if !clean.is_empty() {
+      candidates.push(format!("{}-private_key.pem", clean));
     }
+  }
 
-    candidates.extend_from_slice(&[
-        "private_key.pem".to_string(),
-        "private.pem".to_string(),
-        "prv.pem".to_string(),
-    ]);
+  candidates.extend_from_slice(&["private_key.pem".to_string(), "private.pem".to_string(), "prv.pem".to_string()]);
 
-    let base = Path::new(dir);
-    candidates.into_iter().find_map(|fname| {
-        let full = base.join(&fname);
-        if full.is_file() {
-            full.to_str().map(|s| s.to_string())
-        } else {
-            None
-        }
-    })
+  let base = Path::new(dir);
+  candidates.into_iter().find_map(|fname| {
+    let full = base.join(&fname);
+    if full.is_file() { full.to_str().map(|s| s.to_string()) } else { None }
+  })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::fs;
+  use super::*;
+  use std::fs;
 
-    #[test]
-    fn test_is_pem_valid() {
-        assert!(is_pem(b"-----BEGIN PRIVATE KEY-----\ndata\n-----END PRIVATE KEY-----"));
-        assert!(is_pem(b"-----BEGIN EC PRIVATE KEY-----\ndata"));
-        assert!(is_pem(b"-----BEGIN PUBLIC KEY-----\ndata"));
-        assert!(is_pem(b"-----BEGIN CERTIFICATE-----\ndata"));
-    }
+  #[test]
+  fn test_is_pem_valid() {
+    assert!(is_pem(b"-----BEGIN PRIVATE KEY-----\ndata\n-----END PRIVATE KEY-----"));
+    assert!(is_pem(b"-----BEGIN EC PRIVATE KEY-----\ndata"));
+    assert!(is_pem(b"-----BEGIN PUBLIC KEY-----\ndata"));
+    assert!(is_pem(b"-----BEGIN CERTIFICATE-----\ndata"));
+  }
 
-    #[test]
-    fn test_is_pem_with_leading_whitespace() {
-        assert!(is_pem(b"  \n\t-----BEGIN PRIVATE KEY-----\ndata"));
-    }
+  #[test]
+  fn test_is_pem_with_leading_whitespace() {
+    assert!(is_pem(b"  \n\t-----BEGIN PRIVATE KEY-----\ndata"));
+  }
 
-    #[test]
-    fn test_is_pem_invalid() {
-        assert!(!is_pem(b"not a pem file"));
-        assert!(!is_pem(b""));
-        assert!(!is_pem(b"-----NOTBEGIN"));
-        assert!(!is_pem(b"random binary data\x00\x01\x02"));
-    }
+  #[test]
+  fn test_is_pem_invalid() {
+    assert!(!is_pem(b"not a pem file"));
+    assert!(!is_pem(b""));
+    assert!(!is_pem(b"-----NOTBEGIN"));
+    assert!(!is_pem(b"random binary data\x00\x01\x02"));
+  }
 
-    #[test]
-    fn test_load_pem_key_file_not_found() {
-        let result = load_pem_key("/nonexistent/path/key.pem");
-        assert!(result.is_err());
-    }
+  #[test]
+  fn test_load_pem_key_file_not_found() {
+    let result = load_pem_key("/nonexistent/path/key.pem");
+    assert!(result.is_err());
+  }
 
-    #[test]
-    fn test_load_pem_key_success() {
-        let dir = tempfile::tempdir().unwrap();
-        let key_path = dir.path().join("test.pem");
-        let content = b"-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n";
-        fs::write(&key_path, content).unwrap();
+  #[test]
+  fn test_load_pem_key_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = dir.path().join("test.pem");
+    let content = b"-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n";
+    fs::write(&key_path, content).unwrap();
 
-        let result = load_pem_key(key_path.to_str().unwrap());
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), content.to_vec());
-    }
+    let result = load_pem_key(key_path.to_str().unwrap());
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), content.to_vec());
+  }
 
-    #[test]
-    fn test_load_pem_key_too_large() {
-        let dir = tempfile::tempdir().unwrap();
-        let key_path = dir.path().join("big.pem");
-        let content = vec![b'A'; MAX_PEM_KEY_SIZE + 1];
-        fs::write(&key_path, &content).unwrap();
+  #[test]
+  fn test_load_pem_key_too_large() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = dir.path().join("big.pem");
+    let content = vec![b'A'; MAX_PEM_KEY_SIZE + 1];
+    fs::write(&key_path, &content).unwrap();
 
-        let result = load_pem_key(key_path.to_str().unwrap());
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
-    }
+    let result = load_pem_key(key_path.to_str().unwrap());
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+  }
 
-    #[test]
-    fn test_find_public_keyfile() {
-        let dir = tempfile::tempdir().unwrap();
-        let pub_path = dir.path().join("public_key.pem");
-        fs::write(&pub_path, b"key data").unwrap();
+  #[test]
+  fn test_find_public_keyfile() {
+    let dir = tempfile::tempdir().unwrap();
+    let pub_path = dir.path().join("public_key.pem");
+    fs::write(&pub_path, b"key data").unwrap();
 
-        let result = find_public_keyfile(dir.path().to_str().unwrap(), None);
-        assert!(result.is_some());
-        assert!(result.unwrap().ends_with("public_key.pem"));
-    }
+    let result = find_public_keyfile(dir.path().to_str().unwrap(), None);
+    assert!(result.is_some());
+    assert!(result.unwrap().ends_with("public_key.pem"));
+  }
 
-    #[test]
-    fn test_find_public_keyfile_with_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let named_path = dir.path().join("myapp-public_key.pem");
-        fs::write(&named_path, b"key data").unwrap();
+  #[test]
+  fn test_find_public_keyfile_with_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let named_path = dir.path().join("myapp-public_key.pem");
+    fs::write(&named_path, b"key data").unwrap();
 
-        let result = find_public_keyfile(dir.path().to_str().unwrap(), Some("myapp"));
-        assert!(result.is_some());
-        assert!(result.unwrap().ends_with("myapp-public_key.pem"));
-    }
+    let result = find_public_keyfile(dir.path().to_str().unwrap(), Some("myapp"));
+    assert!(result.is_some());
+    assert!(result.unwrap().ends_with("myapp-public_key.pem"));
+  }
 
-    #[test]
-    fn test_find_private_keyfile() {
-        let dir = tempfile::tempdir().unwrap();
-        let prv_path = dir.path().join("private_key.pem");
-        fs::write(&prv_path, b"key data").unwrap();
+  #[test]
+  fn test_find_private_keyfile() {
+    let dir = tempfile::tempdir().unwrap();
+    let prv_path = dir.path().join("private_key.pem");
+    fs::write(&prv_path, b"key data").unwrap();
 
-        let result = find_private_keyfile(dir.path().to_str().unwrap(), None);
-        assert!(result.is_some());
-        assert!(result.unwrap().ends_with("private_key.pem"));
-    }
+    let result = find_private_keyfile(dir.path().to_str().unwrap(), None);
+    assert!(result.is_some());
+    assert!(result.unwrap().ends_with("private_key.pem"));
+  }
 
-    #[test]
-    fn test_find_keyfile_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(find_public_keyfile(dir.path().to_str().unwrap(), None).is_none());
-        assert!(find_private_keyfile(dir.path().to_str().unwrap(), None).is_none());
-    }
+  #[test]
+  fn test_find_keyfile_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(find_public_keyfile(dir.path().to_str().unwrap(), None).is_none());
+    assert!(find_private_keyfile(dir.path().to_str().unwrap(), None).is_none());
+  }
 
-    #[test]
-    fn test_pem_key_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let key_path = dir.path().join("key.pem");
-        assert!(!pem_key_exists(key_path.to_str().unwrap()));
+  #[test]
+  fn test_pem_key_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = dir.path().join("key.pem");
+    assert!(!pem_key_exists(key_path.to_str().unwrap()));
 
-        fs::write(&key_path, b"data").unwrap();
-        assert!(pem_key_exists(key_path.to_str().unwrap()));
-    }
+    fs::write(&key_path, b"data").unwrap();
+    assert!(pem_key_exists(key_path.to_str().unwrap()));
+  }
 }

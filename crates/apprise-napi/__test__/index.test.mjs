@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 
 // Note: these tests require the native module to be built first:
-//   cd crates/apprise-napi && npm run build
+//   cd crates/apprise-napi && bun run build
 
 test('listServices returns array', async () => {
   const { listServices } = await import('../index.js');
@@ -15,7 +15,7 @@ test('parseUrl returns service info for valid URL', async () => {
   const { parseUrl } = await import('../index.js');
   const info = parseUrl('json://localhost');
   assert.ok(info !== null);
-  assert.equal(info.name, 'Custom JSON');
+  assert.equal(info.name, 'JSON');
   assert.ok(info.protocols.includes('json'));
 });
 
@@ -39,7 +39,7 @@ test('Apprise class details returns service info', async () => {
   a.add('json://localhost');
   const details = a.details();
   assert.equal(details.length, 1);
-  assert.equal(details[0].name, 'Custom JSON');
+  assert.equal(details[0].name, 'JSON');
 });
 
 test('Apprise class clear removes all services', async () => {

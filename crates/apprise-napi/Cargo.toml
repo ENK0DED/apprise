@@ -11,7 +11,10 @@ crate-type = ["cdylib"]
 
 [dependencies]
 apprise-core.workspace = true
-napi = { version = "3", default-features = false, features = ["async", "serde-json"] }
+napi = { version = "3", default-features = false, features = [
+  "async",
+  "serde-json",
+] }
 napi-derive = "3"
 tokio.workspace = true
 serde.workspace = true

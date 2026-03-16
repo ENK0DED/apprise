@@ -1,33 +1,16 @@
 {
-  "name": "apprise",
+  "name": "@enk0ded/apprise",
   "version": "1.9.8",
   "description": "Push notifications that work with everything — Node.js native binding",
+  "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
-  "napi": {
-    "name": "apprise",
-    "triples": {
-      "defaults": true,
-      "additional": [
-        "aarch64-apple-darwin",
-        "aarch64-unknown-linux-gnu",
-        "aarch64-unknown-linux-musl",
-        "x86_64-unknown-linux-musl"
-      ]
-    }
+  "browser": "browser.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/enk0ded/apprise"
   },
   "license": "MIT",
-  "scripts": {
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
-    "test": "node __test__/index.test.mjs"
-  },
-  "devDependencies": {
-    "@napi-rs/cli": "^3.0.0"
-  },
-  "engines": {
-    "node": ">= 18"
-  },
   "keywords": [
     "apprise",
     "notification",
@@ -38,6 +21,65 @@
     "telegram",
     "email",
     "sms",
-    "ntfy"
-  ]
+    "ntfy",
+    "napi-rs"
+  ],
+  "files": [
+    "index.d.ts",
+    "index.js",
+    "browser.js"
+  ],
+  "napi": {
+    "binaryName": "apprise",
+    "targets": [
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "i686-pc-windows-msvc",
+      "x86_64-pc-windows-msvc",
+      "aarch64-pc-windows-msvc",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-gnu",
+      "aarch64-unknown-linux-musl",
+      "armv7-unknown-linux-gnueabihf",
+      "armv7-linux-androideabi",
+      "aarch64-linux-android",
+      "x86_64-unknown-freebsd",
+      "wasm32-wasip1-threads"
+    ]
+  },
+  "engines": {
+    "node": ">=25"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "create-npm-dirs": "napi create-npm-dirs",
+    "format": "run-p format:prettier format:rs format:toml",
+    "format:prettier": "prettier . -w",
+    "format:toml": "taplo format",
+    "format:rs": "cargo fmt",
+    "lint": "oxlint .",
+    "prepublishOnly": "napi prepublish -t npm",
+    "preversion": "napi build --platform && git add .",
+    "version": "napi version"
+  },
+  "devDependencies": {
+    "@emnapi/core": "^1.9.0",
+    "@emnapi/runtime": "^1.9.0",
+    "@napi-rs/cli": "^3.5.1",
+    "@taplo/cli": "^0.7.0",
+    "@tybys/wasm-util": "^0.10.1",
+    "@types/bun": "latest",
+    "npm-run-all2": "^8.0.4",
+    "oxlint": "^1.55.0",
+    "prettier": "^3.8.1",
+    "typescript": "^5.9.3"
+  },
+  "packageManager": "bun@1.3.10"
 }

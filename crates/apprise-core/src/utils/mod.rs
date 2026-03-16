@@ -1,12 +1,12 @@
-pub mod parse;
-pub mod format;
-pub mod emoji;
-pub mod escape;
 pub mod aws;
 pub mod base64;
 pub mod cwe312;
 pub mod disk;
+pub mod emoji;
+pub mod escape;
+pub mod format;
 pub mod locale;
+pub mod parse;
 pub mod pem;
 pub mod pgp;
 pub mod sanitize;

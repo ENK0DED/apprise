@@ -51,18 +51,14 @@ const PGP_PUBLIC_KEY_MARKER: &[u8] = b"-----BEGIN PGP PUBLIC KEY BLOCK-----";
 ///
 /// Returns an error if the file cannot be read or exceeds `MAX_PGP_PUBLIC_KEY_SIZE`.
 pub fn load_pgp_key(path: &str) -> Result<Vec<u8>, std::io::Error> {
-    let data = std::fs::read(path)?;
-    if data.len() > MAX_PGP_PUBLIC_KEY_SIZE {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "PGP key file exceeds maximum size ({} > {})",
-                data.len(),
-                MAX_PGP_PUBLIC_KEY_SIZE
-            ),
-        ));
-    }
-    Ok(data)
+  let data = std::fs::read(path)?;
+  if data.len() > MAX_PGP_PUBLIC_KEY_SIZE {
+    return Err(std::io::Error::new(
+      std::io::ErrorKind::InvalidData,
+      format!("PGP key file exceeds maximum size ({} > {})", data.len(), MAX_PGP_PUBLIC_KEY_SIZE),
+    ));
+  }
+  Ok(data)
 }
 
 /// Check if PGP encryption is available by looking for the `gpg` binary.
@@ -71,28 +67,24 @@ pub fn load_pgp_key(path: &str) -> Result<Vec<u8>, std::io::Error> {
 /// tool is installed, which is needed as a fallback when no native PGP
 /// library is available.
 pub fn pgp_available() -> bool {
-    std::process::Command::new("gpg")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+  std::process::Command::new("gpg")
+    .arg("--version")
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status()
+    .map(|s| s.success())
+    .unwrap_or(false)
 }
 
 /// Check if data looks like an ASCII-armored PGP public key.
 pub fn is_pgp_public_key(data: &[u8]) -> bool {
-    let trimmed = data
-        .iter()
-        .position(|&b| !b.is_ascii_whitespace())
-        .map(|pos| &data[pos..])
-        .unwrap_or(data);
-    trimmed.starts_with(PGP_PUBLIC_KEY_MARKER)
+  let trimmed = data.iter().position(|&b| !b.is_ascii_whitespace()).map(|pos| &data[pos..]).unwrap_or(data);
+  trimmed.starts_with(PGP_PUBLIC_KEY_MARKER)
 }
 
 /// Check whether a PGP key file exists at the given path.
 pub fn pgp_key_exists(path: &str) -> bool {
-    Path::new(path).is_file()
+  Path::new(path).is_file()
 }
 
 /// Search for a PGP public key file in the given directory, trying common names.
@@ -106,133 +98,124 @@ pub fn pgp_key_exists(path: &str) -> bool {
 ///
 /// Returns the full path to the first match found, or `None`.
 pub fn find_pgp_public_keyfile(dir: &str, email: Option<&str>) -> Option<String> {
-    let mut candidates: Vec<String> = Vec::new();
+  let mut candidates: Vec<String> = Vec::new();
 
-    if let Some(addr) = email {
-        // Try full email lowercase first, then just the local part
-        let lower = addr.to_lowercase();
-        candidates.push(format!("{}-pub.asc", lower));
+  if let Some(addr) = email {
+    // Try full email lowercase first, then just the local part
+    let lower = addr.to_lowercase();
+    candidates.push(format!("{}-pub.asc", lower));
 
-        if let Some(local) = lower.split('@').next() {
-            if local != lower {
-                candidates.push(format!("{}-pub.asc", local));
-            }
-        }
+    if let Some(local) = lower.split('@').next() {
+      if local != lower {
+        candidates.push(format!("{}-pub.asc", local));
+      }
     }
+  }
 
-    candidates.extend_from_slice(&[
-        "pgp-public.asc".to_string(),
-        "pgp-pub.asc".to_string(),
-        "public.asc".to_string(),
-        "pub.asc".to_string(),
-    ]);
+  candidates.extend_from_slice(&["pgp-public.asc".to_string(), "pgp-pub.asc".to_string(), "public.asc".to_string(), "pub.asc".to_string()]);
 
-    let base = Path::new(dir);
-    candidates.into_iter().find_map(|fname| {
-        let full = base.join(&fname);
-        if full.is_file() {
-            full.to_str().map(|s| s.to_string())
-        } else {
-            None
-        }
-    })
+  let base = Path::new(dir);
+  candidates.into_iter().find_map(|fname| {
+    let full = base.join(&fname);
+    if full.is_file() { full.to_str().map(|s| s.to_string()) } else { None }
+  })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::fs;
+  use super::*;
+  use std::fs;
 
-    #[test]
-    fn test_is_pgp_public_key_valid() {
-        let data = b"-----BEGIN PGP PUBLIC KEY BLOCK-----\nVersion: GnuPG\n\nmQENB...";
-        assert!(is_pgp_public_key(data));
-    }
+  #[test]
+  fn test_is_pgp_public_key_valid() {
+    let data = b"-----BEGIN PGP PUBLIC KEY BLOCK-----\nVersion: GnuPG\n\nmQENB...";
+    assert!(is_pgp_public_key(data));
+  }
 
-    #[test]
-    fn test_is_pgp_public_key_with_whitespace() {
-        let data = b"  \n-----BEGIN PGP PUBLIC KEY BLOCK-----\ndata";
-        assert!(is_pgp_public_key(data));
-    }
+  #[test]
+  fn test_is_pgp_public_key_with_whitespace() {
+    let data = b"  \n-----BEGIN PGP PUBLIC KEY BLOCK-----\ndata";
+    assert!(is_pgp_public_key(data));
+  }
 
-    #[test]
-    fn test_is_pgp_public_key_invalid() {
-        assert!(!is_pgp_public_key(b"not a pgp key"));
-        assert!(!is_pgp_public_key(b""));
-        assert!(!is_pgp_public_key(b"-----BEGIN PEM-----"));
-    }
+  #[test]
+  fn test_is_pgp_public_key_invalid() {
+    assert!(!is_pgp_public_key(b"not a pgp key"));
+    assert!(!is_pgp_public_key(b""));
+    assert!(!is_pgp_public_key(b"-----BEGIN PEM-----"));
+  }
 
-    #[test]
-    fn test_load_pgp_key_file_not_found() {
-        let result = load_pgp_key("/nonexistent/path/key.asc");
-        assert!(result.is_err());
-    }
+  #[test]
+  fn test_load_pgp_key_file_not_found() {
+    let result = load_pgp_key("/nonexistent/path/key.asc");
+    assert!(result.is_err());
+  }
 
-    #[test]
-    fn test_load_pgp_key_success() {
-        let dir = tempfile::tempdir().unwrap();
-        let key_path = dir.path().join("test.asc");
-        let content = b"-----BEGIN PGP PUBLIC KEY BLOCK-----\ntest\n-----END PGP PUBLIC KEY BLOCK-----\n";
-        fs::write(&key_path, content).unwrap();
+  #[test]
+  fn test_load_pgp_key_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = dir.path().join("test.asc");
+    let content = b"-----BEGIN PGP PUBLIC KEY BLOCK-----\ntest\n-----END PGP PUBLIC KEY BLOCK-----\n";
+    fs::write(&key_path, content).unwrap();
 
-        let result = load_pgp_key(key_path.to_str().unwrap());
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), content.to_vec());
-    }
+    let result = load_pgp_key(key_path.to_str().unwrap());
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), content.to_vec());
+  }
 
-    #[test]
-    fn test_load_pgp_key_too_large() {
-        let dir = tempfile::tempdir().unwrap();
-        let key_path = dir.path().join("big.asc");
-        let content = vec![b'A'; MAX_PGP_PUBLIC_KEY_SIZE + 1];
-        fs::write(&key_path, &content).unwrap();
+  #[test]
+  fn test_load_pgp_key_too_large() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = dir.path().join("big.asc");
+    let content = vec![b'A'; MAX_PGP_PUBLIC_KEY_SIZE + 1];
+    fs::write(&key_path, &content).unwrap();
 
-        let result = load_pgp_key(key_path.to_str().unwrap());
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
-    }
+    let result = load_pgp_key(key_path.to_str().unwrap());
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+  }
 
-    #[test]
-    fn test_find_pgp_public_keyfile_generic() {
-        let dir = tempfile::tempdir().unwrap();
-        let pub_path = dir.path().join("pub.asc");
-        fs::write(&pub_path, b"key data").unwrap();
+  #[test]
+  fn test_find_pgp_public_keyfile_generic() {
+    let dir = tempfile::tempdir().unwrap();
+    let pub_path = dir.path().join("pub.asc");
+    fs::write(&pub_path, b"key data").unwrap();
 
-        let result = find_pgp_public_keyfile(dir.path().to_str().unwrap(), None);
-        assert!(result.is_some());
-        assert!(result.unwrap().ends_with("pub.asc"));
-    }
+    let result = find_pgp_public_keyfile(dir.path().to_str().unwrap(), None);
+    assert!(result.is_some());
+    assert!(result.unwrap().ends_with("pub.asc"));
+  }
 
-    #[test]
-    fn test_find_pgp_public_keyfile_with_email() {
-        let dir = tempfile::tempdir().unwrap();
-        let named_path = dir.path().join("user-pub.asc");
-        fs::write(&named_path, b"key data").unwrap();
+  #[test]
+  fn test_find_pgp_public_keyfile_with_email() {
+    let dir = tempfile::tempdir().unwrap();
+    let named_path = dir.path().join("user-pub.asc");
+    fs::write(&named_path, b"key data").unwrap();
 
-        let result = find_pgp_public_keyfile(dir.path().to_str().unwrap(), Some("User@example.com"));
-        assert!(result.is_some());
-        assert!(result.unwrap().ends_with("user-pub.asc"));
-    }
+    let result = find_pgp_public_keyfile(dir.path().to_str().unwrap(), Some("User@example.com"));
+    assert!(result.is_some());
+    assert!(result.unwrap().ends_with("user-pub.asc"));
+  }
 
-    #[test]
-    fn test_find_pgp_public_keyfile_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(find_pgp_public_keyfile(dir.path().to_str().unwrap(), None).is_none());
-    }
+  #[test]
+  fn test_find_pgp_public_keyfile_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(find_pgp_public_keyfile(dir.path().to_str().unwrap(), None).is_none());
+  }
 
-    #[test]
-    fn test_pgp_key_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let key_path = dir.path().join("key.asc");
-        assert!(!pgp_key_exists(key_path.to_str().unwrap()));
+  #[test]
+  fn test_pgp_key_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = dir.path().join("key.asc");
+    assert!(!pgp_key_exists(key_path.to_str().unwrap()));
 
-        fs::write(&key_path, b"data").unwrap();
-        assert!(pgp_key_exists(key_path.to_str().unwrap()));
-    }
+    fs::write(&key_path, b"data").unwrap();
+    assert!(pgp_key_exists(key_path.to_str().unwrap()));
+  }
 
-    #[test]
-    fn test_pgp_available() {
-        // Just verify it returns a bool without panicking
-        let _ = pgp_available();
-    }
+  #[test]
+  fn test_pgp_available() {
+    // Just verify it returns a bool without panicking
+    let _ = pgp_available();
+  }
 }
