@@ -1,11 +1,12 @@
 # Multi-stage build for minimal Docker image
 FROM rust:1.94-alpine AS builder
 
-RUN apk add --no-cache musl-dev perl make cmake gcc g++
+RUN apk add --no-cache musl-dev perl make gcc g++ upx
 
 WORKDIR /build
 COPY . .
-RUN cargo build --release -p apprise-cli
+RUN cargo build --release -p apprise-cli && \
+    upx --best target/release/apprise
 
 # Runtime image
 FROM alpine:3.23
