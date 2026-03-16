@@ -110,6 +110,7 @@ pub async fn load_from_http(url: &str, recursion_depth: u32) -> Result<(Vec<Box<
 }
 
 async fn fetch_http(url: &str) -> Result<String, ConfigError> {
+  crate::ensure_crypto_provider();
   let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().map_err(|e| ConfigError::Other(e.to_string()))?;
   let resp = client.get(url).send().await.map_err(|e| ConfigError::Other(e.to_string()))?;
   resp.text().await.map_err(|e| ConfigError::Other(e.to_string()))

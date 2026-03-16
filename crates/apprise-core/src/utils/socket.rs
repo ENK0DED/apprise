@@ -104,61 +104,28 @@ impl TimeoutConfig {
 
 /// Configure TCP keepalive on a `tokio::net::TcpStream`.
 ///
-/// Uses the platform's native keepalive support via `std::net::TcpStream`
-/// (accessed through `tokio::net::TcpStream::as_ref()`). This avoids
-/// needing the `socket2` crate.
+/// Uses the `socket2` crate for cross-platform keepalive support.
 ///
 /// Mirrors Python's `socket.setsockopt(SOL_SOCKET, SO_KEEPALIVE, 1)` call
 /// in `SocketTransport.connect()`.
 pub fn set_keepalive(stream: &tokio::net::TcpStream, interval_secs: u64) -> std::io::Result<()> {
-  // Enable keepalive using libc-level setsockopt.
-  // We access the raw fd directly from the tokio TcpStream on Unix.
-  #[cfg(unix)]
-  {
-    use std::os::unix::io::AsRawFd;
-    let fd = stream.as_raw_fd();
-    let optval: libc::c_int = 1;
+  use socket2::SockRef;
 
-    // Enable SO_KEEPALIVE
-    let ret = unsafe {
-      libc::setsockopt(
-        fd,
-        libc::SOL_SOCKET,
-        libc::SO_KEEPALIVE,
-        &optval as *const _ as *const libc::c_void,
-        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-      )
-    };
-    if ret != 0 {
-      return Err(std::io::Error::last_os_error());
-    }
+  let sock_ref = SockRef::from(stream);
+  let keepalive = socket2::TcpKeepalive::new().with_time(Duration::from_secs(interval_secs));
 
-    // Set TCP_KEEPIDLE (time before first keepalive probe)
-    let keepidle = interval_secs as libc::c_int;
-    let ret = unsafe {
-      libc::setsockopt(
-        fd,
-        libc::IPPROTO_TCP,
-        libc::TCP_KEEPIDLE,
-        &keepidle as *const _ as *const libc::c_void,
-        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-      )
-    };
-    if ret != 0 {
-      return Err(std::io::Error::last_os_error());
-    }
+  // Set keepalive interval if supported on this platform
+  #[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "windows",
+  ))]
+  let keepalive = keepalive.with_interval(Duration::from_secs(interval_secs));
 
-    Ok(())
-  }
-
-  #[cfg(not(unix))]
-  {
-    // On non-Unix platforms, just suppress the unused variable warnings
-    let _ = stream;
-    let _ = interval_secs;
-    // Keepalive is best-effort; not critical if unsupported
-    Ok(())
-  }
+  sock_ref.set_tcp_keepalive(&keepalive)
 }
 
 /// Coerce a timeout value into a `TimeoutConfig`.

@@ -43,6 +43,11 @@ pub use types::{NotifyFormat, NotifyType, StorageMode};
 
 use utils::{emoji::interpret_emojis, escape::interpret_escapes, format::smart_split};
 
+/// Install the ring crypto provider for rustls. Safe to call multiple times.
+pub fn ensure_crypto_provider() {
+  let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// Result of a notification dispatch.
 #[derive(Debug, Clone)]
 pub struct SendResult {
@@ -74,6 +79,7 @@ impl Default for Apprise {
 impl Apprise {
   /// Create a new empty Apprise instance.
   pub fn new() -> Self {
+    ensure_crypto_provider();
     Self { services: Vec::new(), asset: AppriseAsset::default(), tag_groups: Vec::new() }
   }
 

@@ -286,6 +286,7 @@ pub trait Notify: Send + Sync {
 // ── Helper: build a reqwest client ───────────────────────────────────────────
 
 pub fn build_client(verify_cert: bool) -> Result<reqwest::Client, NotifyError> {
+  crate::ensure_crypto_provider();
   let builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).danger_accept_invalid_certs(!verify_cert);
   builder.build().map_err(NotifyError::Http)
 }

@@ -147,6 +147,7 @@ impl Notify for Ses {
       service: "ses",
       content_type,
     });
+    crate::ensure_crypto_provider();
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().map_err(NotifyError::Http)?;
     let resp = client
       .post(&endpoint)
