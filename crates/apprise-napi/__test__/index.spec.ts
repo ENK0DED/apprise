@@ -1,5 +1,4 @@
-import { strict as assert } from 'node:assert';
-import { test } from 'node:test';
+import { expect, test } from 'bun:test';
 
 // Note: these tests require the native module to be built first:
 //   cd crates/apprise-napi && bun run build
@@ -7,30 +6,30 @@ import { test } from 'node:test';
 test('listServices returns array', async () => {
   const { listServices } = await import('../index.js');
   const services = listServices();
-  assert.ok(Array.isArray(services));
-  assert.ok(services.length > 100, `Expected 100+ services, got ${services.length}`);
+  expect(Array.isArray(services)).toBe(true);
+  expect(services.length, `Expected 100+ services, got ${services.length}`).toBeGreaterThan(100);
 });
 
 test('parseUrl returns service info for valid URL', async () => {
   const { parseUrl } = await import('../index.js');
   const info = parseUrl('json://localhost');
-  assert.ok(info !== null);
-  assert.equal(info.name, 'JSON');
-  assert.ok(info.protocols.includes('json'));
+  expect(info).not.toBeNull();
+  expect(info?.name).toBe('JSON');
+  expect(info?.protocols).toContain('json');
 });
 
 test('parseUrl returns null for invalid URL', async () => {
   const { parseUrl } = await import('../index.js');
   const info = parseUrl('invalid://');
-  assert.equal(info, null);
+  expect(info).toBeNull();
 });
 
 test('Apprise class can add services', async () => {
   const { Apprise } = await import('../index.js');
   const a = new Apprise();
-  assert.equal(a.len(), 0);
-  assert.ok(a.add('json://localhost'));
-  assert.equal(a.len(), 1);
+  expect(a.len()).toBe(0);
+  expect(a.add('json://localhost')).toBe(true);
+  expect(a.len()).toBe(1);
 });
 
 test('Apprise class details returns service info', async () => {
@@ -38,8 +37,8 @@ test('Apprise class details returns service info', async () => {
   const a = new Apprise();
   a.add('json://localhost');
   const details = a.details();
-  assert.equal(details.length, 1);
-  assert.equal(details[0].name, 'JSON');
+  expect(details.length).toBe(1);
+  expect(details[0].name).toBe('JSON');
 });
 
 test('Apprise class clear removes all services', async () => {
@@ -47,7 +46,7 @@ test('Apprise class clear removes all services', async () => {
   const a = new Apprise();
   a.add('json://localhost');
   a.add('xml://localhost');
-  assert.equal(a.len(), 2);
+  expect(a.len()).toBe(2);
   a.clear();
-  assert.equal(a.len(), 0);
+  expect(a.len()).toBe(0);
 });

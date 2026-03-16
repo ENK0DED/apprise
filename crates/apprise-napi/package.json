@@ -34,17 +34,13 @@
     "targets": [
       "x86_64-apple-darwin",
       "aarch64-apple-darwin",
-      "i686-pc-windows-msvc",
       "x86_64-pc-windows-msvc",
       "aarch64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu",
       "x86_64-unknown-linux-musl",
       "aarch64-unknown-linux-gnu",
       "aarch64-unknown-linux-musl",
-      "armv7-unknown-linux-gnueabihf",
-      "armv7-linux-androideabi",
       "aarch64-linux-android",
-      "x86_64-unknown-freebsd",
       "wasm32-wasip1-threads"
     ]
   },
@@ -57,8 +53,8 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
+    "build": "napi build --all-features --esm --platform --release",
+    "build:debug": "napi build --all-features --esm --platform",
     "create-npm-dirs": "napi create-npm-dirs",
     "format": "run-p format:prettier format:rs format:toml",
     "format:prettier": "prettier . -w",
@@ -66,7 +62,7 @@
     "format:rs": "cargo fmt",
     "lint": "oxlint .",
     "prepublishOnly": "napi prepublish -t npm",
-    "preversion": "napi build --platform && git add .",
+    "preversion": "napi build --all-features --esm --platform && git add .",
     "version": "napi version"
   },
   "devDependencies": {
