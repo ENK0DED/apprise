@@ -5,7 +5,6 @@
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
-  "browser": "browser.js",
   "repository": {
     "type": "git",
     "url": "https://github.com/enk0ded/apprise"
@@ -26,8 +25,7 @@
   ],
   "files": [
     "index.d.ts",
-    "index.js",
-    "browser.js"
+    "index.js"
   ],
   "napi": {
     "binaryName": "apprise",
