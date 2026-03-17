@@ -1,9 +1,3 @@
 target/
 .git/
-apprise/
-tests/
-bin/
 crates/apprise-napi/node_modules/
-*.pyc
-__pycache__/
-*.egg-info/
