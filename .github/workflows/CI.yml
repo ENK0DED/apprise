@@ -247,7 +247,7 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
-          path: artifacts
+          path: crates/apprise-napi/artifacts
       - name: Create npm dirs
         run: bun create-npm-dirs
       - name: Move artifacts
