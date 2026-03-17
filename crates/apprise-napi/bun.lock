@@ -5,11 +5,8 @@
     "": {
       "name": "apprise",
       "devDependencies": {
-        "@emnapi/core": "^1.9.0",
-        "@emnapi/runtime": "^1.9.0",
         "@napi-rs/cli": "^3.5.1",
         "@taplo/cli": "^0.7.0",
-        "@tybys/wasm-util": "^0.10.1",
         "@types/bun": "latest",
         "npm-run-all2": "^8.0.4",
         "oxlint": "^1.55.0",

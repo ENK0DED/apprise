@@ -9,8 +9,8 @@ rust-version = "1.94"
 license = "MIT"
 
 [workspace.dependencies]
-# Async runtime (only WASM-safe features here; platform-specific ones added per-crate)
-tokio = { version = "1", features = ["sync", "macros", "io-util", "rt", "time"] }
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "fs"] }
 
 # HTTP client
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "multipart", "form", "query"] }
