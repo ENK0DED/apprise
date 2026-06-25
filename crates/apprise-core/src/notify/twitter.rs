@@ -56,7 +56,7 @@ impl Twitter {
 
   fn oauth1_header(&self, method: &str, url: &str) -> String {
     use base64::Engine;
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha1::Sha1;
     let nonce: String = (0..32)
       .map(|_| {

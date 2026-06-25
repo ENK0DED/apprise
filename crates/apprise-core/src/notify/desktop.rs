@@ -38,7 +38,7 @@ impl Notify for Desktop {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
-  async fn send(&self, _ctx: &NotifyContext) -> Result<bool, NotifyError> {
+  async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     #[cfg(feature = "desktop")]
     {
       use notify_rust::Notification;
@@ -47,6 +47,7 @@ impl Notify for Desktop {
     }
     #[cfg(not(feature = "desktop"))]
     {
+      let _ = ctx;
       Err(NotifyError::Other("Desktop notifications not compiled in. Build with --features desktop".into()))
     }
   }

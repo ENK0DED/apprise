@@ -115,14 +115,7 @@ pub fn set_keepalive(stream: &tokio::net::TcpStream, interval_secs: u64) -> std:
   let keepalive = socket2::TcpKeepalive::new().with_time(Duration::from_secs(interval_secs));
 
   // Set keepalive interval if supported on this platform
-  #[cfg(any(
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "windows",
-  ))]
+  #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "netbsd", target_os = "windows",))]
   let keepalive = keepalive.with_interval(Duration::from_secs(interval_secs));
 
   sock_ref.set_tcp_keepalive(&keepalive)

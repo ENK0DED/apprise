@@ -49,7 +49,7 @@ impl Notify for Aprs {
     use tokio::net::TcpStream;
     let msg = format!("{}{}", if ctx.title.is_empty() { String::new() } else { format!("{}: ", ctx.title) }, ctx.body);
     let mut stream = TcpStream::connect("rotate.aprs2.net:10152").await.map_err(|e| NotifyError::Other(e.to_string()))?;
-    let login = format!("user {} pass {} vers Apprise 1.9.8\r\n", self.user, self.password);
+    let login = format!("user {} pass {} vers Apprise {}\r\n", self.user, self.password, env!("CARGO_PKG_VERSION"));
     stream.write_all(login.as_bytes()).await.map_err(|e| NotifyError::Other(e.to_string()))?;
     for target in &self.targets {
       let aprs_msg = format!("{}>{}>APRS::{}:{}\r\n", self.user, self.user, target, &msg[..msg.len().min(67)]);

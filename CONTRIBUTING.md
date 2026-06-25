@@ -31,7 +31,7 @@ merge your contributions smoothly.
 
 ### System Requirements
 
-- Rust >= 1.94 (install via [rustup](https://rustup.rs/))
+- Rust >= 1.96 (install via [rustup](https://rustup.rs/))
 - [Bun](https://bun.sh/) (for NAPI bindings and JS tests)
 - `git`
 

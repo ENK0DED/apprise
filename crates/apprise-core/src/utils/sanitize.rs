@@ -50,7 +50,7 @@ fn _hash_preview(s: &str, sample_size: usize) -> String {
   let bytes = s.as_bytes();
   let to_hash = if bytes.len() > sample_size { &bytes[..sample_size] } else { bytes };
   let digest = Sha256::digest(to_hash);
-  format!("{:x}", digest).chars().take(12).collect()
+  hex::encode(digest).chars().take(12).collect()
 }
 
 fn summarize_str(s: &str, opts: &SanitizeOptions, blob_mode: bool) -> serde_json::Value {
@@ -194,7 +194,7 @@ mod tests {
 
   #[test]
   fn test_null_bool_number_passthrough() {
-    let payload = json!({"n": null, "b": true, "i": 42, "f": 3.14});
+    let payload = json!({"n": null, "b": true, "i": 42, "f": 2.5});
     let result = sanitize_payload(&payload);
     assert_eq!(result, payload);
   }

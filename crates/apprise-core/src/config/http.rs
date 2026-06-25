@@ -13,7 +13,7 @@ fn cache_key(url: &str) -> String {
   use sha2::{Digest, Sha256};
   let mut hasher = Sha256::new();
   hasher.update(url.as_bytes());
-  format!("{:x}", hasher.finalize())
+  hex::encode(hasher.finalize())
 }
 
 /// Parse the `cache` query parameter.

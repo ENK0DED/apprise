@@ -21,9 +21,7 @@ System Administrators and DevOps who wish to send a notification now no longer n
 [![Paypal](https://img.shields.io/badge/paypal-donate-green.svg)](https://www.paypal.com/donate/?hosted_button_id=CR6YF7KLQWQ5E)
 [![Follow](https://img.shields.io/twitter/follow/l2gnux)](https://twitter.com/l2gnux/)<br/>
 [![Discord](https://img.shields.io/discord/558793703356104724.svg?colorB=7289DA&label=Discord&logo=Discord&logoColor=7289DA&style=flat-square)](https://discord.gg/MMPeN2D)
-[![Python](https://img.shields.io/pypi/pyversions/apprise.svg?style=flat-square)](https://pypi.org/project/apprise/)
 [![Build Status](https://github.com/caronc/apprise/actions/workflows/tests.yml/badge.svg)](https://github.com/caronc/apprise/actions/workflows/tests.yml)
-[![CodeCov Status](https://codecov.io/github/caronc/apprise/branch/master/graph/badge.svg)](https://codecov.io/github/caronc/apprise)
 [![PyPi Downloads](https://img.shields.io/pepy/dt/apprise.svg?style=flat-square)](https://pypi.org/project/apprise/)
 
 # Table of Contents
