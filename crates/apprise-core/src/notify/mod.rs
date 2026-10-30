@@ -98,6 +98,7 @@ pub mod qq;
 pub mod reddit;
 pub mod resend;
 pub mod revolt;
+pub mod ringcentral;
 pub mod rocketchat;
 pub mod rsyslog;
 pub mod ryver;

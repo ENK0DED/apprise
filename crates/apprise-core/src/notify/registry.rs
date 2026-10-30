@@ -110,6 +110,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(reddit::Reddit::static_details());
   collect!(resend::Resend::static_details());
   collect!(revolt::Revolt::static_details());
+  collect!(ringcentral::RingCentral::static_details());
   collect!(rocketchat::RocketChat::static_details());
   collect!(rsyslog::RSyslog::static_details());
   collect!(ryver::Ryver::static_details());
@@ -261,6 +262,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(reddit::Reddit::from_url, "reddit");
   reg!(resend::Resend::from_url, "resend");
   reg!(revolt::Revolt::from_url, "revolt");
+  reg!(ringcentral::RingCentral::from_url, "ringc");
   reg!(rocketchat::RocketChat::from_url, "rocket", "rockets");
   reg!(rsyslog::RSyslog::from_url, "rsyslog");
   reg!(ryver::Ryver::from_url, "ryver");
