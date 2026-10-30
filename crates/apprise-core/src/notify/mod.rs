@@ -173,8 +173,8 @@ pub mod workflows;
 pub mod wpush;
 pub mod wxpusher;
 pub mod xmpp;
-pub mod zalo;
 pub mod youlmk;
+pub mod zalo;
 pub mod zoom;
 pub mod zulip;
 

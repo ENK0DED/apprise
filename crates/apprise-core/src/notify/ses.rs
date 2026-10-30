@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Attachment, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::types::NotifyFormat;
-use crate::utils::aws::{SigV4Params, sigv4};
+use crate::utils::aws::{SigV4Request, sign};
 use crate::utils::email::{formataddr, header_encode, is_email, is_space, parse_emails, parse_emails_all, valid_addresses};
 use crate::utils::parse::ParsedUrl;
 use crate::utils::qsd::{Qsd, unquote, validate_token};
@@ -258,20 +258,29 @@ impl Notify for Ses {
       payload.push(("Source".into(), format!("{} <{}>", quote(&from_name, " "), quote(&self.from_email, "@ "))));
       let body = payload.iter().map(|(k, v)| format!("{}={}", quote_plus(k), quote_plus(v))).collect::<Vec<_>>().join("&");
 
-      // TODO(aws): sign x-amz-security-token too (upstream does) once
-      // utils::aws can include it in the signed headers.
-      let (auth, amz_date) = sigv4(&SigV4Params {
-        method: "POST",
-        endpoint: &endpoint,
-        body: body.as_bytes(),
-        access_key: &self.access_key,
-        secret_key: &self.secret_key,
-        region: &self.region,
-        service: "ses",
-        content_type: CONTENT_TYPE,
-      });
-      let mut request =
-        client.post(&endpoint).header("User-Agent", APP_ID).header("Content-Type", CONTENT_TYPE).header("X-Amz-Date", amz_date).header("Authorization", auth);
+      let host = format!("email.{}.amazonaws.com", self.region);
+      let signed = sign(
+        &SigV4Request {
+          method: "POST",
+          host: &host,
+          uri: "/",
+          query: "",
+          body: body.as_bytes(),
+          content_type: CONTENT_TYPE,
+          access_key: &self.access_key,
+          secret_key: &self.secret_key,
+          session_token: self.session_token.as_deref(),
+          region: &self.region,
+          service: "ses",
+        },
+        chrono::Utc::now(),
+      );
+      let mut request = client
+        .post(&endpoint)
+        .header("User-Agent", APP_ID)
+        .header("Content-Type", CONTENT_TYPE)
+        .header("X-Amz-Date", signed.amz_date)
+        .header("Authorization", signed.authorization);
       if let Some(token) = &self.session_token {
         request = request.header("X-Amz-Security-Token", token);
       }
@@ -773,8 +782,12 @@ mod tests {
     let mut ctx = ctx("t", "plain");
     ctx.body_format = NotifyFormat::Text;
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let req = &server.received_requests().await.unwrap()[0];
+    let requests = server.received_requests().await.unwrap();
+    let req = requests.iter().find(|r| r.method == wiremock::http::Method::POST).unwrap();
     assert_eq!(req.headers.get("x-amz-security-token").unwrap(), "sessiontoken123");
+    // Temporary credentials only work when the token is part of the signature.
+    let auth = req.headers.get("authorization").unwrap().to_str().unwrap();
+    assert!(auth.contains("SignedHeaders=content-type;host;x-amz-date;x-amz-security-token,"), "{}", auth);
     let fields = form(&req.body);
     let raw = raw_message(&fields);
     assert!(raw.starts_with("Content-Type: text/plain; charset=\"utf-8\""), "{}", raw);
