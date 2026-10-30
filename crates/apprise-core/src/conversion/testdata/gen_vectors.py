@@ -142,6 +142,34 @@ for d in "*_":
             add("can_emphasis", {"delim": d, "prev": p, "next": q},
                 [commonmark_can_open_emphasis(d, p, q), commonmark_can_close_emphasis(d, p, q)])
 
+# Markdown to HTML over notification-shaped and random documents.
+FR = ["**", "*", "_", "__", "***", "`", "``", "```", "\n", "\n\n", " ", "  ", "\t", "# ", "## ", "###### ", "####### ", "> ", ">> ",
+      "- ", "* ", "+ ", "1. ", "2. ", "10. ", "    ", "        ", "[", "]", "(", ")", "](", "](<", ">)", "<https://e.com/a_b>",
+      "<me@x.io>", "<", ">", "\\", "\\*", "\\_", "\\\\", "&", "&amp;", "&copy;", "&#39;", "word", "more text", "x", "é", "🐧",
+      "|", "| a | b |", "|---|---|", "a | b", "--- | ---", "---", "***", "___", "===", "-----", "~~", "!", "![i](u)", "![alt](<u> \"t\")",
+      "[l](https://x.io/a*b)", "[l](u 'title')", "[l][r]", "[r]: http://r.io \"T\"", "<b>", "</b>", "<div>", "</div>", "<p>x</p>",
+      "<!-- c -->", "<br>", "<hr>", "a_b_c", "foo*bar*", "\r\n", ":", ".", "https://x.io", "line  \n", "<span>s</span>", "<script>x</script>",
+      "1) ", "\n    code\n", "\n\n    code", "-   item", "*   nested\n    * child", "1. one\n2. two", "Term\n===", "Sub\n---"]
+mrng = random.Random(99)
+def rand_doc(k): return "".join(mrng.choice(FR) for _ in range(rng.randint(1, k)))
+md_corpus = list(md_inputs)
+md_corpus += [rand_doc(25) for _ in range(4000)]
+NOTES = [
+    "## Some Heading\n\nWith Data:\n\n- Foo\n- Bar", "Disk **90%** full on `server-1`\n\n> check it\n\n1. clean\n2. retry",
+    "Backup *finished* at 10:00\nNext: [docs](https://example.com/a_b)", "| Host | State |\n|---|---|\n| a | up |\n| b | down |",
+    "Line one\nLine two  \nLine three\n\n---\n\nFooter", "* item one\n* item two\n\n    code block\n\nafter",
+    "<b>raw</b> and <i>html</i>\n\n<div>\nblock\n</div>\n\ntext", "Escapes: \\*not bold\\* \\_x\\_ \\# \\| \\~ \\=",
+]
+md_corpus += NOTES
+seen, uniq = set(), []
+for x in md_corpus:
+    if x not in seen and len(x) < 3000:
+        seen.add(x); uniq.append(x)
+for x in uniq:
+    add("markdown_to_html", {"content": x, "extensions": None}, markdown_to_html(x))
+for x in uniq[:1500]:
+    add("markdown_to_html_plain", {"content": x, "extensions": []}, markdown_to_html(x, extensions=()))
+
 # Harvested upstream test calls (commonmark helpers with explicit indices).
 for name in ("commonmark_repair_chunk", "commonmark_scan_angle_dest", "commonmark_scan_paren_dest",
              "commonmark_scan_autolink_dest", "commonmark_scan_delimiter_run", "html_adjust", "html_tag_adjust",
@@ -160,12 +188,12 @@ for name, rows in V.items():
     rows = list(rows)
     srng.shuffle(rows)
     keep = []
-    budget = 60000
+    cap, budget = (250, 90000) if name.startswith("markdown_to_html") else (70, 20000)
     for r in rows:
         size = len(json.dumps(r, ensure_ascii=False))
         if size > 2500:
             continue
-        if budget - size < 0 or len(keep) >= 150:
+        if budget - size < 0 or len(keep) >= cap:
             break
         budget -= size
         keep.append(r)

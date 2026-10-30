@@ -107,7 +107,7 @@ fn evaluate(group: &str, a: &Value) -> Option<Value> {
     "html_to_text" => html_to_text(s(&a["content"])).into(),
     "html_to_markdown" => html_to_markdown(s(&a["content"])).into(),
     "html_tag_reducer" => HtmlTagReducer::default().reduce(s(&a["content"])).into(),
-    "markdown_to_html" => {
+    "markdown_to_html" | "markdown_to_html_plain" => {
       let exts: Vec<MarkdownExtension> = match a.get("extensions").and_then(Value::as_array) {
         None => markdown::DEFAULT_EXTENSIONS.to_vec(),
         Some(list) => list
@@ -127,9 +127,6 @@ fn evaluate(group: &str, a: &Value) -> Option<Value> {
       let (Some(from), Some(to)) = (a["from_format"].as_str(), a["to_format"].as_str()) else {
         return Some(a["content"].clone());
       };
-      if MARKDOWN_PENDING && from == "markdown" && to == "html" {
-        return None;
-      }
       convert_between(&from.parse().ok()?, &to.parse().ok()?, s(&a["content"])).into()
     }
     "commonmark_headings_to_bold" => commonmark_headings_to_bold(s(&a["body"])).into(),
@@ -273,10 +270,7 @@ fn report(passed: usize, failures: &[String]) {
 }
 
 // Groups whose port is still in progress.
-const PENDING: &[&str] = &["markdown_to_html"];
-
-// Markdown to HTML is still being ported; skip it inside convert_between too.
-const MARKDOWN_PENDING: bool = true;
+const PENDING: &[&str] = &[];
 
 #[test]
 fn test_upstream_vectors() {
@@ -295,4 +289,17 @@ fn test_upstream_vectors_full() {
   let (passed, failures) = run(&data, PENDING);
   eprintln!("{passed} passed, {} failed", failures.len());
   report(passed, &failures);
+}
+
+/// Convert every input in `APPRISE_MD_IN` (a JSON list of strings) and write
+/// the results to `APPRISE_MD_OUT`; a helper for shrinking failures.
+#[test]
+#[ignore]
+fn dump_markdown_conversions() {
+  let (Ok(input), Ok(output)) = (std::env::var("APPRISE_MD_IN"), std::env::var("APPRISE_MD_OUT")) else {
+    return;
+  };
+  let inputs: Vec<String> = serde_json::from_str(&std::fs::read_to_string(input).unwrap()).unwrap();
+  let outputs: Vec<String> = inputs.iter().map(|s| std::panic::catch_unwind(|| markdown_to_html(s)).unwrap_or_else(|_| "<panic>".to_string())).collect();
+  std::fs::write(output, serde_json::to_string(&outputs).unwrap()).unwrap();
 }

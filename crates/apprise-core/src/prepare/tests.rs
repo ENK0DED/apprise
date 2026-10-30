@@ -119,10 +119,6 @@ fn run_cases(data: &str) -> (usize, Vec<String>) {
   for case in &cases {
     let calls = case["calls"].as_array().unwrap();
     let input = fmt(&case["input_format"]).unwrap();
-    // Markdown to HTML is checked by the conversion vectors.
-    if input == NotifyFormat::Markdown && calls.first().map(|c| c["body_format"] == "html").unwrap_or(true) {
-      continue;
-    }
     let probe = Probe {
       body_maxlen: case["body_maxlen"].as_u64().unwrap() as usize,
       title_maxlen: case["title_maxlen"].as_u64().unwrap() as usize,

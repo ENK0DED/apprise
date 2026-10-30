@@ -26,5 +26,11 @@ make. `vectors_full.json` (about 80,000 vectors) is too large to commit;
 run it with
 `APPRISE_CONVERSION_VECTORS=vectors_full.json cargo test -p apprise-core --lib -- --include-ignored conversion::vectors`.
 
+`shrink.py` minimises inputs where the port and upstream disagree. Build
+the test binary (`cargo test -p apprise-core --lib --no-run`), then run
+`python -I shrink.py target/debug/deps/apprise_core-<hash> vectors_full.json`;
+it drives the ignored `dump_markdown_conversions` test.
+
 `gen_entities.py` and `gen_unicode.py` generate `entities.rs` and
-`unicode_tables.rs` from Python's `html` and `unicodedata` modules.
+`unicode_tables.rs` from Python's `html`, `re` and `unicodedata` modules;
+`gen_emoji.py` generates `utils/emoji_table.rs` from `apprise/emojis.py`.
