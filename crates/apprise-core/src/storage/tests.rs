@@ -309,3 +309,14 @@ fn test_store_files_are_owner_only() {
     assert_eq!(mode, 0o600, "{}", file.display());
   }
 }
+
+#[test]
+fn test_huge_expiry_never_expires() {
+  // e.g. a token response with "expires_in": 99999999999999
+  let tmp = tempfile::tempdir().unwrap();
+  let mut store = PersistentStore::new(Some(tmp.path()), "huge", StorageMode::Memory).unwrap();
+  assert!(store.set("token", json!("t"), Some(Duration::from_secs(99_999_999_999_999)), false));
+  assert_eq!(store.get("token"), Some(json!("t")));
+  assert!(store.set("forever", json!("f"), Some(Duration::MAX), false));
+  assert_eq!(store.get("forever"), Some(json!("f")));
+}

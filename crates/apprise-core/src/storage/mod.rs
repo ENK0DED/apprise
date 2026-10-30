@@ -102,7 +102,9 @@ struct CacheObject {
 
 impl CacheObject {
   fn new(value: Value, expires: Option<Duration>, persistent: bool) -> Self {
-    let expires = expires.map(|d| Utc::now() + chrono::Duration::from_std(d).unwrap_or(chrono::Duration::MAX));
+    // An expiry too far out for a timestamp (a server's huge expires_in)
+    // means never.
+    let expires = expires.and_then(|d| chrono::Duration::from_std(d).ok()).and_then(|d| Utc::now().checked_add_signed(d));
     Self { class_name: class_name(&value).to_string(), value, expires, persistent }
   }
 

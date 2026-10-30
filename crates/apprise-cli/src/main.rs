@@ -508,7 +508,12 @@ fn storage(
   } else {
     (!uid_filters.is_empty()).then(|| uid_filters.clone())
   };
-  PersistentStore::disk_prune(path, namespaces.as_deref(), Some(prune_days as u64 * 86_400), !dry_run);
+  // Upstream crashes on a day count this large; prune nothing instead of
+  // wrapping around to a recent cutoff.
+  let Some(expires) = (prune_days as u64).checked_mul(86_400) else {
+    return usage_error("The --storage-prune-days (-SPD) value is too large.");
+  };
+  PersistentStore::disk_prune(path, namespaces.as_deref(), Some(expires), !dry_run);
   0
 }
 
