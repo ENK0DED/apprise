@@ -6,7 +6,7 @@
 //! `str.isspace()` includes), and those differences change converted output.
 
 use super::entities::{HTML5, INVALID_CHARREFS, INVALID_CODEPOINTS};
-use super::unicode_tables::PUNCT_OR_SYMBOL;
+use super::unicode_tables::{DECIMAL, PUNCT_OR_SYMBOL, WORD};
 
 /// Python `str.isspace()` for one character.
 pub fn is_space(c: char) -> bool {
@@ -50,8 +50,23 @@ pub fn is_space_separator(c: char) -> bool {
 
 /// Unicode general category `P*` or `S*` (punctuation or symbol).
 pub fn is_punct_or_symbol(c: char) -> bool {
+  in_table(PUNCT_OR_SYMBOL, c)
+}
+
+/// Python's `\w` in a `str` pattern (letters, digits and `_`).
+pub fn is_word(c: char) -> bool {
+  c.is_ascii_alphanumeric() || c == '_' || (!c.is_ascii() && in_table(WORD, c))
+}
+
+/// Python's `\d` in a `str` pattern, and `str.isdecimal()` for one
+/// character (Unicode category `Nd`).
+pub fn is_decimal(c: char) -> bool {
+  c.is_ascii_digit() || (!c.is_ascii() && in_table(DECIMAL, c))
+}
+
+fn in_table(table: &[(u32, u32)], c: char) -> bool {
   let cp = c as u32;
-  PUNCT_OR_SYMBOL
+  table
     .binary_search_by(|&(lo, hi)| {
       if hi < cp {
         std::cmp::Ordering::Less
