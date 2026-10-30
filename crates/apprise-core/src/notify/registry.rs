@@ -75,6 +75,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(lametric::LaMetric::static_details());
   collect!(lark::Lark::static_details());
   collect!(lauther::Lauther::static_details());
+  collect!(lfgalarm::LfgAlarm::static_details());
   collect!(line::Line::static_details());
   collect!(mailgun::Mailgun::static_details());
   collect!(mastodon::Mastodon::static_details());
@@ -225,6 +226,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(lametric::LaMetric::from_url, "lametric", "lametrics");
   reg!(lark::Lark::from_url, "lark");
   reg!(lauther::Lauther::from_url, "lauther");
+  reg!(lfgalarm::LfgAlarm::from_url, "lfg");
   reg!(line::Line::from_url, "line");
   reg!(mailgun::Mailgun::from_url, "mailgun");
   reg!(mastodon::Mastodon::from_url, "mastodon", "toot", "mastodons", "toots");
@@ -377,6 +379,7 @@ fn instantiate(parsed: &ParsedUrl) -> Option<Box<dyn Notify>> {
         ("open.larksuite.com", "lark"),
         ("open.feishu.cn", "feishu"),
         ("webhooks.t2bot.io", "matrix"),
+        ("api.lfg.gm", "lfg"),
       ];
 
       for (pattern, schema_key) in host_patterns {
