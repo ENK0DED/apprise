@@ -1,46 +1,80 @@
 use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::notify::sms_targets::{is_email, is_phone_no, parse_list, unquoted_host};
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
 
 pub struct Threema {
   gateway_id: String,
   secret: String,
-  targets: Vec<String>,
+  /// `(parameter, value)`: `to` for Threema IDs, `email` or `phone`
+  targets: Vec<(&'static str, String)>,
   verify_certificate: bool,
   tags: Vec<String>,
 }
+
+/// `urllib.parse.urlencode()` as requests applies it to `params=`.
+fn query_encode(pairs: &[(&str, &str)]) -> String {
+  pairs
+    .iter()
+    .map(|(k, v)| format!("{}={}", urlencoding::encode(k).replace("%20", "+"), urlencoding::encode(v).replace("%20", "+")))
+    .collect::<Vec<_>>()
+    .join("&")
+}
+
 impl Threema {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // threema://gateway_id:secret/target or threema://*GWID@secret/target
-    // or threema:///?secret=secret&from=*THEGWID&to=...
-    let gateway_id = url.user.clone().or_else(|| url.get("from").map(|s| s.to_string())).or_else(|| url.get("gwid").map(|s| s.to_string()))?;
-    // Gateway ID must start with *
-    if !gateway_id.starts_with('*') {
+    // threema://gateway_id@secret/targets
+    let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let gateway_id = qs("from").or_else(|| qs("gwid")).or_else(|| url.user.clone()).unwrap_or_default();
+    if gateway_id.is_empty() {
+      tracing::warn!("Threema Gateway ID must be specified");
       return None;
     }
-    let secret =
-      url.password.clone().or_else(|| url.host.clone().filter(|h| !h.is_empty() && h != "_")).or_else(|| url.get("secret").map(|s| s.to_string()))?;
-    if secret.is_empty() {
+    if gateway_id.chars().count() != 8 {
+      tracing::warn!("Threema Gateway ID must be 8 characters in length");
       return None;
     }
-    let mut targets = url.path_parts.clone();
-    if let Some(to) = url.get("to") {
-      targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+    let secret = qs("secret").or_else(|| unquoted_host(url)).unwrap_or_default();
+    // Upstream validate_regex(): not blank and no leading whitespace
+    if secret.chars().next().is_none_or(char::is_whitespace) {
+      tracing::warn!("An invalid Threema API Secret was specified");
+      return None;
     }
+    let secret = secret.trim().to_string();
+
+    let mut entries = url.path_parts.clone();
+    if let Some(to) = qs("to") {
+      entries.extend(parse_list([to], false));
+    }
+    let mut targets = Vec::new();
+    for target in parse_list(&entries, false) {
+      if target.chars().count() == 8 {
+        targets.push(("to", target));
+      } else if let Some(email) = is_email(&target) {
+        targets.push(("email", email));
+      } else if let Some(phone) = is_phone_no(&target, 10) {
+        targets.push(("phone", phone.full));
+      } else {
+        tracing::warn!("Dropped invalid user/email/phone ({}) specified", target);
+      }
+    }
+
     Some(Self { gateway_id, secret, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
   }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "Threema Gateway",
-      service_url: Some("https://gateway.threema.ch"),
-      setup_url: None,
+      service_url: Some("https://gateway.threema.ch/"),
+      setup_url: Some("https://appriseit.com/services/threema/"),
       protocols: vec!["threema"],
       description: "Send messages via Threema Gateway.",
       attachment_support: false,
     }
   }
 }
+
 #[async_trait]
 impl Notify for Threema {
   fn schemas(&self) -> &[&str] {
@@ -55,18 +89,54 @@ impl Notify for Threema {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn body_maxlen(&self) -> usize {
+    3500
+  }
+  fn title_maxlen(&self) -> usize {
+    0
+  }
+
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
+    if self.targets.is_empty() {
+      tracing::warn!("There were no Threema Gateway targets to notify");
+      return Ok(false);
+    }
     let client = build_client(self.verify_certificate)?;
-    let msg = format!("{}{}", if ctx.title.is_empty() { String::new() } else { format!("{}: ", ctx.title) }, ctx.body);
-    let mut all_ok = true;
-    for target in &self.targets {
-      let params = [("from", self.gateway_id.as_str()), ("to", target.as_str()), ("secret", self.secret.as_str()), ("text", msg.as_str())];
-      let resp = client.post("https://msgapi.threema.ch/send_simple").header("User-Agent", APP_ID).form(&params).send().await?;
-      if !resp.status().is_success() {
-        all_ok = false;
+    let base = format!("{}/send_simple", service_base("https://msgapi.threema.ch"));
+    let mut has_error = false;
+
+    for (key, target) in &self.targets {
+      // Everything travels in the query string; the body is empty
+      let query = query_encode(&[("secret", &self.secret), ("from", &self.gateway_id), ("text", &ctx.body), (key, target)]);
+      tracing::debug!("Threema Gateway GET URL: {} (cert_verify={})", base, self.verify_certificate);
+      let result = client
+        .post(format!("{}?{}", base, query))
+        .header("User-Agent", APP_ID)
+        .header("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+        .header("Accept", "*/*")
+        .send()
+        .await;
+      match result {
+        Ok(resp) if resp.status() == reqwest::StatusCode::OK => tracing::info!("Sent Threema Gateway notification to {}", target),
+        Ok(resp) => {
+          let status = resp.status();
+          tracing::warn!(
+            "Failed to send Threema Gateway notification to {}: {}error={}",
+            target,
+            status.canonical_reason().map(|r| format!("{}, ", r)).unwrap_or_default(),
+            status.as_u16()
+          );
+          tracing::debug!("Response Details: {}", resp.text().await.unwrap_or_default().chars().take(2000).collect::<String>());
+          has_error = true;
+        }
+        Err(e) => {
+          tracing::warn!("A Connection error occurred sending Threema Gateway:{} notification", target);
+          tracing::debug!("Socket Exception: {}", e);
+          has_error = true;
+        }
       }
     }
-    Ok(all_ok)
+    Ok(!has_error)
   }
 }
 
@@ -74,19 +144,11 @@ impl Notify for Threema {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
+  use wiremock::matchers::{method, path, query_param};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
 
-  #[test]
-  fn test_valid_urls() {
-    let urls = vec![
-      "threema://*THEGWID@secret",
-      "threema://*THEGWID@secret/16134443333",
-      "threema://*THEGWID@secret/16134442222/16134443333",
-      "threema:///?secret=secret&from=*THEGWID&to=16134448888,user1@gmail.com,abcd1234",
-      "threema:///?secret=secret&gwid=*THEGWID&to=16134448888,user2@gmail.com,abcd1234",
-    ];
-    for url in &urls {
-      assert!(from_url(url).is_some(), "Should parse: {}", url);
-    }
+  fn threema(url: &str) -> Threema {
+    Threema::from_url(&ParsedUrl::parse(url).expect("parse")).expect("from_url")
   }
 
   #[test]
@@ -94,8 +156,10 @@ mod tests {
     let urls = vec![
       "threema://",
       "threema://@:",
-      // gateway id must start with *
+      // Gateway IDs are 8 characters long
       "threema://user@secret",
+      "threema://*THEGWID",
+      "threema:///?from=*THEGWID&to=16134442222",
     ];
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
@@ -103,65 +167,85 @@ mod tests {
   }
 
   #[test]
-  fn test_from_url_user_at_host() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("threema://*THEGWID@secret/16134443333").unwrap();
-    let t = Threema::from_url(&parsed).unwrap();
+  fn test_valid_urls() {
+    let urls = vec![
+      // Too short a number is dropped (notify fails)
+      "threema://*THEGWID@secret/2222/",
+      "threema://*THEGWID@secret/16134442222/",
+      "threema://*THEGWID@secret/16134442222/16134443333/",
+      "threema:///?secret=secret&from=*THEGWID&to=16134442222,16134443333",
+      "threema:///?secret=secret&gwid=*THEGWID&to=16134442222,16134443333",
+      "threema://*THEGWID@secret",
+      "threema://*THEGWID@secret/16134443333",
+    ];
+    for url in &urls {
+      assert!(from_url(url).is_some(), "Should parse: {}", url);
+    }
+  }
+
+  #[test]
+  fn test_from_url_fields() {
+    let t = threema("threema://*THEGWID@sec%2Fret/ECHOECHO/16134442222/user@example.com/abc/?to=%2B1%20(613)%20444-3333,b%2Bx@example.org");
     assert_eq!(t.gateway_id, "*THEGWID");
-    assert_eq!(t.secret, "secret");
-    assert_eq!(t.targets, vec!["16134443333"]);
-  }
+    assert_eq!(t.secret, "sec/ret");
+    // parse_list() sorts the targets
+    assert_eq!(
+      t.targets,
+      vec![
+        ("phone", "16134443333".to_string()),
+        ("phone", "16134442222".to_string()),
+        ("to", "ECHOECHO".to_string()),
+        ("email", "b+x@example.org".to_string()),
+        ("email", "user@example.com".to_string()),
+      ]
+    );
 
-  #[test]
-  fn test_from_url_multiple_targets() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("threema://*THEGWID@secret/16134442222/16134443333").unwrap();
-    let t = Threema::from_url(&parsed).unwrap();
-    assert_eq!(t.targets.len(), 2);
-    assert!(t.targets.contains(&"16134442222".to_string()));
-    assert!(t.targets.contains(&"16134443333".to_string()));
-  }
-
-  #[test]
-  fn test_from_url_query_params_from() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("threema:///?secret=mysecret&from=*THEGWID&to=16134448888").unwrap();
-    let t = Threema::from_url(&parsed).unwrap();
+    let t = threema("threema://?gwid=*THEGWID&secret=mysecret&to=+1%20(555)%20123-9876");
     assert_eq!(t.gateway_id, "*THEGWID");
     assert_eq!(t.secret, "mysecret");
-    assert!(t.targets.contains(&"16134448888".to_string()));
+    assert_eq!(t.targets, vec![("phone", "15551239876".to_string())]);
+    assert!(threema("threema://*THEGWID@secret/2222/").targets.is_empty());
   }
 
   #[test]
-  fn test_from_url_query_params_gwid() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("threema:///?secret=mysecret&gwid=*THEGWID&to=16134448888").unwrap();
-    let t = Threema::from_url(&parsed).unwrap();
-    assert_eq!(t.gateway_id, "*THEGWID");
+  fn test_service_details() {
+    let d = Threema::static_details();
+    assert_eq!(d.service_name, "Threema Gateway");
+    assert!(d.protocols.contains(&"threema"));
   }
 
-  #[test]
-  fn test_from_url_no_targets() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("threema://*THEGWID@secret").unwrap();
-    let t = Threema::from_url(&parsed).unwrap();
-    assert!(t.targets.is_empty());
+  #[tokio::test]
+  async fn test_send_query_params() {
+    // Matches upstream pycapture output
+    let server = MockServer::start().await;
+    for (key, value) in [("phone", "16134443333"), ("to", "ECHOECHO"), ("email", "user@example.com")] {
+      Mock::given(method("POST"))
+        .and(path("/send_simple"))
+        .and(query_param("secret", "sec/ret"))
+        .and(query_param("from", "*THEGWID"))
+        .and(query_param("text", "title\r\nHé ~*"))
+        .and(query_param(key, value))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    }
+    let svc = from_url("threema://*THEGWID@sec%2Fret/ECHOECHO/16134443333/user@example.com").unwrap();
+    let ctx = NotifyContext { body: "title\r\nHé ~*".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+    let req = &server.received_requests().await.unwrap()[0];
+    assert!(req.body.is_empty());
+    assert_eq!(req.url.query().unwrap(), "secret=sec%2Fret&from=%2ATHEGWID&text=title%0D%0AH%C3%A9+~%2A&phone=16134443333");
   }
 
-  #[test]
-  fn test_gateway_must_start_with_star() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("threema://NOLEADINGSTAR@secret/16134443333").unwrap();
-    assert!(Threema::from_url(&parsed).is_none());
-  }
-
-  #[test]
-  fn test_from_url_to_param_multiple() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("threema:///?secret=sec&from=*GW&to=111,222,333").unwrap();
-    let t = Threema::from_url(&parsed).unwrap();
-    assert_eq!(t.targets.len(), 3);
-  }
-
-  #[test]
-  fn test_static_details() {
-    let details = Threema::static_details();
-    assert_eq!(details.service_name, "Threema Gateway");
-    assert_eq!(details.service_url, Some("https://gateway.threema.ch"));
-    assert!(details.protocols.contains(&"threema"));
-    assert!(!details.attachment_support);
+  #[tokio::test]
+  async fn test_send_failures() {
+    let ctx = NotifyContext { body: "b".into(), ..Default::default() };
+    assert!(!threema("threema://*THEGWID@secret").send(&ctx).await.unwrap());
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(401)).expect(1).mount(&server).await;
+    let svc = from_url("threema://*THEGWID@secret/16134443333").unwrap();
+    assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+    assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
   }
 }
