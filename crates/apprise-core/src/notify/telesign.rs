@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::error::NotifyError;
-use crate::notify::messaging_targets::{is_phone_no, parse_phone_no, unquote, validate_token};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
+use crate::utils::qsd::validate_token;
 
 /// The kinds of message Telesign accepts: alerts, one-time passwords and
 /// marketing.
@@ -31,14 +32,15 @@ impl Telesign {
     };
 
     // The API Key may be given as ?key= instead
-    let apikey = url.get("key").filter(|k| !k.is_empty()).map(str::to_string).or_else(|| url.password.clone());
+    // Upstream unquotes these query values once more
+    let apikey = url.get("key").filter(|k| !k.is_empty()).map(unquote).or_else(|| url.password.clone());
     let Some(apikey) = apikey.as_deref().and_then(validate_token) else {
       tracing::warn!("A Telesign API Key must be specified.");
       return None;
     };
 
     // Alerts are the default message type
-    let message_type = match url.get("type").filter(|t| !t.is_empty()) {
+    let message_type = match url.get("type").filter(|t| !t.is_empty()).map(unquote) {
       Some(requested) => {
         let wanted = requested.trim().to_uppercase();
         let Some(found) = TELESIGN_MESSAGE_TYPES.iter().find(|t| **t == wanted) else {
@@ -50,10 +52,10 @@ impl Telesign {
       None => TELESIGN_MESSAGE_TYPES[0],
     };
 
-    let source = url.get("from").map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+    let source = url.get("from").map(|f| unquote(f).trim().to_string()).filter(|f| !f.is_empty());
 
     // Our first phone number is in the host; the rest are in the path
-    let mut raw_targets: Vec<String> = url.host.as_deref().map(unquote).into_iter().collect();
+    let mut raw_targets: Vec<String> = url.host.clone().into_iter().collect();
     raw_targets.extend(url.path_parts.iter().cloned());
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
       raw_targets.extend(parse_phone_no(&[to]));
@@ -62,7 +64,7 @@ impl Telesign {
     let mut targets = Vec::new();
     for target in parse_phone_no(&raw_targets) {
       match is_phone_no(&target, 10) {
-        Some(phone) => targets.push(phone),
+        Some(phone) => targets.push(phone.full),
         None => tracing::warn!("Dropped invalid Telesign phone # ({}) specified.", target),
       }
     }
@@ -125,11 +127,18 @@ impl Notify for Telesign {
     let mut has_error = false;
 
     for target in &self.targets {
+      // A retry skips targets that already accepted the message
+
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       let mut form = vec![("phone_number", target.as_str()), ("message", ctx.body.as_str()), ("message_type", self.message_type)];
       // Only name a sender when one was given
       if let Some(source) = &self.source {
         form.push(("sender_id", source.as_str()));
       }
+
+      crate::notify::throttle().await;
 
       let result = client
         .post(&url)
@@ -143,6 +152,7 @@ impl Notify for Telesign {
       match result {
         Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
           tracing::info!("Sent Telesign notification to {}.", target);
+          crate::delivery::mark_delivered(target, false);
         }
         Ok(resp) => {
           let status = resp.status().as_u16();
@@ -157,7 +167,7 @@ impl Notify for Telesign {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Telesign notification to {}.", target);
-          tracing::debug!("Socket Exception: {}", e.without_url());
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -172,7 +182,7 @@ mod tests {
   use super::*;
   use crate::notify::registry::from_url;
   use serde_json::json;
-  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::matchers::{body_string, body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   const CUSTOMER_ID: &str = "FFFFFFFF-EEEE-DDDD-1234-AB1234567890";
@@ -284,6 +294,7 @@ mod tests {
     let server = MockServer::start().await;
     for phone in ["15551234567", "15551234568"] {
       Mock::given(method("POST"))
+        .and(path("/v1/messaging"))
         .and(body_string(format!("phone_number={}&message=123456&message_type=OTP", phone)))
         .respond_with(ok_response())
         .expect(1)
@@ -315,7 +326,7 @@ mod tests {
       ResponseTemplate::new(202),
     ] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(response).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1/messaging")).respond_with(response).expect(1).mount(&server).await;
       let svc = from_url(&format!("telesign://{}:{}@15551234567", CUSTOMER_ID, APIKEY_URL)).unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("test"))).await.unwrap());
     }
@@ -323,12 +334,14 @@ mod tests {
     // One refused phone number fails the send but not the others
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v1/messaging"))
       .and(body_string("phone_number=15551234567&message=test&message_type=ARN"))
       .respond_with(ok_response())
       .expect(1)
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path("/v1/messaging"))
       .and(body_string("phone_number=15551234568&message=test&message_type=ARN"))
       .respond_with(ResponseTemplate::new(400).set_body_string("{}"))
       .expect(1)
@@ -339,5 +352,29 @@ mod tests {
 
     let svc = from_url(&format!("telesign://{}:{}@15551234567", CUSTOMER_ID, APIKEY_URL)).unwrap();
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx("test"))).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/v1/messaging"))
+      .and(body_string_contains("phone_number=15551232222"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/v1/messaging")).respond_with(ok_response()).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("telesign://{}:{}@15551231111/15551232222?retry=1&wait=0", CUSTOMER_ID, APIKEY_URL)));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("b"))).await.is_success());
+    let sent: Vec<String> = crate::notify::custom_json::requests_to(&server, "POST", "/v1/messaging")
+      .await
+      .iter()
+      .map(|r| url::form_urlencoded::parse(&r.body).find(|(k, _)| k == "phone_number").unwrap().1.into_owned())
+      .collect();
+    assert_eq!(sent, vec!["15551231111", "15551232222", "15551232222"]);
   }
 }

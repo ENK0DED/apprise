@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::error::NotifyError;
-use crate::notify::messaging_targets::{parse_list, unquote};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyFormat;
-use crate::utils::parse::ParsedUrl;
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
 
 /// Zalo Bot messages (`zalo://{bot_token}/{chat_ids}`).
 pub struct Zalo {
@@ -31,7 +31,7 @@ fn is_chat_id(target: &str) -> bool {
 
 impl Zalo {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let mut host = url.host.as_deref().map(unquote).unwrap_or_default();
+    let mut host = url.host.clone().unwrap_or_default();
     let mut entries = url.path_parts.clone();
 
     // The colon inside the Bot Token looks like a port to a URL parser.
@@ -54,7 +54,8 @@ impl Zalo {
         if !host.is_empty() {
           entries.insert(0, host);
         }
-        token.to_string()
+        // Upstream unquotes ?token= once more
+        unquote(token)
       }
       None => {
         let secret = if entries.is_empty() { String::new() } else { entries.remove(0) };
@@ -63,7 +64,8 @@ impl Zalo {
     };
 
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      entries.extend(parse_list(&[to]));
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      entries.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
 
     if !is_bot_token(&token) {
@@ -114,6 +116,9 @@ impl Notify for Zalo {
   fn notify_format(&self) -> NotifyFormat {
     NotifyFormat::Markdown
   }
+  fn notify_formats(&self) -> Vec<NotifyFormat> {
+    vec![NotifyFormat::Markdown, NotifyFormat::Text]
+  }
   fn body_maxlen(&self) -> usize {
     2000
   }
@@ -138,8 +143,14 @@ impl Notify for Zalo {
     }
 
     for target in &self.targets {
+      // A retry skips targets that already accepted the message
+
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       payload["chat_id"] = json!(target);
 
+      crate::notify::throttle().await;
       let result =
         client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/json; charset=utf-8").body(payload.to_string()).send().await;
 
@@ -154,12 +165,13 @@ impl Notify for Zalo {
             has_error = true;
           } else {
             tracing::info!("Sent Zalo notification to {}.", target);
+            crate::delivery::mark_delivered(target, false);
           }
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Zalo notification to {}.", target);
           // The request URL holds the Bot Token, so never log it
-          tracing::debug!("Socket Exception: {}", e.without_url());
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -173,7 +185,7 @@ impl Notify for Zalo {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   const TOKEN: &str = "123456789:abcdefghijKLMNOPqrst";
@@ -252,6 +264,7 @@ mod tests {
   fn test_attributes() {
     let svc = from_url(&format!("zalo://{}/chat1", TOKEN)).unwrap();
     assert_eq!(svc.notify_format(), NotifyFormat::Markdown);
+    assert_eq!(svc.notify_formats(), vec![NotifyFormat::Markdown, NotifyFormat::Text]);
     assert_eq!(svc.body_maxlen(), 2000);
     assert_eq!(svc.title_maxlen(), 0);
     assert!(!svc.attachment_support());
@@ -306,7 +319,7 @@ mod tests {
       ResponseTemplate::new(401),
     ] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(response).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path(format!("/bot{}/sendMessage", TOKEN))).respond_with(response).expect(1).mount(&server).await;
       let svc = from_url(&format!("zalo://{}/chat1", TOKEN)).unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body", NotifyFormat::Markdown))).await.unwrap());
     }
@@ -314,7 +327,7 @@ mod tests {
     // An empty or non-JSON body with a 200 is still a success
     for response in [ResponseTemplate::new(200), ResponseTemplate::new(200).set_body_string("not json")] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(response).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path(format!("/bot{}/sendMessage", TOKEN))).respond_with(response).expect(1).mount(&server).await;
       let svc = from_url(&format!("zalo://{}/chat1", TOKEN)).unwrap();
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("body", NotifyFormat::Markdown))).await.unwrap());
     }
@@ -322,12 +335,14 @@ mod tests {
     // One refused Chat ID fails the send, but the other is still notified
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path(format!("/bot{}/sendMessage", TOKEN)))
       .and(body_json(json!({"text": "body", "parse_mode": "markdown", "chat_id": "chat1"})))
       .respond_with(ok_response())
       .expect(1)
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path(format!("/bot{}/sendMessage", TOKEN)))
       .and(body_json(json!({"text": "body", "parse_mode": "markdown", "chat_id": "chat2"})))
       .respond_with(ResponseTemplate::new(401))
       .expect(1)
@@ -338,5 +353,29 @@ mod tests {
 
     let svc = from_url(&format!("zalo://{}/chat1", TOKEN)).unwrap();
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx("body", NotifyFormat::Markdown))).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second chat fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path(format!("/bot{}/sendMessage", TOKEN)))
+      .and(body_partial_json(json!({"chat_id": "chat2"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path(format!("/bot{}/sendMessage", TOKEN))).respond_with(ok_response()).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("zalo://{}/chat1/chat2?retry=1&wait=0", TOKEN)));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("body", NotifyFormat::Markdown))).await.is_success());
+    let sent: Vec<Value> = crate::notify::custom_json::requests_to(&server, "POST", &format!("/bot{}/sendMessage", TOKEN))
+      .await
+      .iter()
+      .map(|r| r.body_json::<Value>().unwrap()["chat_id"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!("chat1"), json!("chat2"), json!("chat2")]);
   }
 }

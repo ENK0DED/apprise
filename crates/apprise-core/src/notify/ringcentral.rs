@@ -7,9 +7,9 @@ use reqwest::multipart::{Form, Part};
 use serde_json::{Value, json};
 
 use crate::error::NotifyError;
-use crate::notify::messaging_targets::{is_phone_no, parse_phone_no, unquote};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 
 /// Access token lifetime requested by the password grant (60 minutes).
 const ACCESS_TOKEN_TTL: u32 = 3600;
@@ -95,7 +95,9 @@ pub struct RingCentral {
 impl RingCentral {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     let mut entries = url.path_parts.clone();
-    let client_id = url.host.as_deref().map(unquote).unwrap_or_default();
+    let client_id = url.host.clone().unwrap_or_default();
+    // Upstream unquotes these query values once more
+    let qsd = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote);
 
     // The first path entry is the client secret
     let mut client_secret = if entries.is_empty() { None } else { Some(entries.remove(0)) };
@@ -112,12 +114,12 @@ impl RingCentral {
 
     // ?token= is applied before the mode is detected so that a JWT given
     // this way is recognised
-    if let Some(t) = url.get("token").filter(|t| !t.is_empty()) {
-      token = t.to_string();
+    if let Some(t) = qsd("token") {
+      token = t;
     }
 
-    let mode = match url.get("mode").filter(|m| !m.is_empty()) {
-      Some(requested) => match match_prefix(requested, &[("basic", AuthMode::Basic), ("jwt", AuthMode::Jwt)]) {
+    let mode = match qsd("mode") {
+      Some(requested) => match match_prefix(&requested, &[("basic", AuthMode::Basic), ("jwt", AuthMode::Jwt)]) {
         Some(mode) => mode,
         None => {
           tracing::warn!("An invalid RingCentral Authentication Mode ({}) was specified.", requested);
@@ -129,14 +131,14 @@ impl RingCentral {
       None => AuthMode::Basic,
     };
 
-    if let Some(secret) = url.get("secret").filter(|s| !s.is_empty()) {
-      client_secret = Some(secret.to_string());
+    if let Some(secret) = qsd("secret") {
+      client_secret = Some(secret);
     }
-    if let Some(from) = url.get("from").filter(|f| !f.is_empty()) {
-      source = Some(from.to_string());
+    if let Some(from) = qsd("from") {
+      source = Some(from);
     }
-    if let Some(from) = url.get("source").filter(|f| !f.is_empty()) {
-      source = Some(from.to_string());
+    if let Some(from) = qsd("source") {
+      source = Some(from);
     }
 
     let mut raw_targets = entries;
@@ -160,13 +162,13 @@ impl RingCentral {
       return None;
     }
 
-    let Some(source) = source.as_deref().and_then(|s| is_phone_no(s, 10)) else {
+    let Some(source) = source.as_deref().and_then(|s| is_phone_no(s, 10)).map(|p| p.full) else {
       tracing::warn!("The RingCentral source (From) phone # ({}) is invalid.", source.unwrap_or_default());
       return None;
     };
 
-    let environment = match url.get("env").filter(|e| !e.is_empty()) {
-      Some(requested) => match match_prefix(requested, &[("prod", Environment::Production), ("sandbox", Environment::Sandbox)]) {
+    let environment = match qsd("env") {
+      Some(requested) => match match_prefix(&requested, &[("prod", Environment::Production), ("sandbox", Environment::Sandbox)]) {
         Some(environment) => environment,
         None => {
           tracing::warn!("An invalid RingCentral environment ({}) was specified.", requested);
@@ -179,7 +181,7 @@ impl RingCentral {
     let mut targets = Vec::new();
     for target in parse_phone_no(&raw_targets) {
       match is_phone_no(&target, 10) {
-        Some(phone) => targets.push(phone),
+        Some(phone) => targets.push(phone.full),
         None => tracing::warn!("Dropped invalid RingCentral phone # ({}) specified.", target),
       }
     }
@@ -247,7 +249,7 @@ impl RingCentral {
       Ok(resp) => resp,
       Err(e) => {
         tracing::warn!("A Connection error occurred sending RingCentral auth.login.");
-        tracing::debug!("Socket Exception: {}", e.without_url());
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return None;
       }
     };
@@ -309,6 +311,10 @@ impl Notify for RingCentral {
 
     let mut has_error = false;
     for target in targets {
+      // A retry skips numbers that already accepted the message
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       let metadata = json!({
         "from": {"phoneNumber": format!("+{}", self.source)},
         "to": [{"phoneNumber": format!("+{}", target)}],
@@ -329,9 +335,12 @@ impl Notify for RingCentral {
         request.header("Content-Type", "application/json").body(metadata.to_string())
       };
 
+      // Only notification calls are throttled; logins are not
+      crate::notify::throttle().await;
       match request.send().await {
         Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
           tracing::info!("Sent RingCentral notification to {}.", target);
+          crate::delivery::mark_delivered(target, false);
         }
         Ok(resp) => {
           tracing::warn!("Failed to send RingCentral notification: error={}.", resp.status().as_u16());
@@ -340,7 +349,7 @@ impl Notify for RingCentral {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending RingCentral notification.");
-          tracing::debug!("Socket Exception: {}", e.without_url());
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -380,6 +389,8 @@ mod tests {
       "endpoint_id": "akfJbWJYQ7GEUev2CaR37k",
     }))
   }
+
+  const SMS: &str = "/restapi/v1.0/account/~/extension/~/sms";
 
   fn sms_response() -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(json!({"id": 123, "type": "SMS", "messageStatus": "Queued"}))
@@ -587,9 +598,8 @@ mod tests {
     ctx.attachments.push(Attachment { name: "notes.txt".into(), data: b"plain text attachment".to_vec(), mime_type: "text/plain".into() });
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    // Only our POSTs: other processes on the host may probe the mock port
-    let requests: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect();
-    let mms = &requests[1];
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/restapi/v1.0/account/~/extension/~/mms").await;
+    let mms = &requests[0];
     assert!(mms.headers.get("Content-Type").unwrap().to_str().unwrap().starts_with("multipart/form-data; boundary="));
     let body = String::from_utf8_lossy(&mms.body).to_string();
     let metadata = sms_body("+15559876543", "title\r\nbody").to_string();
@@ -647,8 +657,14 @@ mod tests {
     // One failed target still notifies the rest
     let server = MockServer::start().await;
     mount_password_login(&server, 1).await;
-    Mock::given(method("POST")).and(body_json(sms_body("+15559998881", "Partial"))).respond_with(sms_response()).expect(1).mount(&server).await;
-    Mock::given(method("POST")).and(body_json(sms_body("+15559998882", "Partial"))).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path(SMS)).and(body_json(sms_body("+15559998881", "Partial"))).respond_with(sms_response()).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path(SMS))
+      .and(body_json(sms_body("+15559998882", "Partial")))
+      .respond_with(ResponseTemplate::new(500))
+      .expect(1)
+      .mount(&server)
+      .await;
     let svc = from_url("ringc://15551234567:secretpass@myclientid/myclientsecret/15559998881/15559998882").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("Partial"))).await.unwrap());
 
@@ -666,6 +682,31 @@ mod tests {
   fn test_blank_option_value_loads() {
     // Upstream trims query values, so a whitespace-only value counts as unset.
     let url = "ringc://18005554321:password@client_id/secret?mode=%20";
-    assert!(crate::notify::registry::from_url(&url).is_some(), "Should parse: {}", url);
+    assert!(crate::notify::registry::from_url(url).is_some(), "Should parse: {}", url);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    mount_password_login(&server, 1).await;
+    // The second number fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path(SMS))
+      .and(body_json(sms_body("+15559998882", "Retry")))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path(SMS)).respond_with(sms_response()).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("ringc://15551234567:secretpass@myclientid/myclientsecret/15559998881/15559998882?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("Retry"))).await.is_success());
+    let sent: Vec<Value> = crate::notify::custom_json::requests_to(&server, "POST", SMS)
+      .await
+      .iter()
+      .map(|r| r.body_json::<Value>().unwrap()["to"][0]["phoneNumber"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!("+15559998881"), json!("+15559998882"), json!("+15559998882")]);
   }
 }

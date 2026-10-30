@@ -1,8 +1,8 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::types::NotifyType;
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::{Map, Value, json};
@@ -76,9 +76,9 @@ fn parse_priority(value: Option<&str>) -> Result<i64, ()> {
 
 impl SmsEagle {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (url_user, _) = url_credentials(url);
     // smseagle(s)://token@host[:port]/targets
-    let token = url.get("token").map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).or_else(|| url_user.clone()).unwrap_or_default();
+    // Upstream unquotes ?token= once more
+    let token = url.get("token").filter(|v| !v.is_empty()).map(unquote).or_else(|| url.user.clone()).unwrap_or_default();
     if token.chars().next().is_none_or(char::is_whitespace) {
       tracing::warn!("An invalid SMSEagle Access Token was specified.");
       return None;
@@ -89,18 +89,18 @@ impl SmsEagle {
       return None;
     }
 
-    let priority_arg = url.get("priority").filter(|v| !v.trim().is_empty());
-    let Ok(priority) = parse_priority(priority_arg) else {
+    let priority_arg = url.get("priority").filter(|v| !v.is_empty()).map(unquote);
+    let Ok(priority) = parse_priority(priority_arg.as_deref()) else {
       tracing::warn!("An invalid SMSEagle priority ({}) was specified.", priority_arg.unwrap_or_default());
       return None;
     };
 
     let mut entries = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|v| !v.trim().is_empty()) {
-      entries.extend(parse_phone_no([to], false));
+      entries.extend(parse_phone_no(&[to]));
     }
     let (mut phones, mut groups, mut contacts) = (Vec::new(), Vec::new(), Vec::new());
-    for target in parse_phone_no(&entries, false) {
+    for target in parse_phone_no(&entries) {
       if let Some(phone) = is_phone_no(&target, 9) {
         // Keep a leading + if one was given
         phones.push(format!("{}{}", if target.starts_with('+') { "+" } else { "" }, phone.full));
@@ -223,19 +223,25 @@ impl Notify for SmsEagle {
       ("contact", "sms.send_tocontact", "contactname", &self.contacts),
     ];
     for (category, rpc_method, target_key, targets) in categories {
-      for chunk in targets.chunks(batch_size) {
+      for (index, chunk) in targets.chunks(batch_size).enumerate() {
+        // A retry skips batches that already accepted the message
+        let key = format!("{}:{}", category, index);
+        if crate::delivery::is_delivered(&key, false) {
+          continue;
+        }
         let mut chunk_params = params.clone();
         chunk_params.insert(target_key.into(), json!(chunk.join(",")));
         let payload = json!({ "method": rpc_method, "params": chunk_params });
         let to = if batch_size == 1 { format!("to {}", chunk[0]) } else { "(s)".to_string() };
         tracing::debug!("SMSEagle POST URL: {} (cert_verify={})", url, self.verify_certificate);
 
+        crate::notify::throttle().await;
         let resp =
           match client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/json").body(serde_json::to_string(&payload)?).send().await {
             Ok(resp) => resp,
             Err(e) => {
               tracing::warn!("A Connection error occured sending {} SMSEagle {} notification(s).", chunk.len(), category);
-              tracing::debug!("Socket Exception: {}", e);
+              tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
               has_error = true;
               continue;
             }
@@ -259,6 +265,7 @@ impl Notify for SmsEagle {
           continue;
         }
         tracing::info!("Sent {} SMSEagle {} notification{}.", chunk.len(), category, if batch_size == 1 { format!(" {}", to) } else { "(s)".into() });
+        crate::delivery::mark_delivered(&key, false);
       }
     }
     Ok(!has_error)
@@ -270,7 +277,7 @@ mod tests {
   use super::*;
   use crate::notify::Attachment;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   const GOOD: &str = r#"{"result": {"message_id": "748", "status": "ok"}}"#;
@@ -407,12 +414,14 @@ mod tests {
     let server = MockServer::start().await;
     let extra = json!({"highpriority": 1, "flash": 1, "test": 1, "message": "[~] title\r\nbody"});
     Mock::given(method("POST"))
+      .and(path("/jsonrpc/sms"))
       .and(body_json(json!({"method": "sms.send_sms", "params": params("to", "12345678901,+12345678902", extra.clone())})))
       .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result": [{"message_id": "1", "status": "ok"}]}"#))
       .expect(1)
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path("/jsonrpc/sms"))
       .and(body_json(json!({"method": "sms.send_togroup", "params": params("groupname", "g1,g2", extra)})))
       .respond_with(ResponseTemplate::new(201).set_body_string(GOOD))
       .expect(1)
@@ -428,6 +437,7 @@ mod tests {
     let server = MockServer::start().await;
     let extra = json!({"message_type": "mms", "attachments": [{"content_type": "image/gif", "content": "R0lGODlh"}]});
     Mock::given(method("POST"))
+      .and(path("/jsonrpc/sms"))
       .and(body_json(json!({"method": "sms.send_tocontact", "params": params("contactname", "user", extra)})))
       .respond_with(ResponseTemplate::new(200).set_body_string(GOOD))
       .expect(1)
@@ -452,7 +462,7 @@ mod tests {
 
     for (status, body) in [(200, BAD), (200, "{"), (200, ""), (500, GOOD)] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/jsonrpc/sms")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(1).mount(&server).await;
       let svc = from_url(&mock_url(&server, "@user")).unwrap();
       assert!(!svc.send(&ctx).await.unwrap(), "{} {}", status, body);
     }
@@ -460,12 +470,14 @@ mod tests {
     // One failed category does not stop the others
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/jsonrpc/sms"))
       .and(body_json(json!({"method": "sms.send_sms", "params": params("to", "12512222222", json!({"message": "body"}))})))
       .respond_with(ResponseTemplate::new(200).set_body_string(BAD))
       .expect(1)
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path("/jsonrpc/sms"))
       .and(body_json(json!({"method": "sms.send_tocontact", "params": params("contactname", "user", json!({"message": "body"}))})))
       .respond_with(ResponseTemplate::new(200).set_body_string(GOOD))
       .expect(1)
@@ -475,5 +487,29 @@ mod tests {
     assert!(!svc.send(&ctx).await.unwrap());
 
     assert!(!from_url("smseagle://token@127.0.0.1:1/@user").unwrap().send(&ctx).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second category fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/jsonrpc/sms"))
+      .and(body_partial_json(json!({"method": "sms.send_togroup"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/jsonrpc/sms")).respond_with(ResponseTemplate::new(200).set_body_string(GOOD)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&mock_url(&server, "12512222222/%23group?retry=1&wait=0")));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "b".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<Value> = crate::notify::custom_json::requests_to(&server, "POST", "/jsonrpc/sms")
+      .await
+      .iter()
+      .map(|r| r.body_json::<Value>().unwrap()["method"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!("sms.send_sms"), json!("sms.send_togroup"), json!("sms.send_togroup")]);
   }
 }

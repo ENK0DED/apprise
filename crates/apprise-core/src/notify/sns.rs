@@ -1,8 +1,10 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_list, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::aws::{AwsResponse, SigV4Request, flatten_response, sign};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::phone::is_phone_no;
+use crate::utils::qsd::validate_token;
 use async_trait::async_trait;
 
 const CONTENT_TYPE: &str = "application/x-www-form-urlencoded; charset=utf-8";
@@ -71,11 +73,6 @@ fn match_topic(entry: &str) -> Option<String> {
 
 /// Upstream `validate_regex()` with its default `[^\s]+` pattern: the value
 /// must not be empty or start with whitespace, and is returned trimmed.
-fn validate_token(value: Option<&str>) -> Option<String> {
-  let value = value?;
-  (value.chars().next().is_some_and(|c| !c.is_whitespace())).then(|| value.trim().to_string())
-}
-
 /// Python's `str.isprintable()`, closely enough for a subject line.
 fn is_printable(c: char) -> bool {
   !(c.is_control()
@@ -97,8 +94,7 @@ fn form_encode(pairs: &[(&str, &str)]) -> String {
 
 impl Sns {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (url_user, _) = url_credentials(url);
-    let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty());
+    let qs = |key: &str| url.get(key).filter(|v| !v.is_empty());
 
     // sns://[token@]access_key/secret/key/parts/region/targets
     // The secret key may hold '/' so everything before the region is it.
@@ -116,19 +112,21 @@ impl Sns {
     }
     let mut targets: Vec<String> = entries[index..].to_vec();
     if let Some(to) = qs("to") {
-      targets.extend(parse_list([to], true));
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      targets.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
 
-    let secret = qs("secret").map(str::to_string).or(secret_from_path);
-    let access = qs("key").or_else(|| qs("access")).map(str::to_string).or_else(|| unquoted_host(url));
+    // Upstream unquotes the keys once more
+    let secret = qs("secret").map(unquote).or(secret_from_path);
+    let access = qs("key").or_else(|| qs("access")).map(unquote).or_else(|| url.host.clone());
     let region = qs("region").map(str::to_string).or(region_from_path);
-    let session_token = qs("token").map(str::to_string).or_else(|| url_user.clone().filter(|u| !u.is_empty()));
+    let session_token = qs("token").map(str::to_string).or_else(|| url.user.clone());
 
-    let Some(access_key) = validate_token(access.as_deref()) else {
+    let Some(access_key) = access.as_deref().and_then(validate_token) else {
       tracing::warn!("An invalid AWS Access Key ID was specified.");
       return None;
     };
-    let Some(secret_key) = validate_token(secret.as_deref()) else {
+    let Some(secret_key) = secret.as_deref().and_then(validate_token) else {
       tracing::warn!("An invalid AWS Secret Access Key was specified.");
       return None;
     };
@@ -140,7 +138,7 @@ impl Sns {
 
     let mut phones = Vec::new();
     let mut topics = Vec::new();
-    for target in parse_list(&targets, true) {
+    for target in parse_list(&targets) {
       if let Some(phone) = is_phone_no(&target, 10) {
         phones.push(format!("+{}", phone.full));
       } else if let Some(topic) = match_topic(&target) {
@@ -210,6 +208,7 @@ impl Sns {
     if let Some(token) = &self.session_token {
       req = req.header("X-Amz-Security-Token", token);
     }
+    crate::notify::throttle().await;
     match req.body(body).send().await {
       Ok(resp) => {
         let status = resp.status();
@@ -232,7 +231,7 @@ impl Sns {
       }
       Err(e) => {
         tracing::warn!("A Connection error occurred sending AWS notification to \"{}\".", to);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         (false, AwsResponse::default())
       }
     }
@@ -273,6 +272,10 @@ impl Notify for Sns {
     let mut has_error = false;
 
     for phone in &self.phones {
+      // A retry skips numbers and topics that already accepted the message
+      if crate::delivery::is_delivered(phone, false) {
+        continue;
+      }
       let message = match topic_title {
         Some(title) => format!("{}\r\n{}", title, ctx.body),
         None => ctx.body.clone(),
@@ -280,10 +283,15 @@ impl Notify for Sns {
       let payload = [("Action", "Publish"), ("Message", message.as_str()), ("Version", API_VERSION), ("PhoneNumber", phone.as_str())];
       if !self.post(&client, &payload, phone).await.0 {
         has_error = true;
+        continue;
       }
+      crate::delivery::mark_delivered(phone, false);
     }
 
     for topic in &self.topics {
+      if crate::delivery::is_delivered(topic, false) {
+        continue;
+      }
       // Creating a topic that already exists just returns its ARN
       let (ok, response) = self.post(&client, &[("Action", "CreateTopic"), ("Version", API_VERSION), ("Name", topic.as_str())], topic).await;
       if !ok {
@@ -303,7 +311,9 @@ impl Notify for Sns {
       }
       if !self.post(&client, &payload, topic).await.0 {
         has_error = true;
+        continue;
       }
+      crate::delivery::mark_delivered(topic, false);
     }
 
     Ok(!has_error)
@@ -314,7 +324,7 @@ impl Notify for Sns {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::matchers::{body_string, body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   const KEY_ID: &str = "AHIAJGNT76XIMXDBIJYA";
@@ -466,7 +476,7 @@ mod tests {
     let ctx = NotifyContext { body: "My Body".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let req = &server.received_requests().await.unwrap()[0];
+    let req = &crate::notify::custom_json::requests_to(&server, "POST", "/").await[0];
     let auth = req.headers.get("Authorization").unwrap().to_str().unwrap();
     assert!(auth.starts_with("AWS4-HMAC-SHA256 Credential=T1JJ3T3L2/"));
     assert!(auth.contains("/us-west-2/sns/aws4_request, SignedHeaders=content-type;host;x-amz-date, Signature="));
@@ -477,12 +487,18 @@ mod tests {
   #[tokio::test]
   async fn test_send_session_token_header() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).and(header("X-Amz-Security-Token", SESSION_TOKEN)).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path("/"))
+      .and(header("X-Amz-Security-Token", SESSION_TOKEN))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
 
     let svc = from_url(&format!("sns://{}/{}/{}/+18001234567?token={}", KEY_ID, SECRET, REGION, urlencoding::encode(SESSION_TOKEN))).unwrap();
     let ctx = NotifyContext { body: "test".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let req = &server.received_requests().await.unwrap()[0];
+    let req = &crate::notify::custom_json::requests_to(&server, "POST", "/").await[0];
     assert!(req.headers.get("Authorization").unwrap().to_str().unwrap().contains("SignedHeaders=content-type;host;x-amz-date;x-amz-security-token,"));
   }
 
@@ -491,12 +507,14 @@ mod tests {
     // Request sequence verified against upstream pycapture output
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/"))
       .and(body_string("Action=CreateTopic&Version=2010-03-31&Name=MyTopic"))
       .respond_with(ResponseTemplate::new(200).set_body_string(arn_response("MyTopic")))
       .expect(1)
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path("/"))
       .and(body_string("Action=Publish&Version=2010-03-31&TopicArn=arn%3Aaws%3Asns%3Aus-east-2%3A000000000000%3AMyTopic&Message=My%20Body&Subject=My%20Title"))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -512,11 +530,13 @@ mod tests {
   async fn test_send_topic_without_title_has_no_subject() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/"))
       .and(body_string("Action=CreateTopic&Version=2010-03-31&Name=MyTopic"))
       .respond_with(ResponseTemplate::new(200).set_body_string(arn_response("MyTopic")))
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path("/"))
       .and(body_string("Action=Publish&Version=2010-03-31&TopicArn=arn%3Aaws%3Asns%3Aus-east-2%3A000000000000%3AMyTopic&Message=My%20Body"))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -532,6 +552,7 @@ mod tests {
   async fn test_send_forced_topic_mode_on_phone_prepends_title() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/"))
       .and(body_string("Action=Publish&Message=My%20Title%0D%0AMy%20Body&Version=2010-03-31&PhoneNumber=%2B18001234567"))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -554,6 +575,7 @@ mod tests {
     // SMS publish rejected
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/"))
       .respond_with(ResponseTemplate::new(400).set_body_string("<ErrorResponse><Error><Message>Fail</Message></Error></ErrorResponse>"))
       .mount(&server)
       .await;
@@ -563,30 +585,37 @@ mod tests {
     // Topic creation rejected: no publish is attempted
     let svc = sns(&format!("sns://{}/{}/{}/%23MyTopic", KEY_ID, SECRET, REGION));
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    assert_eq!(crate::notify::custom_json::requests_to(&server, "POST", "/").await.len(), 2);
 
     // Topic created without an ARN in the reply
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string("<CreateTopicResponse></CreateTopicResponse>")).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path("/"))
+      .respond_with(ResponseTemplate::new(200).set_body_string("<CreateTopicResponse></CreateTopicResponse>"))
+      .mount(&server)
+      .await;
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(crate::notify::custom_json::requests_to(&server, "POST", "/").await.len(), 1);
 
     // Topic created but publishing fails; the other topic still goes out
     let server = MockServer::start().await;
     for topic in ["BadTopic", "GoodTopic"] {
       Mock::given(method("POST"))
+        .and(path("/"))
         .and(body_string(format!("Action=CreateTopic&Version=2010-03-31&Name={}", topic)))
         .respond_with(ResponseTemplate::new(200).set_body_string(arn_response(topic)))
         .mount(&server)
         .await;
     }
     Mock::given(method("POST"))
+      .and(path("/"))
       .and(body_string("Action=Publish&Version=2010-03-31&TopicArn=arn%3Aaws%3Asns%3Aus-east-2%3A000000000000%3ABadTopic&Message=test"))
       .respond_with(ResponseTemplate::new(500))
       .expect(1)
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path("/"))
       .and(body_string("Action=Publish&Version=2010-03-31&TopicArn=arn%3Aaws%3Asns%3Aus-east-2%3A000000000000%3AGoodTopic&Message=test"))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -601,5 +630,29 @@ mod tests {
     let svc = sns(&format!("sns://{}/{}/{}/+15555555555", KEY_ID, SECRET, REGION));
     let ctx = NotifyContext { body: "test".into(), ..Default::default() };
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/"))
+      .and(body_string_contains("PhoneNumber=%2B15551232222"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("sns://{}/{}/{}/+15551231111/+15551232222?retry=1&wait=0", KEY_ID, SECRET, REGION)));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "b".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<String> = crate::notify::custom_json::requests_to(&server, "POST", "/")
+      .await
+      .iter()
+      .map(|r| url::form_urlencoded::parse(&r.body).find(|(k, _)| k == "PhoneNumber").unwrap().1.into_owned())
+      .collect();
+    assert_eq!(sent, vec!["+15551231111", "+15551232222", "+15551232222"]);
   }
 }

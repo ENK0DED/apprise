@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -19,23 +19,24 @@ impl Seven {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // seven://apikey/targets?from=source&flash=yes&label=x
     let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty());
-    let apikey = unquoted_host(url).unwrap_or_default();
+    let apikey = url.host.clone().unwrap_or_default();
     if apikey.is_empty() {
       tracing::warn!("An invalid seven API Key was specified.");
       return None;
     }
     let mut entries = url.path_parts.clone();
     if let Some(to) = qs("to") {
-      entries.extend(parse_phone_no([to], false));
+      entries.extend(parse_phone_no(&[to]));
     }
     let mut targets = Vec::new();
-    for target in parse_phone_no(&entries, false) {
+    for target in parse_phone_no(&entries) {
       match is_phone_no(&target, 10) {
         Some(phone) => targets.push(phone.full),
         None => tracing::warn!("Dropped invalid phone # ({}) specified.", target),
       }
     }
-    let source = qs("from").or_else(|| qs("source")).map(str::to_string);
+    // Upstream unquotes the source once more
+    let source = qs("from").or_else(|| qs("source")).map(unquote);
     let flash = url.get("flash").map(parse_bool).unwrap_or(false);
     let label = url.get("label").map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
     Some(Self { apikey, targets, source, flash, label, verify_certificate: url.verify_certificate(), tags: url.tags() })
@@ -94,7 +95,12 @@ impl Notify for Seven {
     let url = format!("{}/api/sms", service_base("https://gateway.seven.io"));
     let mut has_error = false;
     for target in &self.targets {
+      // A retry skips targets that already accepted the message
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       payload["to"] = json!(format!("+{}", target));
+      crate::notify::throttle().await;
       let result = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -106,7 +112,10 @@ impl Notify for Seven {
         .send()
         .await;
       match result {
-        Ok(resp) if matches!(resp.status().as_u16(), 200 | 201) => tracing::info!("Sent seven notification to {}.", target),
+        Ok(resp) if matches!(resp.status().as_u16(), 200 | 201) => {
+          tracing::info!("Sent seven notification to {}.", target);
+          crate::delivery::mark_delivered(target, false);
+        }
         Ok(resp) => {
           let status = resp.status();
           tracing::warn!(
@@ -120,7 +129,7 @@ impl Notify for Seven {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending seven:{} notification.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -133,7 +142,7 @@ impl Notify for Seven {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn seven(url: &str) -> Seven {
@@ -225,6 +234,7 @@ mod tests {
   async fn test_send_minimal_payload() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/api/sms"))
       .and(body_json(json!({"to": "+15551232000", "text": "body"})))
       .respond_with(ResponseTemplate::new(201))
       .expect(1)
@@ -242,9 +252,30 @@ mod tests {
     assert!(!svc.send(&ctx).await.unwrap());
 
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api/sms")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
     let svc = from_url(&format!("seven://{}/15551232000", "a".repeat(25))).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/api/sms"))
+      .and(body_partial_json(json!({"to": "+15551232222"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/api/sms")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("seven://apikey/15551231111/15551232222?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "body".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<Value> =
+      crate::notify::custom_json::requests_to(&server, "POST", "/api/sms").await.iter().map(|r| r.body_json::<Value>().unwrap()["to"].clone()).collect();
+    assert_eq!(sent, vec![json!("+15551231111"), json!("+15551232222"), json!("+15551232222")]);
   }
 }

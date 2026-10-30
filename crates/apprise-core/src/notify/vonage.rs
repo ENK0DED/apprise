@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 use async_trait::async_trait;
 
 const DEFAULT_TTL: i64 = 900_000;
@@ -34,12 +34,12 @@ fn is_alnum(value: &str) -> bool {
 
 impl Vonage {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (url_user, url_password) = url_credentials(url);
     // vonage://apikey:secret@source/targets
-    let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
-    let apikey = qs("key").or_else(|| url_user.clone()).unwrap_or_default();
-    let secret = qs("secret").or_else(|| url_password.clone()).unwrap_or_default();
-    let source = qs("source").or_else(|| qs("from")).or_else(|| unquoted_host(url)).unwrap_or_default();
+    // Upstream unquotes these query values once more
+    let qs = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote);
+    let apikey = qs("key").or_else(|| url.user.clone()).unwrap_or_default();
+    let secret = qs("secret").or_else(|| url.password.clone()).unwrap_or_default();
+    let source = qs("source").or_else(|| qs("from")).or_else(|| url.host.clone()).unwrap_or_default();
 
     if !is_alnum(&apikey) {
       tracing::warn!("An invalid Vonage API Key ({}) was specified.", apikey);
@@ -63,10 +63,10 @@ impl Vonage {
 
     let mut entries = url.path_parts.clone();
     if let Some(to) = qs("to") {
-      entries.extend(parse_phone_no([to], false));
+      entries.extend(parse_phone_no(&[to]));
     }
     let mut targets = Vec::new();
-    for target in parse_phone_no(&entries, false) {
+    for target in parse_phone_no(&entries) {
       match is_phone_no(&target, 10) {
         Some(phone) => targets.push(phone.full),
         None => tracing::warn!("Dropped invalid phone # ({}) specified.", target),
@@ -118,6 +118,10 @@ impl Notify for Vonage {
     let mut has_error = false;
 
     for target in targets {
+      // A retry skips numbers that already accepted the message
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       let body = form_encode(&[
         ("api_key", self.apikey.as_str()),
         ("api_secret", self.secret.as_str()),
@@ -127,8 +131,12 @@ impl Notify for Vonage {
         ("to", target.as_str()),
       ]);
       tracing::debug!("Vonage POST URL: {} (cert_verify={})", url, self.verify_certificate);
+      crate::notify::throttle().await;
       match client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/x-www-form-urlencoded").body(body).send().await {
-        Ok(resp) if resp.status() == reqwest::StatusCode::OK => tracing::info!("Sent Vonage notification to {}.", target),
+        Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
+          tracing::info!("Sent Vonage notification to {}.", target);
+          crate::delivery::mark_delivered(target, false);
+        }
         Ok(resp) => {
           let status = resp.status();
           tracing::warn!(
@@ -142,7 +150,7 @@ impl Notify for Vonage {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Vonage:{} notification.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -155,7 +163,7 @@ impl Notify for Vonage {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::matchers::{body_string, body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn vonage(url: &str) -> Vonage {
@@ -239,6 +247,7 @@ mod tests {
     let ctx = NotifyContext { body: "b".into(), ..Default::default() };
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/sms/json"))
       .and(body_string("api_key=k&api_secret=s&ttl=900000&from=15551232000&text=b&to=15551232000"))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -248,8 +257,32 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/sms/json")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/sms/json"))
+      .and(body_string_contains("to=15551232222"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/sms/json")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("vonage://{}:{}@15551233456/15551231111/15551232222?retry=1&wait=0", "a".repeat(8), "b".repeat(16))));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "b".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<String> = crate::notify::custom_json::requests_to(&server, "POST", "/sms/json")
+      .await
+      .iter()
+      .map(|r| url::form_urlencoded::parse(&r.body).find(|(k, _)| k == "to").unwrap().1.into_owned())
+      .collect();
+    assert_eq!(sent, vec!["15551231111", "15551232222", "15551232222"]);
   }
 }

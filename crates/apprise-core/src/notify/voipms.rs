@@ -1,7 +1,8 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_email, is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::email::is_email;
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -29,27 +30,27 @@ fn query_encode(pairs: &[(&str, &str)]) -> String {
 
 impl VoipMs {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (url_user, url_password) = url_credentials(url);
     // voipms://password:email_user@email_domain/from_phone/targets
     // The URL user is the password; the URL password and host form the email.
-    let Some(password) = url_user.clone() else {
+    let Some(password) = url.user.clone() else {
       tracing::warn!("Password has to be specified.");
       return None;
     };
-    let email = format!("{}@{}", url_password.as_deref().unwrap_or_default(), unquoted_host(url).unwrap_or_default());
-    let Some(email) = is_email(&email) else {
+    let email = format!("{}@{}", url.password.as_deref().unwrap_or_default(), url.host.as_deref().unwrap_or_default());
+    let Some(email) = is_email(&email).map(|e| e.full_email) else {
       tracing::warn!("An invalid VoIPms user email: ({}) was specified.", email);
       return None;
     };
 
     let mut entries = url.path_parts.clone();
-    let source = match url.get("from").map(str::trim).filter(|v| !v.is_empty()) {
-      Some(from) => from.to_string(),
+    let source = match url.get("from").filter(|v| !v.is_empty()) {
+      // Upstream unquotes ?from= once more
+      Some(from) => unquote(from),
       None if !entries.is_empty() => entries.remove(0),
       None => String::new(),
     };
     if let Some(to) = url.get("to").filter(|v| !v.trim().is_empty()) {
-      entries.extend(parse_phone_no([to], false));
+      entries.extend(parse_phone_no(&[to]));
     }
 
     let Some(phone) = is_phone_no(&source, 10) else {
@@ -67,7 +68,7 @@ impl VoipMs {
       // Notify ourselves
       targets.push(source.clone());
     }
-    for target in parse_phone_no(&entries, false) {
+    for target in parse_phone_no(&entries) {
       // Upstream fails to load the URL at all on an invalid number
       let Some(phone) = is_phone_no(&target, 10) else {
         tracing::warn!("An invalid VoIPms target phone # ({}) was specified.", target);
@@ -126,6 +127,11 @@ impl Notify for VoipMs {
     let mut has_error = false;
 
     for target in &self.targets {
+      // A retry skips targets that already accepted the message
+
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       let params = [
         ("api_username", self.email.as_str()),
         ("api_password", self.password.as_str()),
@@ -135,6 +141,7 @@ impl Notify for VoipMs {
         ("dst", target.as_str()),
       ];
       tracing::debug!("VoIPms GET URL: {} (cert_verify={})", base, self.verify_certificate);
+      crate::notify::throttle().await;
       let resp = match client
         .get(format!("{}?{}", base, query_encode(&params)))
         .header("User-Agent", APP_ID)
@@ -145,7 +152,7 @@ impl Notify for VoipMs {
         Ok(resp) => resp,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending VoIPms:{} SMS notification.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -178,6 +185,7 @@ impl Notify for VoipMs {
         continue;
       }
       tracing::info!("Sent VoIPms SMS notification to {}", target);
+      crate::delivery::mark_delivered(target, false);
     }
     Ok(!has_error)
   }
@@ -296,5 +304,33 @@ mod tests {
     // All targets dropped
     assert!(!voipms("voipms://password:user@example.com/16134448888/26134442222/").send(&ctx).await.unwrap());
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("GET"))
+      .and(path("/api/v1/rest.php"))
+      .and(query_param("dst", "6134447777"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("GET"))
+      .and(path("/api/v1/rest.php"))
+      .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status": "success"}"#))
+      .mount(&server)
+      .await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("voipms://pass:user@example.com/16134448888/16134449999/16134447777?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "b".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<String> = crate::notify::custom_json::requests_to(&server, "GET", "/api/v1/rest.php")
+      .await
+      .iter()
+      .map(|r| r.url.query_pairs().find(|(k, _)| k == "dst").unwrap().1.into_owned())
+      .collect();
+    assert_eq!(sent, vec!["6134449999", "6134447777", "6134447777"]);
   }
 }

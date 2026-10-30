@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::error::NotifyError;
-use crate::notify::messaging_targets::{is_phone_no, parse_phone_no, unquote, validate_token};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
+use crate::utils::qsd::validate_token;
 
 /// Telnyx SMS (`telnyx://{apikey}@{from_phone}/{targets}`).
 pub struct Telnyx {
@@ -21,16 +22,17 @@ pub struct Telnyx {
 
 impl Telnyx {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.as_deref().map(unquote).unwrap_or_default();
+    let host = url.host.clone().unwrap_or_default();
 
-    let apikey = url.get("key").filter(|k| !k.is_empty()).map(str::to_string).or_else(|| url.user.clone()).unwrap_or_default();
+    // Upstream unquotes these query values once more
+    let apikey = url.get("key").filter(|k| !k.is_empty()).map(unquote).or_else(|| url.user.clone()).unwrap_or_default();
 
     // With ?from= the host becomes a target instead of the source
     let (source, mut raw_targets) = match url.get("from").filter(|f| !f.is_empty()) {
       Some(from) => {
         let mut targets = parse_phone_no(&[host.as_str()]);
         targets.extend(url.path_parts.iter().cloned());
-        (from.to_string(), targets)
+        (unquote(from), targets)
       }
       None => (host, url.path_parts.clone()),
     };
@@ -43,17 +45,17 @@ impl Telnyx {
       return None;
     };
 
-    let Some(source) = is_phone_no(&source, 10) else {
+    let Some(source) = is_phone_no(&source, 10).map(|p| p.full) else {
       tracing::warn!("The Account (From) Phone # specified ({}) is invalid.", source);
       return None;
     };
 
-    let profile = url.get("profile").filter(|p| !p.is_empty()).and_then(validate_token);
+    let profile = url.get("profile").filter(|p| !p.is_empty()).and_then(|p| validate_token(&unquote(p)));
 
     let mut targets = Vec::new();
     let mut has_error = false;
     for target in parse_phone_no(&raw_targets) {
-      match is_phone_no(&target, 10) {
+      match is_phone_no(&target, 10).map(|p| p.full) {
         Some(phone) => targets.push(phone),
         None => {
           has_error = true;
@@ -114,6 +116,11 @@ impl Notify for Telnyx {
     let mut has_error = false;
 
     for target in &self.targets {
+      // A retry skips targets that already accepted the message
+
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       let mut payload = json!({
         "from": format!("+{}", self.source),
         "to": format!("+{}", target),
@@ -122,6 +129,8 @@ impl Notify for Telnyx {
       if let Some(profile) = &self.profile {
         payload["messaging_profile_id"] = json!(profile);
       }
+
+      crate::notify::throttle().await;
 
       let result = client
         .post(&url)
@@ -135,6 +144,7 @@ impl Notify for Telnyx {
       match result {
         Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
           tracing::info!("Sent Telnyx notification to {}.", target);
+          crate::delivery::mark_delivered(target, false);
         }
         Ok(resp) => {
           tracing::warn!("Failed to send Telnyx notification to {}: error={}.", target, resp.status().as_u16());
@@ -143,7 +153,7 @@ impl Notify for Telnyx {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Telnyx: to {}", target);
-          tracing::debug!("Socket Exception: {}", e.without_url());
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -157,7 +167,7 @@ impl Notify for Telnyx {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> Option<Telnyx> {
@@ -281,7 +291,7 @@ mod tests {
     // Server errors and non-200 success codes fail
     for status in [500, 999, 201] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v2/messages")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("telnyx://{}@{}", "b".repeat(10), "5".repeat(11))).unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap(), "status {}", status);
     }
@@ -289,12 +299,14 @@ mod tests {
     // A failure for one target still notifies the rest
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v2/messages"))
       .and(body_json(json!({"from": "+15551234567", "to": "+15557654321", "text": "body"})))
       .respond_with(ResponseTemplate::new(500))
       .expect(1)
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path("/v2/messages"))
       .and(body_json(json!({"from": "+15551234567", "to": "+15559876543", "text": "body"})))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -306,5 +318,29 @@ mod tests {
     // Connection errors are reported as a failed send
     let svc = from_url("telnyx://key@15551234567").unwrap();
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx("body"))).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/v2/messages"))
+      .and(body_partial_json(json!({"to": "+15551232222"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/v2/messages")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("telnyx://KEY0123456789ABCDEF_abcdefghij@14051231234/15551231111/15551232222?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("b"))).await.is_success());
+    let sent: Vec<serde_json::Value> = crate::notify::custom_json::requests_to(&server, "POST", "/v2/messages")
+      .await
+      .iter()
+      .map(|r| r.body_json::<serde_json::Value>().unwrap()["to"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!("+15551231111"), json!("+15551232222"), json!("+15551232222")]);
   }
 }
