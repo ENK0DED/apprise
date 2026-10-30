@@ -218,6 +218,11 @@ impl Scram {
       return Err(error.to_string());
     }
     let verifier = text.split(',').find_map(|i| i.strip_prefix("v=")).ok_or("server-final message has no verifier")?;
+    // Before client-final there is no signature to compare with, and an
+    // empty `v=` would match the empty one: the server must not skip ahead.
+    if self.server_signature.is_empty() {
+      return Err("server-final message arrived before the server-first message".into());
+    }
     if B64.decode(verifier).ok().as_deref() != Some(self.server_signature.as_slice()) {
       return Err("mutual authentication failed".into());
     }
@@ -281,5 +286,13 @@ mod tests {
     let mut scram = Scram::with_nonce(ScramHash::Sha1, "u", "p", "n", vec![], "abc");
     assert!(scram.client_final(b"r=xyz,s=c2FsdA==,i=1").is_err());
     assert!(scram.client_final(b"m=ext,r=abcd,s=c2FsdA==,i=1").is_err());
+  }
+
+  #[test]
+  fn test_server_final_before_server_first_is_rejected() {
+    let scram = Scram::new(ScramHash::Sha256, "user", "pencil", "n", Vec::new());
+    // An empty verifier would equal the not-yet-computed signature
+    assert!(scram.verify_server_final(b"v=").is_err());
+    assert!(scram.verify_server_final(b"v=AAAA").is_err());
   }
 }
