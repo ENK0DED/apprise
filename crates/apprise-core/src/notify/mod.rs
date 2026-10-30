@@ -60,6 +60,7 @@ pub mod goalert;
 pub mod google_chat;
 pub mod gorush;
 pub mod gotify;
+pub mod groundmail;
 pub mod groupme;
 pub mod growl;
 pub mod guilded;
@@ -84,6 +85,7 @@ pub mod lark;
 pub mod lauther;
 pub mod lfgalarm;
 pub mod line;
+pub mod mailersend;
 pub mod mailgun;
 pub mod mastodon;
 pub mod matrix;
@@ -98,7 +100,6 @@ pub mod nextcloud;
 pub mod nextcloudtalk;
 pub mod notica;
 pub mod notifiarr;
-pub mod notificationapi;
 pub mod notifico;
 pub mod notifyre;
 pub mod ntfy;
@@ -111,6 +112,7 @@ pub mod pagerduty;
 pub mod pagertree;
 pub mod parseplatform;
 pub mod pinglet;
+pub mod pingram;
 pub mod plivo;
 pub mod postmark;
 pub mod prowl;
@@ -396,6 +398,15 @@ pub trait Notify: Send + Sync {
     32768
   }
 
+  /// The body limit for one notification, given its converted title and
+  /// body (upstream plugins that size by content, such as Matrix, set it in
+  /// `_build_send_calls`). Preparation uses it in place of
+  /// [`body_maxlen`](Self::body_maxlen) for splitting, truncating and
+  /// dialect re-fitting. Default: [`body_maxlen`](Self::body_maxlen).
+  fn body_maxlen_for(&self, _title: &str, _body: &str, _body_format: &NotifyFormat) -> usize {
+    self.body_maxlen()
+  }
+
   /// Maximum title length in characters (default: 250, matching Python)
   /// Return 0 if the service doesn't support titles.
   fn title_maxlen(&self) -> usize {
@@ -461,6 +472,17 @@ pub trait Notify: Send + Sync {
   /// conversion leaves it unchanged, as upstream does. Without it, a piece
   /// the conversion leaves unchanged is sent exactly as prepared.
   fn has_dialect(&self) -> bool {
+    false
+  }
+
+  /// Whether `send()` takes the converted title and body whole (upstream
+  /// plugins that override `_build_send_calls`, such as Telegram's Rich
+  /// Message templates). When true, the orchestrator still interprets
+  /// escapes and emojis and converts the body (and a title blended into
+  /// the body) to the send format, but does not fold the title into the
+  /// body, apply limits, split, run [`dialect_convert`](Self::dialect_convert)
+  /// or drop attachments: one context carries everything. Default false.
+  fn bypass_overflow(&self) -> bool {
     false
   }
 

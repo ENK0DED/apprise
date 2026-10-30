@@ -230,6 +230,13 @@ mod tests {
   use super::*;
 
   #[test]
+  fn test_apply_template_keeps_non_ascii() {
+    let mut vars = HashMap::new();
+    vars.insert("body".to_string(), "é".to_string());
+    assert_eq!(apply_template("Café {{body}} 🐧", TemplateType::Raw, &vars), "Café é 🐧");
+  }
+
+  #[test]
   fn test_apply_template_raw_basic() {
     let mut vars = HashMap::new();
     vars.insert("title".to_string(), "Hello".to_string());

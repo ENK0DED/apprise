@@ -87,6 +87,13 @@ poly1305 = { version = "0.9", default-features = false }
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 blake2 = "0.10"
 
+# Matrix end-to-end encryption (optional): Olm, Megolm and SAS from the
+# Matrix team, pure Rust on the same RustCrypto stack
+vodozemac = { version = "0.11", default-features = false }
+# AES-256-CTR for Matrix encrypted attachments; already linked through aes-gcm
+ctr = "0.10"
+aes = "0.9"
+
 # Platform socket options
 socket2 = { version = "0.6", features = ["all"] }
 
