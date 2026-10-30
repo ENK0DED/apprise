@@ -605,8 +605,9 @@ mod native {
     .captures(url)?;
     let mut params = group(&c, "params").to_string();
     if c.name("gov").is_some() {
-      // Upstream replaces the params with the mode here.
-      params = format!("{}mode=gov-hook", if params.is_empty() { "?" } else { "&" });
+      // Upstream replaces the params with "&mode=gov-hook" here, which
+      // then reads as a channel and fails; keep them instead.
+      params = with_param(&params, "mode=gov-hook");
     }
     Some(format!("slack://{}/{}/{}/{}", group(&c, "token_a"), group(&c, "token_b"), group(&c, "token_c"), params))
   }
@@ -865,9 +866,11 @@ mod tests {
       r#"https://hooks.slack.com/services/T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/?footer=no"#,
       Some(r#"slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/?footer=no"#),
     ),
+    // Upstream builds `.../&mode=gov-hook` here, dropping ?footer=no and
+    // failing on the bogus channel; the Rust rule keeps the arguments.
     (
       r#"https://hooks.slack-gov.com/services/T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ?footer=no"#,
-      Some(r#"slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/&mode=gov-hook"#),
+      Some(r#"slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/?footer=no&mode=gov-hook"#),
     ),
     (r#"https://hooks.slack.com/workflows/T0123/A0456/123/abcd"#, Some(r#"slack://T0123/A0456/123/abcd/?mode=workflow"#)),
     (r#"https://hooks.slack.com/triggers/T0123/A0456/123/abcd/?x=1"#, Some(r#"slack://T0123/A0456/123/abcd/?x=1&mode=trigger"#)),

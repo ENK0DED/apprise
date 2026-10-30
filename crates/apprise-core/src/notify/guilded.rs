@@ -1,54 +1,32 @@
-use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+//! Guilded webhooks (upstream `NotifyGuilded`, a subclass of Discord that
+//! only changes the service name and webhook URL).
+//!
+//! A webhook URL `https://media.guilded.gg/webhooks/WEBHOOK_ID/WEBHOOK_TOKEN`
+//! is written `guilded://WEBHOOK_ID/WEBHOOK_TOKEN`.
+
+use crate::notify::ServiceDetails;
+use crate::notify::discord::{Discord, Flavor};
 use crate::utils::parse::ParsedUrl;
-use async_trait::async_trait;
-use serde_json::json;
-pub struct Guilded {
-  webhook_id: String,
-  webhook_token: String,
-  verify_certificate: bool,
-  tags: Vec<String>,
-}
+
+const GUILDED: Flavor =
+  Flavor { schemas: &["guilded"], service_name: "Guilded", base: "https://media.guilded.gg", path: "/webhooks", details: Guilded::static_details };
+
+pub struct Guilded;
+
 impl Guilded {
-  pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let webhook_id = url.host.clone()?;
-    let webhook_token = url.path_parts.first()?.clone();
-    Some(Self { webhook_id, webhook_token, verify_certificate: url.verify_certificate(), tags: url.tags() })
+  /// Every Discord option applies; messages go to Guilded's webhook URL.
+  pub fn from_url(url: &ParsedUrl) -> Option<Discord> {
+    Discord::from_url_with(url, &GUILDED)
   }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "Guilded",
-      service_url: Some("https://guilded.gg"),
-      setup_url: None,
+      service_url: Some("https://guilded.gg/"),
+      setup_url: Some("https://appriseit.com/services/guilded/"),
       protocols: vec!["guilded"],
-      description: "Send via Guilded webhooks.",
-      attachment_support: false,
-    }
-  }
-}
-#[async_trait]
-impl Notify for Guilded {
-  fn schemas(&self) -> &[&str] {
-    &["guilded"]
-  }
-  fn service_name(&self) -> &str {
-    "Guilded"
-  }
-  fn details(&self) -> ServiceDetails {
-    Self::static_details()
-  }
-  fn tags(&self) -> Vec<String> {
-    self.tags.clone()
-  }
-  async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
-    let url = format!("https://media.guilded.gg/webhooks/{}/{}", self.webhook_id, self.webhook_token);
-    let payload = json!({ "embeds": [{ "title": ctx.title, "description": ctx.body }] });
-    let client = build_client(self.verify_certificate)?;
-    let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
-    if resp.status().is_success() || resp.status().as_u16() == 204 {
-      Ok(true)
-    } else {
-      Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() })
+      description: "Send notifications via Guilded webhooks.",
+      attachment_support: true,
     }
   }
 }
@@ -57,30 +35,19 @@ impl Notify for Guilded {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use crate::utils::parse::ParsedUrl;
-  #[allow(unused_imports)]
+  use crate::notify::{Notify, NotifyContext, with_test_base};
+  use crate::types::NotifyFormat;
   use wiremock::matchers::{method, path};
-  #[allow(unused_imports)]
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
-  fn parse_guilded(url: &str) -> Option<Guilded> {
-    ParsedUrl::parse(url).and_then(|p| Guilded::from_url(&p))
-  }
-
-  fn default_ctx() -> crate::notify::NotifyContext {
-    crate::notify::NotifyContext { title: "Test Title".into(), body: "Test Body".into(), ..Default::default() }
+  fn guilded(url: &str) -> Discord {
+    Guilded::from_url(&ParsedUrl::parse(url).unwrap()).unwrap()
   }
 
   #[test]
   fn test_invalid_urls() {
     let no_token = format!("guilded://{}", "i".repeat(24));
-    let urls: Vec<&str> = vec![
-      "guilded://",
-      "guilded://:@/",
-      // No webhook_token (only webhook_id)
-      &no_token,
-    ];
-    for url in &urls {
+    for url in ["guilded://", "guilded://:@/", no_token.as_str(), "guilded://%20%20/token", "guilded://id/%20%20"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
   }
@@ -89,15 +56,16 @@ mod tests {
   fn test_valid_urls() {
     let wid = "i".repeat(24);
     let wtok = "t".repeat(64);
-    let urls = vec![
-      format!("guilded://{}/{}", wid, wtok),
-      format!("guilded://l2g@{}/{}", wid, wtok),
-      format!("guilded://{}/{}?format=markdown&footer=Yes&image=Yes", wid, wtok),
-      format!("guilded://{}/{}?format=markdown&footer=Yes&image=No&fields=no", wid, wtok),
-      format!("guilded://{}/{}?format=markdown&avatar=No&footer=No", wid, wtok),
-      format!("guilded://{}/{}?format=markdown", wid, wtok),
-      format!("guilded://{}/{}?format=text", wid, wtok),
-      format!("guilded://{}/{}?avatar_url=http://localhost/test.jpg", wid, wtok),
+    let urls = [
+      format!("guilded://{wid}/{wtok}"),
+      format!("guilded://l2g@{wid}/{wtok}"),
+      format!("guilded://{wid}/{wtok}?format=markdown&footer=Yes&image=Yes"),
+      format!("guilded://{wid}/{wtok}?format=markdown&footer=Yes&image=No&fields=no"),
+      format!("guilded://{wid}/{wtok}?format=markdown&avatar=No&footer=No"),
+      format!("guilded://{wid}/{wtok}?format=markdown"),
+      format!("guilded://{wid}/{wtok}?format=text"),
+      format!("guilded://{wid}/{wtok}?avatar_url=http://localhost/test.jpg"),
+      format!("https://media.guilded.gg/webhooks/{}/{}", "0".repeat(10), "B".repeat(40)),
     ];
     for url in &urls {
       assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -105,51 +73,67 @@ mod tests {
   }
 
   #[test]
-  fn test_native_url() {
-    // https://media.guilded.gg/webhooks/{id}/{token}
-    let url = format!("https://media.guilded.gg/webhooks/{}/{}", "0".repeat(10), "B".repeat(40));
-    assert!(from_url(&url).is_some(), "Should parse native guilded URL");
-  }
-
-  #[test]
-  fn test_from_url_fields() {
-    let wid = "A".repeat(24);
-    let wtok = "B".repeat(64);
-    let g = parse_guilded(&format!("guilded://{}/{}", wid, wtok)).unwrap();
-    assert_eq!(g.webhook_id, wid);
-    assert_eq!(g.webhook_token, wtok);
-  }
-
-  #[test]
   fn test_service_details() {
-    let details = Guilded::static_details();
-    assert_eq!(details.service_name, "Guilded");
-    assert_eq!(details.protocols, vec!["guilded"]);
-    assert!(!details.attachment_support);
+    let g = guilded(&format!("guilded://{}/{}", "A".repeat(24), "B".repeat(64)));
+    assert_eq!(g.service_name(), "Guilded");
+    assert_eq!(g.schemas(), &["guilded"]);
+    assert_eq!(g.details().protocols, vec!["guilded"]);
+    assert!(g.details().attachment_support);
+    assert_eq!(g.url_identifier(), Some(vec!["guilded".to_string(), "A".repeat(24), "B".repeat(64)]));
   }
 
+  /// Markdown input only uses embeds when Markdown was asked for, as Discord.
   #[tokio::test]
-  async fn test_send_success() {
+  async fn test_markdown_content() {
     let server = MockServer::start().await;
-    let _addr = server.address();
+    let hook = format!("/webhooks/{}/{}", "i".repeat(24), "t".repeat(64));
+    Mock::given(method("POST")).and(path(hook.as_str())).respond_with(ResponseTemplate::new(204)).mount(&server).await;
 
-    // Guilded sends to fixed host media.guilded.gg, so we verify struct
-    // construction rather than actual HTTP calls against mock.
-    let wid = "A".repeat(24);
-    let wtok = "B".repeat(64);
-    let g = parse_guilded(&format!("guilded://{}/{}", wid, wtok)).unwrap();
-    assert_eq!(g.webhook_id, wid);
-    assert_eq!(g.webhook_token, wtok);
+    for (extra, embeds) in [("", false), ("?format=markdown", true)] {
+      let g = guilded(&format!("guilded://{}/{}/{}", "i".repeat(24), "t".repeat(64), extra));
+      let ctx = NotifyContext { body: "## Summary\nAll **good**".into(), body_format: NotifyFormat::Markdown, ..Default::default() };
+      assert!(with_test_base(server.uri(), g.send(&ctx)).await.unwrap());
+      let requests = server.received_requests().await.unwrap();
+      let last = requests.iter().rev().find(|r| r.url.path() == hook).unwrap();
+      let payload: serde_json::Value = serde_json::from_slice(&last.body).unwrap();
+      assert_eq!(payload.get("embeds").is_some(), embeds);
+      assert_eq!(payload.get("content").is_some(), !embeds);
+    }
+  }
+
+  /// The request matches upstream's (pycapture): Discord's payload, sent
+  /// to Guilded's webhook path.
+  #[tokio::test]
+  async fn test_send_payload() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/webhooks/1234567890/abcdef")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+
+    let g = guilded("guilded://mybot@1234567890/abcdef");
+    let ctx = NotifyContext { title: "apprise parity".into(), body: "hello from python".into(), ..Default::default() };
+    assert!(with_test_base(server.uri(), g.send(&ctx)).await.unwrap());
+
+    let requests = server.received_requests().await.unwrap();
+    let request = requests.iter().find(|r| r.url.path() == "/webhooks/1234567890/abcdef").unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(
+      payload,
+      serde_json::json!({
+        "tts": false,
+        "wait": true,
+        "avatar_url": "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/default/apprise-info-256x256.png",
+        "username": "mybot",
+        "content": "apprise parity\r\nhello from python",
+      })
+    );
   }
 
   #[tokio::test]
-  async fn test_send_server_error() {
-    // Since guilded uses a fixed host (media.guilded.gg), we verify
-    // from_url parsing and struct construction rather than actual HTTP calls.
-    let wid = "a".repeat(24);
-    let wtok = "b".repeat(64);
-    let g = parse_guilded(&format!("guilded://{}/{}/", wid, wtok)).unwrap();
-    assert_eq!(g.webhook_id, wid);
-    assert_eq!(g.webhook_token, wtok);
+  async fn test_send_failure() {
+    let server = MockServer::start().await;
+    let hook = format!("/webhooks/{}/{}", "a".repeat(24), "b".repeat(64));
+    Mock::given(method("POST")).and(path(hook.as_str())).respond_with(ResponseTemplate::new(500)).mount(&server).await;
+    let g = guilded(&format!("guilded://{}/{}/", "a".repeat(24), "b".repeat(64)));
+    let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    assert!(!with_test_base(server.uri(), g.send(&ctx)).await.unwrap());
   }
 }
