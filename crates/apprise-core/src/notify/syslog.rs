@@ -1,8 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::rsyslog::{facility_name, resolve_facility, severity};
 use crate::notify::{Notify, NotifyContext, ServiceDetails};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::url_args::{parse_bool_with_default, split_path};
+use crate::utils::parse::{ParsedUrl, parse_bool};
 use async_trait::async_trait;
 
 /// The local syslog socket, as `_PATH_LOG` in `<syslog.h>`.
@@ -30,7 +29,7 @@ impl Syslog {
     // The facility may be given as the host (syslog://local5) or as the
     // last path entry.
     let mut tokens: Vec<String> = url.host.iter().filter(|h| !h.is_empty()).cloned().collect();
-    tokens.extend(split_path(url));
+    tokens.extend(url.path_parts.iter().cloned());
     let facility = match resolve_facility(&tokens, url.get("facility")) {
       Ok(f) => f,
       Err(name) => {
@@ -42,8 +41,8 @@ impl Syslog {
     Some(Self {
       facility,
       // An unrecognised value reads as false, as upstream `parse_bool()` does
-      log_pid: url.get("logpid").map(|v| parse_bool_with_default(v, false)).unwrap_or(true),
-      log_perror: url.get("logperror").map(|v| parse_bool_with_default(v, false)).unwrap_or(false),
+      log_pid: url.get("logpid").map(parse_bool).unwrap_or(true),
+      log_perror: url.get("logperror").map(parse_bool).unwrap_or(false),
       tags: url.tags(),
     })
   }
@@ -115,6 +114,10 @@ impl Notify for Syslog {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  /// Upstream does not throttle syslog
+  fn request_rate_per_sec(&self) -> f64 {
+    0.0
+  }
 
   #[cfg(unix)]
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
@@ -127,6 +130,7 @@ impl Notify for Syslog {
       eprintln!("{}: {}", self.tag(&ctx.asset.app_id, pid), message(ctx));
     }
 
+    crate::notify::throttle().await;
     match tokio::task::spawn_blocking(move || write_record(&path, record.as_bytes())).await {
       Ok(Ok(())) => {
         tracing::info!("Sent Syslog notification.");

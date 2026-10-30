@@ -1,8 +1,10 @@
 use crate::error::NotifyError;
 use crate::notify::{Notify, NotifyContext, ServiceDetails};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::url_args::{split_path, url_credentials};
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no, parse_phone_no_with_prefix};
 use async_trait::async_trait;
+use base64::Engine;
+use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -58,39 +60,37 @@ pub struct Smpp {
 
 impl Smpp {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (user, password) = url_credentials(url);
-    let (user, password) = (user.unwrap_or_default(), password.unwrap_or_default());
+    let (user, password) = (url.user.clone().unwrap_or_default(), url.password.clone().unwrap_or_default());
     if user.is_empty() || password.is_empty() {
       tracing::warn!("No SMPP user/pass combination was provided");
       return None;
     }
 
     let secure = url.schema == "smpps";
-    let port = match url.get("port") {
-      Some(p) => p.trim().parse::<u16>().ok().filter(|p| *p > 0)?,
-      None => url.port.unwrap_or(if secure { DEFAULT_SECURE_PORT } else { DEFAULT_PORT }),
-    };
+    // ParsedUrl has applied ?port= already
+    let port = url.port.filter(|p| *p > 0).unwrap_or(if secure { DEFAULT_SECURE_PORT } else { DEFAULT_PORT });
 
     // The path holds the source number followed by the targets, unless
     // ?from= gives the source.
-    let mut entries = split_path(url);
+    let mut entries = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      entries.extend(parse_phone_no(&[to.to_string()]));
+      // Upstream's URLBase.parse_phone_no() also unquotes each entry
+      entries.extend(parse_phone_no(&[to]).iter().map(|t| unquote(t)));
     }
     let source = match url.get("from").filter(|f| !f.is_empty()) {
-      Some(from) => Some(from.to_string()),
+      Some(from) => Some(unquote(from)),
       None if !entries.is_empty() => Some(entries.remove(0)),
       None => None,
     };
-    let Some(source) = source.as_deref().and_then(is_phone_no) else {
+    let Some(source) = source.as_deref().and_then(|s| is_phone_no(s, 10)).map(|p| p.full) else {
       tracing::warn!("The Account (From) Phone # specified ({}) is invalid.", source.unwrap_or_default());
       return None;
     };
 
     let mut targets = Vec::new();
-    for target in parse_phone_no(&entries) {
-      match is_phone_no(&target) {
-        Some(number) => targets.push(number),
+    for target in parse_phone_no_with_prefix(&entries) {
+      match is_phone_no(&target, 10) {
+        Some(number) => targets.push(number.full),
         None => tracing::warn!("Dropped invalid phone # ({}) specified.", target),
       }
     }
@@ -214,89 +214,17 @@ fn make_parts(text: &str) -> Result<(Vec<Vec<u8>>, u8, u8), String> {
   Ok((parts, coding, ESM_UDHI))
 }
 
-/// Upstream `is_phone_no()` with its default minimum length: only digits,
-/// spaces, `+`, `-` and brackets, 10 to 14 digits. Returns the digits.
-fn is_phone_no(value: &str) -> Option<String> {
-  let rest = value.strip_prefix('+').unwrap_or(value);
-  if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit() || c.is_whitespace() || matches!(c, ')' | '(' | '+' | '-')) {
-    return None;
-  }
-  let digits: String = rest.chars().filter(char::is_ascii_digit).collect();
-  (10..=14).contains(&digits.len()).then_some(digits)
+/// The message parts of one target as `[parts, data_coding, esm_class]`,
+/// for [`crate::delivery::remember`].
+fn parts_to_json(built: &(Vec<Vec<u8>>, u8, u8)) -> Value {
+  let parts: Vec<String> = built.0.iter().map(|p| base64::engine::general_purpose::STANDARD.encode(p)).collect();
+  json!([parts, built.1, built.2])
 }
 
-/// Upstream `parse_phone_no(prefix=True)`: find every phone number in each
-/// entry (an optional `name:` prefix, optional leading `+`/`(`, then digits
-/// with spaces, brackets or dashes, ending in a digit that is followed by
-/// the end or by a separator and another number). An entry without any
-/// is split on the usual delimiters and kept so it can be reported.
-fn parse_phone_no(entries: &[String]) -> Vec<String> {
-  let mut result = Vec::new();
-  for entry in entries.iter().filter(|e| !e.is_empty()) {
-    let chars: Vec<char> = entry.chars().collect();
-    let mut found = Vec::new();
-    let mut pos = 0;
-    while pos < chars.len() {
-      match phone_match_at(&chars, pos) {
-        Some(end) => {
-          found.push(chars[pos..end].iter().collect::<String>());
-          pos = end;
-        }
-        None => pos += 1,
-      }
-    }
-    if found.is_empty() {
-      result.extend(entry.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '[' | ']')).filter(|s| !s.is_empty()).map(str::to_string));
-    } else {
-      result.extend(found);
-    }
-  }
-  result
-}
-
-/// Position after an `[a-z]{1,32}:` prefix starting at `pos`, if any.
-fn label_prefix(chars: &[char], pos: usize) -> Option<usize> {
-  let letters = chars[pos.min(chars.len())..].iter().take_while(|c| c.is_ascii_alphabetic()).count();
-  ((1..=32).contains(&letters) && chars.get(pos + letters) == Some(&':')).then_some(pos + letters + 1)
-}
-
-/// End of the phone number matched at `pos`, trying the alternatives in the
-/// order a backtracking regex would.
-fn phone_match_at(chars: &[char], pos: usize) -> Option<usize> {
-  let n = chars.len();
-  let separator = |c: char| c.is_whitespace() || matches!(c, ',' | '+' | '(');
-  let another_number = |at: usize| {
-    let run = chars[at..].iter().take_while(|c| separator(**c)).count();
-    run > 0 && chars.get(at + run).is_some_and(char::is_ascii_digit)
-  };
-  let followed_ok = |end: usize| end == n || label_prefix(chars, end).is_some_and(another_number) || another_number(end);
-
-  let mut starts = Vec::new();
-  if let Some(after) = label_prefix(chars, pos) {
-    starts.push(after);
-  }
-  starts.push(pos);
-  for start in starts {
-    let mut digit_starts = Vec::new();
-    if chars.get(start).is_some_and(|c| matches!(c, '+' | '(')) {
-      let run = chars[start + 1..].iter().take(32).take_while(|c| c.is_whitespace() || matches!(c, '+' | '(')).count();
-      digit_starts.extend((0..=run).rev().map(|len| start + 1 + len));
-    }
-    digit_starts.push(start);
-    for first in digit_starts {
-      if !chars.get(first).is_some_and(char::is_ascii_digit) {
-        continue;
-      }
-      let run = chars[first + 1..].iter().take(32).take_while(|c| c.is_ascii_digit() || c.is_whitespace() || matches!(c, '(' | ')' | '-')).count();
-      for len in (1..=run).rev() {
-        let last = first + 1 + len;
-        if chars.get(last).is_some_and(char::is_ascii_digit) && followed_ok(last + 1) {
-          return Some(last + 1);
-        }
-      }
-    }
-  }
-  None
+fn parts_from_json(value: &Value) -> Option<(Vec<Vec<u8>>, u8, u8)> {
+  let parts =
+    value.get(0)?.as_array()?.iter().map(|p| p.as_str().and_then(|p| base64::engine::general_purpose::STANDARD.decode(p).ok())).collect::<Option<_>>()?;
+  Some((parts, u8::try_from(value.get(1)?.as_u64()?).ok()?, u8::try_from(value.get(2)?.as_u64()?).ok()?))
 }
 
 /// Read one PDU and return its command ID, status and sequence.
@@ -352,7 +280,6 @@ impl Notify for Smpp {
   fn title_maxlen(&self) -> usize {
     0
   }
-
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     if self.targets.is_empty() {
       tracing::warn!("There were no SMPP targets to notify");
@@ -398,13 +325,35 @@ impl Notify for Smpp {
 
     let mut has_error = false;
     for target in &self.targets {
+      // A retry skips targets that already accepted the message
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
+      crate::notify::throttle().await;
       let result = async {
-        let (parts, data_coding, esm_class) = make_parts(&body)?;
-        for part in parts {
+        // A retry reuses the parts, so every part keeps the reference
+        // number the handset reassembles them by
+        let parts_key = format!("parts:{}", target);
+        let built = match crate::delivery::recall(&parts_key, false).as_ref().and_then(parts_from_json) {
+          Some(built) => built,
+          None => {
+            let built = make_parts(&body)?;
+            crate::delivery::remember(&parts_key, parts_to_json(&built), false);
+            built
+          }
+        };
+        let (parts, data_coding, esm_class) = built;
+        for (no, part) in parts.iter().enumerate() {
+          // Each part is sent on its own, so a retry only repeats the
+          // parts that did not make it
+          let part_key = format!("part:{}:{}", target, no);
+          if crate::delivery::is_delivered(&part_key, false) {
+            continue;
+          }
           sequence += 1;
-          write(&mut stream, &self.submit_pdu(sequence, target, &part, data_coding, esm_class)).await?;
+          write(&mut stream, &self.submit_pdu(sequence, target, part, data_coding, esm_class)).await?;
           match read_response(&mut stream, sequence).await? {
-            0 => {}
+            0 => crate::delivery::mark_delivered(&part_key, false),
             status => return Err(format!("submit_sm was rejected (status {:#x})", status)),
           }
         }
@@ -412,7 +361,10 @@ impl Notify for Smpp {
       }
       .await;
       match result {
-        Ok(()) => tracing::info!("Sent SMPP notification to {}", target),
+        Ok(()) => {
+          tracing::info!("Sent SMPP notification to {}", target);
+          crate::delivery::mark_delivered(target, false);
+        }
         Err(e) => {
           tracing::warn!("Failed to send SMPP notification: {}", e);
           has_error = true;
@@ -506,13 +458,15 @@ mod tests {
 
   #[test]
   fn test_phone_helpers() {
-    assert_eq!(is_phone_no("+1 (555) 123-4567").as_deref(), Some("15551234567"));
-    assert_eq!(is_phone_no("123"), None);
-    assert_eq!(is_phone_no("1".repeat(15).as_str()), None);
-    assert_eq!(is_phone_no("tel:15551234567"), None);
-    assert_eq!(parse_phone_no(&["+15551230000,15551231111".to_string()]), vec!["+15551230000", "15551231111"]);
-    assert_eq!(parse_phone_no(&["+1 (555) 123-4567".to_string()]), vec!["+1 (555) 123-4567"]);
-    assert_eq!(parse_phone_no(&["abc def".to_string()]), vec!["abc", "def"]);
+    // The shared helpers give upstream's results
+    let full = |s: &str| is_phone_no(s, 10).map(|p| p.full);
+    assert_eq!(full("+1 (555) 123-4567").as_deref(), Some("15551234567"));
+    assert_eq!(full("123"), None);
+    assert_eq!(full("1".repeat(15).as_str()), None);
+    assert_eq!(full("tel:15551234567"), None);
+    assert_eq!(parse_phone_no_with_prefix(&["+15551230000,15551231111"]), vec!["+15551230000", "15551231111"]);
+    assert_eq!(parse_phone_no_with_prefix(&["+1 (555) 123-4567"]), vec!["+1 (555) 123-4567"]);
+    assert_eq!(parse_phone_no_with_prefix(&["abc def"]), vec!["abc", "def"]);
   }
 
   #[test]
@@ -569,45 +523,66 @@ mod tests {
     assert_eq!(&s.bind_pdu(2)[16..41], b"abcdefghijklmno\x0012345678\0");
   }
 
-  /// A fake SMSC: answers bind, submit_sm and unbind with `submit_status`
-  /// for submits, and records every PDU it receives.
-  async fn smsc(submit_status: u32) -> (u16, tokio::task::JoinHandle<Vec<Vec<u8>>>) {
+  /// A fake SMSC: answers bind, submit_sm and unbind, replying to the
+  /// submits with `statuses` in turn (then 0), and records every PDU it
+  /// receives over `sessions` SMPP sessions. Other local processes probe
+  /// random ports, so a connection that does not start with a bind is
+  /// dropped and does not count.
+  async fn smsc_sessions(sessions: usize, statuses: Vec<u32>) -> (u16, tokio::task::JoinHandle<Vec<Vec<u8>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let handle = tokio::spawn(async move {
-      let (mut stream, _) = listener.accept().await.unwrap();
+      let mut statuses = statuses.into_iter();
       let mut received = Vec::new();
-      loop {
-        let mut header = [0u8; 16];
-        if stream.read_exact(&mut header).await.is_err() {
-          break;
+      let mut served = 0;
+      while served < sessions {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut bound = false;
+        loop {
+          let mut header = [0u8; 16];
+          if stream.read_exact(&mut header).await.is_err() {
+            break;
+          }
+          let length = u32::from_be_bytes(header[0..4].try_into().unwrap()) as usize;
+          let command = u32::from_be_bytes(header[4..8].try_into().unwrap());
+          let sequence = u32::from_be_bytes(header[12..16].try_into().unwrap());
+          if !bound && (command != BIND_TRANSMITTER || !(16..=1024).contains(&length)) {
+            break;
+          }
+          bound = true;
+          let mut body = vec![0u8; length - 16];
+          if stream.read_exact(&mut body).await.is_err() {
+            break;
+          }
+          let mut whole = header.to_vec();
+          whole.extend_from_slice(&body);
+          received.push(whole);
+          let status = if command == SUBMIT_SM { statuses.next().unwrap_or(0) } else { 0 };
+          let mut reply = 16u32.to_be_bytes().to_vec();
+          reply.extend_from_slice(&(command | RESPONSE).to_be_bytes());
+          reply.extend_from_slice(&status.to_be_bytes());
+          reply.extend_from_slice(&sequence.to_be_bytes());
+          if command == SUBMIT_SM {
+            // submit_sm_resp carries a message ID
+            reply[3] = 19;
+            reply.extend_from_slice(b"id\0");
+          }
+          if stream.write_all(&reply).await.is_err() || command == UNBIND {
+            break;
+          }
         }
-        let length = u32::from_be_bytes(header[0..4].try_into().unwrap()) as usize;
-        let command = u32::from_be_bytes(header[4..8].try_into().unwrap());
-        let sequence = u32::from_be_bytes(header[12..16].try_into().unwrap());
-        let mut body = vec![0u8; length - 16];
-        stream.read_exact(&mut body).await.unwrap();
-        let mut whole = header.to_vec();
-        whole.extend_from_slice(&body);
-        received.push(whole);
-        let status = if command == SUBMIT_SM { submit_status } else { 0 };
-        let mut reply = 16u32.to_be_bytes().to_vec();
-        reply.extend_from_slice(&(command | RESPONSE).to_be_bytes());
-        reply.extend_from_slice(&status.to_be_bytes());
-        reply.extend_from_slice(&sequence.to_be_bytes());
-        if command == SUBMIT_SM {
-          // submit_sm_resp carries a message ID
-          reply[3] = 19;
-          reply.extend_from_slice(b"id\0");
-        }
-        stream.write_all(&reply).await.unwrap();
-        if command == UNBIND {
-          break;
+        if bound {
+          served += 1;
         }
       }
       received
     });
     (port, handle)
+  }
+
+  /// One SMPP session replying `submit_status` to every submit.
+  async fn smsc(submit_status: u32) -> (u16, tokio::task::JoinHandle<Vec<Vec<u8>>>) {
+    smsc_sessions(1, vec![submit_status; 16]).await
   }
 
   #[tokio::test]
@@ -659,7 +634,14 @@ mod tests {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
-      let (mut stream, _) = listener.accept().await.unwrap();
+      // Skip connections from other local processes that are not a bind
+      let mut stream = loop {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut header = [0u8; 16];
+        if stream.read_exact(&mut header).await.is_ok() && header[4..8] == BIND_TRANSMITTER.to_be_bytes() {
+          break stream;
+        }
+      };
       let mut buf = [0u8; 64];
       let _ = stream.read(&mut buf).await;
       // bind_transmitter_resp with ESME_RINVPASWD
@@ -690,5 +672,24 @@ mod tests {
     assert_eq!(details.service_name, "SMPP");
     assert_eq!(details.protocols, vec!["smpp", "smpps"]);
     assert!(!details.attachment_support);
+  }
+
+  #[tokio::test]
+  async fn test_retry_resends_only_missing_parts() {
+    // Both targets get a two-part message; the second part to the second
+    // target is rejected once
+    let (port, server) = smsc_sessions(2, vec![0, 0, 0, 0x58]).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("smpp://user:pass@127.0.0.1:{}/15551234567/15559876543/15559870000?retry=1&wait=0", port)));
+    let ctx = NotifyContext { body: "x".repeat(200), ..Default::default() };
+    assert!(a.notify(&ctx).await.is_success());
+    let submits: Vec<Vec<u8>> = server.await.unwrap().into_iter().filter(|p| p[4..8] == SUBMIT_SM.to_be_bytes()).collect();
+    assert_eq!(submits.len(), 5);
+    // short_message follows esm_class and nine more header bytes
+    let esm = 16 + 1 + 2 + 12 + 2 + 12;
+    let udh = |pdu: &[u8]| pdu[esm + 10..esm + 16].to_vec();
+    // The retry sent only the rejected part, with its original reference
+    assert_eq!(udh(&submits[4]), udh(&submits[3]));
+    assert_eq!(udh(&submits[4])[5], 2);
   }
 }

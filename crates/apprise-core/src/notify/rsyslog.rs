@@ -1,8 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{Notify, NotifyContext, ServiceDetails};
 use crate::types::NotifyType;
-use crate::utils::parse::ParsedUrl;
-use crate::utils::url_args::{parse_bool_with_default, split_path};
+use crate::utils::parse::{ParsedUrl, parse_bool};
 use async_trait::async_trait;
 use std::time::Duration;
 
@@ -80,12 +79,11 @@ impl RSyslog {
     // Upstream parses this URL without host verification, so a host such
     // as `localhost:garbage` loads and only fails when sending.
     let host = url.host.clone().unwrap_or_default();
-    let port = match url.get("port") {
-      Some(p) => p.trim().parse::<u16>().ok().filter(|p| *p > 0)?,
-      None => url.port.unwrap_or(DEFAULT_PORT),
-    };
+    // ParsedUrl has applied ?port= already; one that is not a number was
+    // dropped (with a warning), leaving the default as upstream does
+    let port = url.port.filter(|p| *p > 0).unwrap_or(DEFAULT_PORT);
 
-    let facility = match resolve_facility(&split_path(url), url.get("facility")) {
+    let facility = match resolve_facility(&url.path_parts, url.get("facility")) {
       Ok(f) => f,
       Err(name) => {
         tracing::warn!("An invalid syslog facility ({}) was specified.", name);
@@ -95,7 +93,7 @@ impl RSyslog {
 
     // A value that is not a recognised boolean reads as false, as upstream
     // `parse_bool()` does; only a missing option takes the default.
-    let log_pid = url.get("logpid").map(|v| parse_bool_with_default(v, false)).unwrap_or(true);
+    let log_pid = url.get("logpid").map(parse_bool).unwrap_or(true);
     let connect_timeout = crate::utils::socket::url_timeouts(url).connect_timeout().unwrap_or(Duration::from_secs(4));
 
     Some(Self { host, port, facility, log_pid, connect_timeout, tags: url.tags() })
@@ -146,12 +144,16 @@ impl Notify for RSyslog {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
-
+  /// Upstream does not throttle syslog
+  fn request_rate_per_sec(&self) -> f64 {
+    0.0
+  }
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let payload = self.payload(ctx, std::process::id());
     tracing::debug!("RSyslog Host: {}:{}/{}", self.host, self.port, facility_name(self.facility));
     tracing::debug!("RSyslog Payload: {}", payload);
 
+    crate::notify::throttle().await;
     match self.send_datagram(payload.as_bytes()).await {
       Ok(sent) if sent < payload.len() => {
         tracing::warn!("RSyslog sent {} byte(s) but intended to send {} byte(s)", sent, payload.len());
@@ -242,6 +244,8 @@ mod tests {
     // A garbage port is kept as part of the host
     assert_eq!(parse("rsyslog://localhost:garbage").unwrap().host, "localhost:garbage");
     assert_eq!(parse("rsyslog://localhost?port=600").unwrap().port, 600);
+    // A ?port= that is not a number leaves the default, as upstream does
+    assert_eq!(parse("rsyslog://localhost?port=abc").unwrap().port, DEFAULT_PORT);
     assert_eq!(parse("rsyslog://localhost?cto=1.5").unwrap().connect_timeout, Duration::from_secs_f64(1.5));
   }
 
@@ -269,6 +273,18 @@ mod tests {
     assert_eq!(rs.payload(&ctx("Testing a title entry", "test", NotifyType::Info), 123), "<14>- 123 Testing a title entry: test");
   }
 
+  /// The next syslog datagram; other local processes may send stray
+  /// packets to the port, so anything without a `<PRI>` is skipped.
+  async fn recv_syslog(server: &tokio::net::UdpSocket) -> Vec<u8> {
+    let mut buf = [0u8; 512];
+    loop {
+      let (n, _) = tokio::time::timeout(Duration::from_secs(2), server.recv_from(&mut buf)).await.unwrap().unwrap();
+      if buf[..n].starts_with(b"<") {
+        return buf[..n].to_vec();
+      }
+    }
+  }
+
   #[tokio::test]
   async fn test_send_datagram_bytes() {
     let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -276,15 +292,11 @@ mod tests {
 
     let svc = from_url(&format!("rsyslog://127.0.0.1:{}/local7", port)).unwrap();
     assert!(svc.send(&ctx("Title", "Body", NotifyType::Failure)).await.unwrap());
-
-    let mut buf = [0u8; 512];
-    let (n, _) = tokio::time::timeout(Duration::from_secs(2), server.recv_from(&mut buf)).await.unwrap().unwrap();
-    assert_eq!(&buf[..n], format!("<186>- {} Title: Body", std::process::id()).as_bytes());
+    assert_eq!(recv_syslog(&server).await, format!("<186>- {} Title: Body", std::process::id()).as_bytes());
 
     let svc = from_url(&format!("rsyslog://127.0.0.1:{}/?facility=d&logpid=no", port)).unwrap();
     assert!(svc.send(&ctx("", "multi\nline", NotifyType::Warning)).await.unwrap());
-    let (n, _) = tokio::time::timeout(Duration::from_secs(2), server.recv_from(&mut buf)).await.unwrap().unwrap();
-    assert_eq!(&buf[..n], b"<28>- multi\nline");
+    assert_eq!(recv_syslog(&server).await, b"<28>- multi\nline");
   }
 
   #[tokio::test]
