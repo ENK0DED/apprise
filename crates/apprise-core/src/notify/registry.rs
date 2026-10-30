@@ -34,6 +34,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(apprise_api::AppriseApi::static_details());
   collect!(aprs::Aprs::static_details());
   collect!(bark::Bark::static_details());
+  collect!(betterstack::BetterStack::static_details());
   collect!(blink1::Blink1::static_details());
   collect!(bluesky::BlueSky::static_details());
   collect!(brevo::Brevo::static_details());
@@ -71,6 +72,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(fortysixelks::FortySixElks::static_details());
   collect!(freemobile::FreeMobile::static_details());
   collect!(github::GitHub::static_details());
+  collect!(goalert::GoAlert::static_details());
   collect!(google_chat::GoogleChat::static_details());
   collect!(gorush::Gorush::static_details());
   collect!(gotify::Gotify::static_details());
@@ -82,9 +84,12 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(httpsms::HttpSms::static_details());
   collect!(humhub::HumHub::static_details());
   collect!(ifttt::Ifttt::static_details());
+  collect!(ilert::ILert::static_details());
+  collect!(incidentio::IncidentIO::static_details());
   collect!(infobip::Infobip::static_details());
   collect!(irc::Irc::static_details());
   collect!(jellyfin::Jellyfin::static_details());
+  collect!(jira::Jira::static_details());
   collect!(join::Join::static_details());
   collect!(custom_json::Json::static_details());
   collect!(custom_form::Form::static_details());
@@ -120,7 +125,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(office365::Office365::static_details());
   collect!(one_signal::OneSignal::static_details());
   collect!(onebot::OneBot::static_details());
-  collect!(opsgenie::OpsGenie::static_details());
+  collect!(opsgenie::Opsgenie::static_details());
   collect!(pagerduty::PagerDuty::static_details());
   collect!(pagertree::PagerTree::static_details());
   collect!(parseplatform::ParsePlatform::static_details());
@@ -170,6 +175,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(spike::Spike::static_details());
   collect!(splunk::Splunk::static_details());
   collect!(spugpush::SpugPush::static_details());
+  collect!(squadcast::Squadcast::static_details());
   collect!(stackfield::Stackfield::static_details());
   collect!(streamlabs::Streamlabs::static_details());
   collect!(synology::Synology::static_details());
@@ -223,6 +229,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(apprise_api::AppriseApi::from_url, "apprise", "apprises");
   reg!(aprs::Aprs::from_url, "aprs");
   reg!(bark::Bark::from_url, "bark", "barks");
+  reg!(betterstack::BetterStack::from_url, "betterstack");
   reg!(blink1::Blink1::from_url, "blink1");
   reg!(bluesky::BlueSky::from_url, "bsky", "bluesky");
   reg!(brevo::Brevo::from_url, "brevo");
@@ -260,6 +267,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(fortysixelks::FortySixElks::from_url, "46elks", "elks");
   reg!(freemobile::FreeMobile::from_url, "freemobile");
   reg!(github::GitHub::from_url, "github");
+  reg!(goalert::GoAlert::from_url, "goalert", "goalerts");
   reg!(google_chat::GoogleChat::from_url, "gchat");
   reg!(gorush::Gorush::from_url, "gorush", "gorushs");
   reg!(gotify::Gotify::from_url, "gotify", "gotifys");
@@ -271,9 +279,12 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(httpsms::HttpSms::from_url, "httpsms");
   reg!(humhub::HumHub::from_url, "humhub", "humhubs");
   reg!(ifttt::Ifttt::from_url, "ifttt");
+  reg!(ilert::ILert::from_url, "ilert");
+  reg!(incidentio::IncidentIO::from_url, "incidentio");
   reg!(infobip::Infobip::from_url, "infobip");
   reg!(irc::Irc::from_url, "irc", "ircs");
   reg!(jellyfin::Jellyfin::from_url, "jellyfin", "jellyfins");
+  reg!(jira::Jira::from_url, "jira");
   reg!(join::Join::from_url, "join");
   reg!(custom_json::Json::from_url, "json", "jsons");
   reg!(custom_form::Form::from_url, "form", "forms");
@@ -310,7 +321,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(office365::Office365::from_url, "o365", "azure");
   reg!(one_signal::OneSignal::from_url, "onesignal");
   reg!(onebot::OneBot::from_url, "onebot", "onebots");
-  reg!(opsgenie::OpsGenie::from_url, "opsgenie");
+  reg!(opsgenie::Opsgenie::from_url, "opsgenie");
   reg!(pagerduty::PagerDuty::from_url, "pagerduty");
   reg!(pagertree::PagerTree::from_url, "pagertree");
   reg!(parseplatform::ParsePlatform::from_url, "parsep", "parseps");
@@ -360,6 +371,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(spike::Spike::from_url, "spike");
   reg!(splunk::Splunk::from_url, "splunk", "victorops");
   reg!(spugpush::SpugPush::from_url, "spugpush");
+  reg!(squadcast::Squadcast::from_url, "squadcast");
   reg!(stackfield::Stackfield::from_url, "stackfield");
   reg!(streamlabs::Streamlabs::from_url, "strmlabs");
   reg!(synology::Synology::from_url, "synology", "synologys");
