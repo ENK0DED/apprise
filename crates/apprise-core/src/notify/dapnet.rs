@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{parse_list, unquoted_host};
+use crate::notify::sms_targets::{parse_list, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use async_trait::async_trait;
@@ -112,9 +112,10 @@ fn is_call_sign(target: &str) -> Option<String> {
 
 impl Dapnet {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+    let (url_user, url_password) = url_credentials(url);
     // dapnet://user:password@callsign/callsigns
-    let user = url.user.clone().unwrap_or_default();
-    let password = url.password.clone().unwrap_or_default();
+    let user = url_user.clone().unwrap_or_default();
+    let password = url_password.clone().unwrap_or_default();
     if user.is_empty() || password.is_empty() {
       tracing::warn!("A Dapnet user/pass was not provided.");
       return None;
@@ -304,6 +305,12 @@ mod tests {
     assert_eq!(d.txgroups, vec!["dl-all"]);
     assert!(dapnet("dapnet://user:pass@DF1ABC?priority=1").emergency);
     assert!(dapnet("dapnet://user:pass@abcdefghi/a").targets.is_empty());
+  }
+
+  #[test]
+  fn test_credentials_from_arguments() {
+    let d = dapnet("dapnet://DF1ABC?user=user&pass=pass");
+    assert_eq!((d.user.as_str(), d.password.as_str()), ("user", "pass"));
   }
 
   #[test]

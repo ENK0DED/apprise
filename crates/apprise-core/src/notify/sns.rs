@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_list, unquoted_host};
+use crate::notify::sms_targets::{is_phone_no, parse_list, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::aws::{AwsResponse, SigV4Request, flatten_response, sign};
 use crate::utils::parse::ParsedUrl;
@@ -97,6 +97,7 @@ fn form_encode(pairs: &[(&str, &str)]) -> String {
 
 impl Sns {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+    let (url_user, _) = url_credentials(url);
     let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty());
 
     // sns://[token@]access_key/secret/key/parts/region/targets
@@ -121,7 +122,7 @@ impl Sns {
     let secret = qs("secret").map(str::to_string).or(secret_from_path);
     let access = qs("key").or_else(|| qs("access")).map(str::to_string).or_else(|| unquoted_host(url));
     let region = qs("region").map(str::to_string).or(region_from_path);
-    let session_token = qs("token").map(str::to_string).or_else(|| url.user.clone().filter(|u| !u.is_empty()));
+    let session_token = qs("token").map(str::to_string).or_else(|| url_user.clone().filter(|u| !u.is_empty()));
 
     let Some(access_key) = validate_token(access.as_deref()) else {
       tracing::warn!("An invalid AWS Access Key ID was specified.");

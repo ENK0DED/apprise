@@ -25,6 +25,28 @@ pub(super) fn unquoted_host(url: &crate::utils::parse::ParsedUrl) -> Option<Stri
   url.host.as_deref().map(|h| urlencoding::decode(h).map(|d| d.into_owned()).unwrap_or_else(|_| h.to_string()))
 }
 
+/// The user and password once upstream's query overrides are applied
+/// (`URLBase.post_process_parse_url_results`): `?password=` and then
+/// `?pass=` replace the password and `?user=` the user; when that leaves no
+/// password, the user written in the URL becomes it (`PASSWORD@host?user=`).
+pub(super) fn url_credentials(url: &crate::utils::parse::ParsedUrl) -> (Option<String>, Option<String>) {
+  let mut password = url.password.clone();
+  if let Some(p) = url.get("password") {
+    password = Some(p.trim().to_string());
+  }
+  if let Some(p) = url.get("pass") {
+    password = Some(p.trim().to_string());
+  }
+  let mut user = url.user.clone();
+  if let Some(u) = url.get("user") {
+    if password.is_none() {
+      password = url.user.clone();
+    }
+    user = Some(u.trim().to_string());
+  }
+  (user, password)
+}
+
 fn is_list_delim(c: char, allow_whitespace: bool) -> bool {
   matches!(c, '[' | ']' | ';' | ',') || (allow_whitespace && c.is_whitespace())
 }
@@ -249,6 +271,21 @@ mod tests {
     assert!(is_phone_no("", 0).is_none());
     let short = is_phone_no("4567", 3).unwrap();
     assert_eq!((short.country.as_str(), short.area.as_str(), short.line.as_str()), ("", "", "4567"));
+  }
+
+  #[test]
+  fn test_url_credentials() {
+    use crate::utils::parse::ParsedUrl;
+    let creds = |u: &str| url_credentials(&ParsedUrl::parse(u).unwrap());
+    let s = |v: &str| Some(v.to_string());
+    assert_eq!(creds("x://a:b@host"), (s("a"), s("b")));
+    assert_eq!(creds("x://host?user=a&password=b"), (s("a"), s("b")));
+    assert_eq!(creds("x://host?user=a&pass=b"), (s("a"), s("b")));
+    assert_eq!(creds("x://a@host?pass=b"), (s("a"), s("b")));
+    // The URL user becomes the password when ?user= overrides it
+    assert_eq!(creds("x://b@host?user=a"), (s("a"), s("b")));
+    assert_eq!(creds("x://host"), (None, None));
+    assert_eq!(creds("x://host?user=a"), (s("a"), None));
   }
 
   #[test]

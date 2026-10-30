@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
@@ -93,9 +93,10 @@ fn is_truthy(value: Option<&Value>) -> bool {
 
 impl Sfr {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+    let (url_user, url_password) = url_credentials(url);
     // sfr://service_id:service_password@space_id/targets
-    let service_id = url.user.clone().unwrap_or_default();
-    let service_password = url.password.clone().unwrap_or_default();
+    let service_id = url_user.clone().unwrap_or_default();
+    let service_password = url_password.clone().unwrap_or_default();
     if service_id.is_empty() || service_password.is_empty() {
       tracing::warn!("A SFR user (serviceId) and password (servicePassword) combination was not provided.");
       return None;
@@ -320,6 +321,15 @@ mod tests {
     // sender= wins over from=
     assert_eq!(sfr("sfr://a:b@c/0000000000?sender=X&from=Y&timeout=30").sender, "X");
     assert_eq!(sfr("sfr://a:b@c/0000000000?timeout=30").timeout, 30);
+  }
+
+  #[test]
+  fn test_credentials_from_arguments() {
+    let s = sfr("sfr://11111111/0000000000?user=srv&password=pwd");
+    assert_eq!((s.service_id.as_str(), s.service_password.as_str()), ("srv", "pwd"));
+    // ?user= turns the URL user into the password
+    let s = sfr("sfr://pwd@11111111/0000000000?user=srv");
+    assert_eq!((s.service_id.as_str(), s.service_password.as_str()), ("srv", "pwd"));
   }
 
   #[test]

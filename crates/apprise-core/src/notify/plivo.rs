@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use async_trait::async_trait;
@@ -25,9 +25,10 @@ fn alnum_len(value: &str, min: usize, max: usize) -> bool {
 
 impl Plivo {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+    let (url_user, _) = url_credentials(url);
     // plivo://auth_id@token/source/targets or plivo://?id=&token=&from=&to=
     let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty());
-    let auth_id = qs("id").map(str::to_string).or_else(|| url.user.clone()).unwrap_or_default();
+    let auth_id = qs("id").map(str::to_string).or_else(|| url_user.clone()).unwrap_or_default();
     let mut entries = url.path_parts.clone();
     let auth_token = match qs("token") {
       Some(token) => {

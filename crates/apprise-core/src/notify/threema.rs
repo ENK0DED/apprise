@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_email, is_phone_no, parse_list, unquoted_host};
+use crate::notify::sms_targets::{is_email, is_phone_no, parse_list, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
@@ -24,9 +24,10 @@ fn query_encode(pairs: &[(&str, &str)]) -> String {
 
 impl Threema {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+    let (url_user, _) = url_credentials(url);
     // threema://gateway_id@secret/targets
     let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
-    let gateway_id = qs("from").or_else(|| qs("gwid")).or_else(|| url.user.clone()).unwrap_or_default();
+    let gateway_id = qs("from").or_else(|| qs("gwid")).or_else(|| url_user.clone()).unwrap_or_default();
     if gateway_id.is_empty() {
       tracing::warn!("Threema Gateway ID must be specified");
       return None;

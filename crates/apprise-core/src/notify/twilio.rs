@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
@@ -81,10 +81,11 @@ fn form_encode(pairs: &[(&str, &str)]) -> String {
 
 impl Twilio {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+    let (url_user, url_password) = url_credentials(url);
     // twilio://account_sid:auth_token@source/targets
     let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
-    let account_sid = qs("sid").or_else(|| url.user.clone()).unwrap_or_default();
-    let auth_token = qs("token").or_else(|| url.password.clone()).unwrap_or_default();
+    let account_sid = qs("sid").or_else(|| url_user.clone()).unwrap_or_default();
+    let auth_token = qs("token").or_else(|| url_password.clone()).unwrap_or_default();
     let source = qs("source").or_else(|| qs("from")).or_else(|| unquoted_host(url)).unwrap_or_default();
 
     if !is_prefixed_hex(&account_sid, "AC") {
@@ -376,6 +377,13 @@ mod tests {
     assert_eq!(t.method, Method::Call);
     assert_eq!(t.targets, vec![(Mode::Text, "+15559876543".to_string())]);
     assert_eq!((t.title_maxlen(), t.body_maxlen()), (250, 4000));
+  }
+
+  #[test]
+  fn test_credentials_from_arguments() {
+    let t = twilio(&format!("twilio://15551233456?user={}&password={}", sid(), "b".repeat(32)));
+    assert_eq!(t.account_sid, sid());
+    assert_eq!(t.auth_token, "b".repeat(32));
   }
 
   #[test]

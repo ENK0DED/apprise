@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use async_trait::async_trait;
@@ -21,6 +21,7 @@ pub struct Msg91 {
 
 impl Msg91 {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+    let (url_user, _) = url_credentials(url);
     // msg91://template_id@authkey/phone1/phone2
     let authkey = unquoted_host(url).unwrap_or_default();
     if authkey.is_empty() || !authkey.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -28,7 +29,7 @@ impl Msg91 {
       return None;
     }
     // Upstream: `^[a-z0-9 _-]+$`, stored trimmed and never blank
-    let template = url.user.clone().unwrap_or_default();
+    let template = url_user.clone().unwrap_or_default();
     if !template.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '_' | '-')) || template.trim().is_empty() {
       tracing::warn!("An invalid MSG91 Template ID ({}) was specified.", template);
       return None;

@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_email, is_phone_no, parse_phone_no, unquoted_host};
+use crate::notify::sms_targets::{is_email, is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
@@ -29,13 +29,14 @@ fn query_encode(pairs: &[(&str, &str)]) -> String {
 
 impl VoipMs {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+    let (url_user, url_password) = url_credentials(url);
     // voipms://password:email_user@email_domain/from_phone/targets
     // The URL user is the password; the URL password and host form the email.
-    let Some(password) = url.user.clone() else {
+    let Some(password) = url_user.clone() else {
       tracing::warn!("Password has to be specified.");
       return None;
     };
-    let email = format!("{}@{}", url.password.as_deref().unwrap_or_default(), unquoted_host(url).unwrap_or_default());
+    let email = format!("{}@{}", url_password.as_deref().unwrap_or_default(), unquoted_host(url).unwrap_or_default());
     let Some(email) = is_email(&email) else {
       tracing::warn!("An invalid VoIPms user email: ({}) was specified.", email);
       return None;

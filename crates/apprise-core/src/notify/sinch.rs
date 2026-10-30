@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
@@ -24,10 +24,11 @@ fn is_hex(value: &str) -> bool {
 
 impl Sinch {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+    let (url_user, url_password) = url_credentials(url);
     // sinch://service_plan_id:api_token@source/targets
     let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
-    let service_plan_id = qs("spi").or_else(|| url.user.clone()).unwrap_or_default();
-    let api_token = qs("token").or_else(|| url.password.clone()).unwrap_or_default();
+    let service_plan_id = qs("spi").or_else(|| url_user.clone()).unwrap_or_default();
+    let api_token = qs("token").or_else(|| url_password.clone()).unwrap_or_default();
     let source = qs("source").or_else(|| qs("from")).or_else(|| unquoted_host(url)).unwrap_or_default();
     let region = qs("region").map(|r| r.to_lowercase()).unwrap_or_else(|| "us".to_string());
 

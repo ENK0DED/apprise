@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use async_trait::async_trait;
@@ -30,9 +30,10 @@ fn query_encode(pairs: &[(&str, &str)]) -> String {
 
 impl SmsManager {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+    let (url_user, _) = url_credentials(url);
     // smsmgr://apikey@target/targets
     let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty());
-    let apikey = qs("key").map(str::to_string).or_else(|| url.user.clone()).unwrap_or_default();
+    let apikey = qs("key").map(str::to_string).or_else(|| url_user.clone()).unwrap_or_default();
     // Upstream validate_regex(): not blank and no leading whitespace
     if apikey.chars().next().is_none_or(char::is_whitespace) {
       tracing::warn!("An invalid API Key was specified.");

@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::types::NotifyType;
 use crate::utils::parse::{ParsedUrl, parse_bool};
@@ -76,8 +76,9 @@ fn parse_priority(value: Option<&str>) -> Result<i64, ()> {
 
 impl SmsEagle {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+    let (url_user, _) = url_credentials(url);
     // smseagle(s)://token@host[:port]/targets
-    let token = url.get("token").map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).or_else(|| url.user.clone()).unwrap_or_default();
+    let token = url.get("token").map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).or_else(|| url_user.clone()).unwrap_or_default();
     if token.chars().next().is_none_or(char::is_whitespace) {
       tracing::warn!("An invalid SMSEagle Access Token was specified.");
       return None;
