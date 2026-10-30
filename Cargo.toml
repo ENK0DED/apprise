@@ -75,6 +75,9 @@ rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-
 # Desktop notifications (optional)
 notify-rust = { version = "4" }
 
+# USB HID devices (optional, blink(1)); the Linux backend is pure Rust
+hidapi = { version = "2", default-features = false, features = ["linux-native-basic-udev", "windows-native"] }
+
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 

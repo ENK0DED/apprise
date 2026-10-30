@@ -16,6 +16,7 @@ pub mod africas_talking;
 pub mod apprise_api;
 pub mod aprs;
 pub mod bark;
+pub mod blink1;
 pub mod bluesky;
 pub mod brevo;
 pub mod bulksms;
