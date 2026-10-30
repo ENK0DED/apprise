@@ -215,7 +215,7 @@ mod tests {
   fn test_valid_urls() {
     let (t, f, a, b) = ("t".repeat(10), "8".repeat(10), "5".repeat(11), "6".repeat(11));
     for url in [
-      format!("eight00com://GOODTOKEN@9876543210/12"),
+      "eight00com://GOODTOKEN@9876543210/12".to_string(),
       format!("eight00com://{t}@{f}"),
       format!("eight00com://{t}@{f}/{a}"),
       format!("eight00com://{t}@{f}/{a}/{b}"),
