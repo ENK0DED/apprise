@@ -40,7 +40,7 @@ impl SendGrid {
       tracing::warn!("An invalid SendGrid API Key was specified.");
       return None;
     }
-    let from = format!("{}@{}", password, url.host.clone().unwrap_or_default());
+    let from = format!("{}@{}", password, unquote(url.host.as_deref().unwrap_or_default()));
     let Some(from_email) = is_email(&from).map(|e| e.full_email) else {
       tracing::warn!("Invalid ~From~ email specified: {}", from);
       return None;
