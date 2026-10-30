@@ -201,8 +201,9 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     let requests = server.received_requests().await.unwrap();
-    assert!(requests[0].body.is_empty());
-    assert!(requests[0].headers.get("Content-Type").is_none());
+    let ring = requests.iter().find(|r| r.url.path() == format!("/horn/{}", TOKEN)).unwrap();
+    assert!(ring.body.is_empty());
+    assert!(ring.headers.get("Content-Type").is_none());
   }
 
   #[tokio::test]

@@ -315,7 +315,7 @@ mod tests {
     assert!(svc.send(&ctx).await.unwrap());
 
     let requests = server.received_requests().await.unwrap();
-    let upload = &requests[1];
+    let upload = requests.iter().find(|r| r.url.path() == "/api/v1/post/55/upload-files").unwrap();
     let content_type = upload.headers.get("Content-Type").unwrap().to_str().unwrap();
     assert!(content_type.starts_with("multipart/form-data"));
     let body = String::from_utf8_lossy(&upload.body);

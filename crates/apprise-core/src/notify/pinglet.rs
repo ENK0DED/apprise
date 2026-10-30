@@ -375,7 +375,8 @@ mod tests {
 
     // Badges keep the order the URL lists them in
     let requests = server.received_requests().await.unwrap();
-    let body = String::from_utf8_lossy(&requests[0].body);
+    let publish = requests.iter().find(|r| r.url.path() == "/acme/deploys").unwrap();
+    let body = String::from_utf8_lossy(&publish.body);
     assert!(body.contains(r#""badges":{"Host":"web-1","CPU":"95%"}"#), "{}", body);
   }
 

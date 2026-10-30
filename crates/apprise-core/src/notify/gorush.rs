@@ -396,7 +396,7 @@ mod tests {
     let svc = from_url(&format!("gorush://{}:{}/token", addr.ip(), addr.port())).unwrap();
     assert!(svc.send(&NotifyContext { body: "body".into(), ..Default::default() }).await.unwrap());
     let requests = server.received_requests().await.unwrap();
-    assert!(requests[0].headers.get("Authorization").is_none());
+    assert!(requests.iter().find(|r| r.url.path() == "/api/push").unwrap().headers.get("Authorization").is_none());
   }
 
   #[tokio::test]

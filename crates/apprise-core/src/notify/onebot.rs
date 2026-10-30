@@ -346,7 +346,7 @@ mod tests {
     let svc = from_url(&format!("onebot://{}/111", addr(&server))).unwrap();
     assert!(svc.send(&NotifyContext { body: "hello".into(), ..Default::default() }).await.unwrap());
     let requests = server.received_requests().await.unwrap();
-    assert!(requests[0].headers.get("Authorization").is_none());
+    assert!(requests.iter().find(|r| r.url.path() == "/send_private_msg").unwrap().headers.get("Authorization").is_none());
   }
 
   #[tokio::test]
