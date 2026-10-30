@@ -12,7 +12,11 @@ pub(crate) async fn notify(services: &[Box<dyn Notify>], indices: &[usize], ctx:
   for &i in indices {
     let svc = &services[i];
     let mut ok = true;
-    for svc_ctx in &prepare_contexts(svc.as_ref(), ctx) {
+    let prepared = prepare_contexts(svc.as_ref(), ctx).unwrap_or_else(|_| {
+      ok = false;
+      Vec::new()
+    });
+    for svc_ctx in &prepared {
       match svc.send(svc_ctx).await {
         Ok(true) => {}
         Ok(false) | Err(_) => ok = false,
@@ -46,7 +50,11 @@ pub(crate) async fn notify_sequential(services: &[Box<dyn Notify>], indices: &[u
       }
     }
     let mut svc_ok = true;
-    for svc_ctx in &prepare_contexts(svc.as_ref(), ctx) {
+    let prepared = prepare_contexts(svc.as_ref(), ctx).unwrap_or_else(|_| {
+      svc_ok = false;
+      Vec::new()
+    });
+    for svc_ctx in &prepared {
       last_send = std::time::Instant::now();
       match svc.send(svc_ctx).await {
         Ok(true) => {}
