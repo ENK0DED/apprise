@@ -9,6 +9,7 @@ use crate::types::{NotifyFormat, NotifyType};
 mod messaging_targets;
 pub mod options;
 pub mod registry;
+mod sms_targets;
 
 pub use options::{ConfiguredService, ServiceOptions};
 

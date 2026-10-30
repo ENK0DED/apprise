@@ -1,60 +1,88 @@
 use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
 
+const DEFAULT_TTL: i64 = 900_000;
+const MIN_TTL: i64 = 20_000;
+const MAX_TTL: i64 = 604_800_000;
+
 pub struct Vonage {
   apikey: String,
-  api_secret: String,
-  from_phone: String,
+  secret: String,
+  source: String,
   targets: Vec<String>,
+  /// Message lifetime in milliseconds
+  ttl: i64,
   verify_certificate: bool,
   tags: Vec<String>,
 }
 
+/// `urllib.parse.urlencode()` as requests applies it to `data=`.
+fn form_encode(pairs: &[(&str, &str)]) -> String {
+  pairs
+    .iter()
+    .map(|(k, v)| format!("{}={}", urlencoding::encode(k).replace("%20", "+"), urlencoding::encode(v).replace("%20", "+")))
+    .collect::<Vec<_>>()
+    .join("&")
+}
+
+fn is_alnum(value: &str) -> bool {
+  !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
 impl Vonage {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // vonage://apikey:secret@from_phone[/to1/to2]
-    // or vonage://_?key=K&secret=S&from=F&to=T
-    let (apikey, api_secret, from_phone) = if let Some(key) = url.get("key") {
-      let secret = url.get("secret").map(|s| s.to_string())?;
-      let from = url.get("from").or_else(|| url.get("source")).map(|s| s.to_string())?;
-      (key.to_string(), secret, from)
-    } else {
-      (url.user.clone()?, url.password.clone()?, url.host.clone()?)
+    let (url_user, url_password) = url_credentials(url);
+    // vonage://apikey:secret@source/targets
+    let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let apikey = qs("key").or_else(|| url_user.clone()).unwrap_or_default();
+    let secret = qs("secret").or_else(|| url_password.clone()).unwrap_or_default();
+    let source = qs("source").or_else(|| qs("from")).or_else(|| unquoted_host(url)).unwrap_or_default();
+
+    if !is_alnum(&apikey) {
+      tracing::warn!("An invalid Vonage API Key ({}) was specified.", apikey);
+      return None;
+    }
+    if !is_alnum(&secret) {
+      tracing::warn!("An invalid Vonage API Secret was specified.");
+      return None;
+    }
+    // A ttl that is not a number falls back to the default
+    let ttl = qs("ttl").and_then(|t| t.parse().ok()).unwrap_or(DEFAULT_TTL);
+    if !(MIN_TTL..=MAX_TTL).contains(&ttl) {
+      tracing::warn!("The Vonage TTL specified ({}) is out of range.", ttl);
+      return None;
+    }
+    let Some(phone) = is_phone_no(&source, 10) else {
+      tracing::warn!("The Account (From) Phone # specified ({}) is invalid.", source);
+      return None;
     };
-    if apikey.is_empty() || api_secret.is_empty() || from_phone.is_empty() {
-      return None;
+    let source = phone.full;
+
+    let mut entries = url.path_parts.clone();
+    if let Some(to) = qs("to") {
+      entries.extend(parse_phone_no([to], false));
     }
-    // Validate from_phone: must have at least 11 digits and be all digits
-    let from_digits: String = from_phone.chars().filter(|c| c.is_ascii_digit()).collect();
-    if from_digits.len() < 11 {
-      return None;
-    }
-    // Reject non-digit characters in from phone (except +)
-    if !from_phone.chars().all(|c| c.is_ascii_digit() || c == '+') {
-      return None;
-    }
-    let mut targets = url.path_parts.clone();
-    if let Some(to) = url.get("to") {
-      targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
-    }
-    // Validate ttl if provided
-    if let Some(ttl) = url.get("ttl") {
-      let ttl_val: i64 = ttl.parse().ok()?;
-      if ttl_val <= 0 {
-        return None;
+    let mut targets = Vec::new();
+    for target in parse_phone_no(&entries, false) {
+      match is_phone_no(&target, 10) {
+        Some(phone) => targets.push(phone.full),
+        None => tracing::warn!("Dropped invalid phone # ({}) specified.", target),
       }
     }
-    Some(Self { apikey, api_secret, from_phone, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
+
+    Some(Self { apikey, secret, source, targets, ttl, verify_certificate: url.verify_certificate(), tags: url.tags() })
   }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
-      service_name: "Vonage (Nexmo)",
-      service_url: Some("https://vonage.com"),
-      setup_url: None,
+      service_name: "Vonage",
+      service_url: Some("https://dashboard.nexmo.com/"),
+      setup_url: Some("https://appriseit.com/services/vonage/"),
       protocols: vec!["vonage", "nexmo"],
-      description: "Send SMS via Vonage/Nexmo.",
+      description: "Send SMS via Vonage (formerly Nexmo).",
       attachment_support: false,
     }
   }
@@ -66,7 +94,7 @@ impl Notify for Vonage {
     &["vonage", "nexmo"]
   }
   fn service_name(&self) -> &str {
-    "Vonage (Nexmo)"
+    "Vonage"
   }
   fn details(&self) -> ServiceDetails {
     Self::static_details()
@@ -82,23 +110,44 @@ impl Notify for Vonage {
   }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
+    // Without targets, notify ourselves
+    let targets = if self.targets.is_empty() { std::slice::from_ref(&self.source) } else { self.targets.as_slice() };
     let client = build_client(self.verify_certificate)?;
-    let msg = format!("{}{}", if ctx.title.is_empty() { String::new() } else { format!("{}: ", ctx.title) }, ctx.body);
-    let mut all_ok = true;
-    for target in &self.targets {
-      let params = [
+    let url = format!("{}/sms/json", service_base("https://rest.nexmo.com"));
+    let ttl = self.ttl.to_string();
+    let mut has_error = false;
+
+    for target in targets {
+      let body = form_encode(&[
         ("api_key", self.apikey.as_str()),
-        ("api_secret", self.api_secret.as_str()),
-        ("from", self.from_phone.as_str()),
+        ("api_secret", self.secret.as_str()),
+        ("ttl", ttl.as_str()),
+        ("from", self.source.as_str()),
+        ("text", ctx.body.as_str()),
         ("to", target.as_str()),
-        ("text", msg.as_str()),
-      ];
-      let resp = client.post("https://rest.nexmo.com/sms/json").header("User-Agent", APP_ID).form(&params).send().await?;
-      if !resp.status().is_success() {
-        all_ok = false;
+      ]);
+      tracing::debug!("Vonage POST URL: {} (cert_verify={})", url, self.verify_certificate);
+      match client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/x-www-form-urlencoded").body(body).send().await {
+        Ok(resp) if resp.status() == reqwest::StatusCode::OK => tracing::info!("Sent Vonage notification to {}.", target),
+        Ok(resp) => {
+          let status = resp.status();
+          tracing::warn!(
+            "Failed to send Vonage notification to {}: {}error={}.",
+            target,
+            status.canonical_reason().map(|r| format!("{}, ", r)).unwrap_or_default(),
+            status.as_u16()
+          );
+          tracing::debug!("Response Details: {}", resp.text().await.unwrap_or_default().chars().take(2000).collect::<String>());
+          has_error = true;
+        }
+        Err(e) => {
+          tracing::warn!("A Connection error occurred sending Vonage:{} notification.", target);
+          tracing::debug!("Socket Exception: {}", e);
+          has_error = true;
+        }
       }
     }
-    Ok(all_ok)
+    Ok(!has_error)
   }
 }
 
@@ -106,92 +155,101 @@ impl Notify for Vonage {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
+  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
+
+  fn vonage(url: &str) -> Vonage {
+    Vonage::from_url(&ParsedUrl::parse(url).expect("parse")).expect("from_url")
+  }
 
   #[test]
   fn test_invalid_urls() {
-    let urls: Vec<String> = vec![
-      "vonage://".into(),
-      "vonage://:@/".into(),
-      "nexmo://".into(),
-      "nexmo://:@/".into(),
-      // Just a key, no secret
-      format!("vonage://AC{}@12345678", "a".repeat(8)),
-      // 9-digit from phone - invalid
-      format!("vonage://AC{}:{}@{}", "a".repeat(8), "b".repeat(16), "3".repeat(9)),
-      // Invalid ttl=0
-      format!("vonage://AC{}:{}@{}/?ttl=0", "b".repeat(8), "c".repeat(16), "3".repeat(11)),
-      // Non-digit from phone
-      format!("vonage://AC{}:{}@{}", "d".repeat(8), "e".repeat(16), "a".repeat(11)),
-      // Nexmo variants - same validations
-      format!("nexmo://AC{}@12345678", "a".repeat(8)),
-      format!("nexmo://AC{}:{}@{}", "a".repeat(8), "b".repeat(16), "3".repeat(9)),
-      format!("nexmo://AC{}:{}@{}/?ttl=0", "b".repeat(8), "c".repeat(16), "3".repeat(11)),
-      format!("nexmo://AC{}:{}@{}", "d".repeat(8), "e".repeat(16), "a".repeat(11)),
-    ];
-    for url in &urls {
-      assert!(from_url(url).is_none(), "Should not parse: {}", url);
+    for schema in ["vonage", "nexmo"] {
+      let urls = vec![
+        format!("{}://", schema),
+        format!("{}://:@/", schema),
+        format!("{}://AC{}@12345678", schema, "a".repeat(8)),
+        format!("{}://AC{}:{}@{}", schema, "a".repeat(8), "b".repeat(16), "3".repeat(9)),
+        format!("{}://AC{}:{}@{}/?ttl=0", schema, "b".repeat(8), "c".repeat(16), "3".repeat(11)),
+        format!("{}://AC{}:{}@{}/?ttl=604800001", schema, "b".repeat(8), "c".repeat(16), "3".repeat(11)),
+        format!("{}://AC{}:{}@{}", schema, "d".repeat(8), "e".repeat(16), "a".repeat(11)),
+        // Keys and secrets are alphanumeric
+        format!("{}://A_C:{}@{}", schema, "e".repeat(16), "3".repeat(11)),
+      ];
+      for url in &urls {
+        assert!(from_url(url).is_none(), "Should not parse: {}", url);
+      }
     }
   }
 
   #[test]
   fn test_valid_urls() {
-    let urls: Vec<String> = vec![
-      // Valid with targets
-      format!("vonage://AC{}:{}@{}/123/{}/abcd/", "f".repeat(8), "g".repeat(16), "3".repeat(11), "9".repeat(15)),
-      // Self-text (no target)
-      format!("vonage://AC{}:{}@{}", "h".repeat(8), "i".repeat(16), "5".repeat(11)),
-      // Query params
-      format!("vonage://_?key=AC{}&secret={}&from={}", "a".repeat(8), "b".repeat(16), "5".repeat(11)),
-      // source= alias
-      format!("vonage://_?key=AC{}&secret={}&source={}", "a".repeat(8), "b".repeat(16), "5".repeat(11)),
-      // to= param
-      format!("vonage://_?key=AC{}&secret={}&from={}&to={}", "a".repeat(8), "b".repeat(16), "5".repeat(11), "7".repeat(13)),
-      // Nexmo variants
-      format!("nexmo://AC{}:{}@{}/123/{}/abcd/", "f".repeat(8), "g".repeat(16), "3".repeat(11), "9".repeat(15)),
-      format!("nexmo://AC{}:{}@{}", "h".repeat(8), "i".repeat(16), "5".repeat(11)),
-      format!("nexmo://_?key=AC{}&secret={}&from={}", "a".repeat(8), "b".repeat(16), "5".repeat(11)),
-    ];
-    for url in &urls {
-      assert!(from_url(url).is_some(), "Should parse: {}", url);
+    for schema in ["vonage", "nexmo"] {
+      let urls = vec![
+        format!("{}://AC{}:{}@{}/123/{}/abcd/", schema, "f".repeat(8), "g".repeat(16), "3".repeat(11), "9".repeat(15)),
+        format!("{}://AC{}:{}@{}", schema, "h".repeat(8), "i".repeat(16), "5".repeat(11)),
+        format!("{}://_?key=AC{}&secret={}&from={}", schema, "a".repeat(8), "b".repeat(16), "5".repeat(11)),
+        format!("{}://_?key=AC{}&secret={}&source={}", schema, "a".repeat(8), "b".repeat(16), "5".repeat(11)),
+        format!("{}://_?key=AC{}&secret={}&from={}&to={}", schema, "a".repeat(8), "b".repeat(16), "5".repeat(11), "7".repeat(13)),
+        format!("{}://AC{}:{}@{}?ttl=abc", schema, "h".repeat(8), "i".repeat(16), "5".repeat(11)),
+      ];
+      for url in &urls {
+        assert!(from_url(url).is_some(), "Should parse: {}", url);
+      }
     }
   }
 
   #[test]
   fn test_from_url_fields() {
-    let apikey = format!("AC{}", "f".repeat(8));
-    let secret = "g".repeat(16);
-    let from = "3".repeat(11);
-    let url_str = format!("vonage://{}:{}@{}/{}", apikey, secret, from, "9".repeat(15));
-    let parsed = ParsedUrl::parse(&url_str).unwrap();
-    let v = Vonage::from_url(&parsed).unwrap();
-    assert_eq!(v.apikey, apikey);
-    assert_eq!(v.api_secret, secret);
-    assert_eq!(v.from_phone, from);
-    assert_eq!(v.targets.len(), 1);
-  }
-
-  #[test]
-  fn test_from_url_query_params() {
-    let apikey = format!("AC{}", "a".repeat(8));
-    let secret = "b".repeat(16);
-    let from = "5".repeat(11);
-    let to = "7".repeat(13);
-    let url_str = format!("vonage://_?key={}&secret={}&from={}&to={}", apikey, secret, from, to);
-    let parsed = ParsedUrl::parse(&url_str).unwrap();
-    let v = Vonage::from_url(&parsed).unwrap();
-    assert_eq!(v.apikey, apikey);
-    assert_eq!(v.api_secret, secret);
-    assert_eq!(v.from_phone, from);
-    assert!(v.targets.contains(&to));
+    let v = vonage(&format!("vonage://ACkey:{}@+1%20555%20123%202000/15551232001/123?ttl=30000", "s".repeat(16)));
+    assert_eq!(v.apikey, "ACkey");
+    assert_eq!(v.secret, "s".repeat(16));
+    assert_eq!(v.source, "15551232000");
+    assert_eq!(v.targets, vec!["15551232001"]);
+    assert_eq!(v.ttl, 30000);
+    assert_eq!(vonage(&format!("vonage://k:{}@15551232000?ttl=abc", "s".repeat(16))).ttl, DEFAULT_TTL);
   }
 
   #[test]
   fn test_service_details() {
-    let details = Vonage::static_details();
-    assert_eq!(details.service_name, "Vonage (Nexmo)");
-    assert_eq!(details.service_url, Some("https://vonage.com"));
-    assert!(details.protocols.contains(&"vonage"));
-    assert!(details.protocols.contains(&"nexmo"));
-    assert!(!details.attachment_support);
+    let d = Vonage::static_details();
+    assert_eq!(d.service_name, "Vonage");
+    assert!(d.protocols.contains(&"vonage") && d.protocols.contains(&"nexmo"));
+  }
+
+  #[tokio::test]
+  async fn test_send_form() {
+    // Matches upstream pycapture output
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/sms/json"))
+      .and(header("Content-Type", "application/x-www-form-urlencoded"))
+      .and(body_string("api_key=ACaaaa&api_secret=bbbb&ttl=30000&from=15551232000&text=title%0D%0Aa+b~%2A&to=15551232001"))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let svc = from_url("nexmo://ACaaaa:bbbb@15551232000/15551232001?ttl=30000").unwrap();
+    let ctx = NotifyContext { body: "title\r\na b~*".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_send_to_self_and_failures() {
+    let ctx = NotifyContext { body: "b".into(), ..Default::default() };
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(body_string("api_key=k&api_secret=s&ttl=900000&from=15551232000&text=b&to=15551232000"))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let svc = from_url("vonage://k:s@15551232000").unwrap();
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+    assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
   }
 }
