@@ -1,68 +1,100 @@
 use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
+use crate::types::NotifyFormat;
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
-use serde_json::json;
+use serde::Serialize;
 
+/// WxPusher: `wxpusher://{app_token}/{UID_user | topic_id}/...`.
 pub struct WxPusher {
   token: String,
-  uids: Vec<String>,
+  /// `UID_` user IDs, as given
+  users: Vec<String>,
+  /// Numeric topic IDs (up to 21 digits)
+  topics: Vec<u128>,
   verify_certificate: bool,
   tags: Vec<String>,
-  #[cfg(test)]
-  api_url_override: Option<String>,
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Payload<'a> {
+  app_token: &'a str,
+  content: &'a str,
+  summary: &'a str,
+  content_type: u8,
+  topic_ids: &'a [u128],
+  uids: &'a [String],
+  url: Option<&'a str>,
+}
+
+/// Upstream `parse_list()`: split on `[]`, `;`, `,` and whitespace, then
+/// drop empty entries, de-duplicate and sort.
+fn parse_list<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+  let mut out: Vec<String> = items
+    .into_iter()
+    .flat_map(|s| s.split(|c: char| c == '[' || c == ']' || c == ';' || c == ',' || c.is_whitespace()))
+    .filter(|s| !s.is_empty())
+    .map(String::from)
+    .collect();
+  out.sort();
+  out.dedup();
+  out
+}
+
+/// Upstream `IS_TOPIC`: 1 to 21 digits without a leading zero.
+fn topic_id(target: &str) -> Option<u128> {
+  let valid = (1..=21).contains(&target.len()) && target.chars().all(|c| c.is_ascii_digit()) && !target.starts_with('0');
+  valid.then(|| target.parse().ok()).flatten()
+}
+
 impl WxPusher {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // Token can be in host (if starts with AT_) or ?token= param
-    let token = if let Some(ref h) = url.host {
-      if h.starts_with("AT_") {
-        h.clone()
-      } else {
-        // Host is not a token; try ?token= param
-        url.get("token").map(|s| s.to_string())?
+    let host = urlencoding::decode(url.host.as_deref().unwrap_or_default()).map(|s| s.into_owned()).unwrap_or_default();
+    let mut raw: Vec<String> = url.path_parts.clone();
+    let token = match url.get("token").filter(|t| !t.is_empty()) {
+      Some(t) => {
+        // With ?token= the host is a target too
+        raw.push(host);
+        t.to_string()
       }
-    } else {
-      url.get("token").map(|s| s.to_string())?
+      None => host,
     };
-    if !token.starts_with("AT_") {
+    let valid = token.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("AT_")) && token.len() > 3 && !token.chars().any(char::is_whitespace);
+    if !valid {
+      tracing::warn!("An invalid WxPusher App Token was specified.");
       return None;
     }
 
-    // UIDs from host (if not token), path_parts, and ?to= param
-    let mut uids: Vec<String> = Vec::new();
-    if let Some(ref h) = url.host {
-      if !h.starts_with("AT_") && !h.is_empty() {
-        uids.push(h.clone());
+    if let Some(to) = url.get("to") {
+      raw.push(to.to_string());
+    }
+    let mut users = Vec::new();
+    let mut topics = Vec::new();
+    for target in parse_list(raw.iter().map(String::as_str)) {
+      if target.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("UID_")) && target.len() > 4 {
+        users.push(target);
+      } else if let Some(topic) = topic_id(&target) {
+        topics.push(topic);
+      } else {
+        tracing::warn!("Dropped invalid WxPusher user/topic ({}) specified.", target);
       }
     }
-    uids.extend(url.path_parts.clone());
-    if let Some(to) = url.get("to") {
-      uids.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
-    }
-    if uids.is_empty() {
-      return None;
-    }
-    Some(Self {
-      token,
-      uids,
-      verify_certificate: url.verify_certificate(),
-      tags: url.tags(),
-      #[cfg(test)]
-      api_url_override: None,
-    })
+
+    Some(Self { token, users, topics, verify_certificate: url.verify_certificate(), tags: url.tags() })
   }
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "WxPusher",
-      service_url: Some("https://wxpusher.zjiecode.com"),
-      setup_url: None,
+      service_url: Some("https://wxpusher.zjiecode.com/"),
+      setup_url: Some("https://appriseit.com/services/wxpusher/"),
       protocols: vec!["wxpusher"],
       description: "Send messages via WxPusher WeChat service.",
       attachment_support: false,
     }
   }
 }
+
 #[async_trait]
 impl Notify for WxPusher {
   fn schemas(&self) -> &[&str] {
@@ -78,30 +110,72 @@ impl Notify for WxPusher {
     self.tags.clone()
   }
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
-    let client = build_client(self.verify_certificate)?;
-    let payload = json!({ "appToken": self.token, "content": format!("{}{}", if ctx.title.is_empty() { String::new() } else { format!("{}\n", ctx.title) }, ctx.body), "contentType": 1, "uids": self.uids });
-    let api_url = {
-      #[cfg(test)]
-      {
-        self.api_url_override.as_deref().unwrap_or("https://wxpusher.zjiecode.com/api/send/message")
-      }
-      #[cfg(not(test))]
-      {
-        "https://wxpusher.zjiecode.com/api/send/message"
-      }
+    if self.users.is_empty() && self.topics.is_empty() {
+      tracing::warn!("There were no WxPusher targets to notify");
+      return Ok(false);
+    }
+    let payload = Payload {
+      app_token: &self.token,
+      content: &ctx.body,
+      summary: &ctx.title,
+      content_type: match ctx.body_format {
+        NotifyFormat::Text => 1,
+        NotifyFormat::Html => 2,
+        NotifyFormat::Markdown => 3,
+      },
+      topic_ids: &self.topics,
+      uids: &self.users,
+      url: None,
     };
-    let resp = client.post(api_url).header("User-Agent", APP_ID).json(&payload).send().await?;
-    Ok(resp.status().is_success())
+    let url = format!("{}/api/send/message", service_base("https://wxpusher.zjiecode.com"));
+    let client = build_client(self.verify_certificate)?;
+    let resp = client
+      .post(&url)
+      .header("User-Agent", APP_ID)
+      .header("Content-Type", "application/json")
+      .header("Accept", "application/json")
+      .body(serde_json::to_vec(&payload)?)
+      .send()
+      .await?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    let code = serde_json::from_str::<serde_json::Value>(&body).ok().and_then(|v| v.get("code").and_then(|c| c.as_i64()));
+    if status == reqwest::StatusCode::OK && code == Some(1000) {
+      tracing::info!("Sent WxPusher notification to {} targets.", self.users.len() + self.topics.len());
+      Ok(true)
+    } else {
+      tracing::warn!("Failed to send WxPusher notification, code={}/{}", status.as_u16(), code.map(|c| c.to_string()).unwrap_or_else(|| "unk".into()));
+      Err(NotifyError::ServiceError { status: status.as_u16(), body })
+    }
   }
 }
 
 #[cfg(test)]
 mod tests {
+  use super::*;
   use crate::notify::registry::from_url;
+  use serde_json::json;
+  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
+
+  fn parse(url: &str) -> WxPusher {
+    WxPusher::from_url(&ParsedUrl::parse(url).unwrap()).unwrap()
+  }
 
   #[test]
   fn test_valid_urls() {
-    let urls = vec!["wxpusher://AT_appid/123/", "wxpusher://123?token=AT_abc1234", "wxpusher://?token=AT_abc1234&to=UID_abc", "wxpusher://AT_appid/UID_abcd/"];
+    let urls = vec![
+      "wxpusher://AT_appid/123/".to_string(),
+      "wxpusher://AT_appid/%20/%20/".into(),
+      "wxpusher://123?token=AT_abc1234".into(),
+      "wxpusher://?token=AT_abc1234".into(),
+      "wxpusher://?token=AT_abc1234&to=UID_abc".into(),
+      "wxpusher://AT_appid/UID_abcd/".into(),
+      "wxpusher://AT_appid/@/#/,/".into(),
+      "wxpusher://at_lower/UID_abcd/".into(),
+      format!("wxpusher://AT_appid/?to={},{}", "2".repeat(11), "3".repeat(11)),
+      format!("wxpusher://AT_appid/{}/{}/", "2".repeat(11), "3".repeat(11)),
+    ];
     for url in &urls {
       assert!(from_url(url).is_some(), "Should parse: {}", url);
     }
@@ -109,133 +183,99 @@ mod tests {
 
   #[test]
   fn test_invalid_urls() {
-    let urls = vec!["wxpusher://", "wxpusher://:@/", "wxpusher://invalid"];
+    let urls = vec!["wxpusher://", "wxpusher://:@/", "wxpusher://invalid", "wxpusher://AT_", "wxpusher://123?token=AT_a%20b"];
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
   }
 
-  // ── Behavioral tests using wiremock ──────────────────────────────────
+  #[test]
+  fn test_targets() {
+    let w = parse("wxpusher://AT_appid/123/abc/UID_456");
+    assert_eq!(w.topics, vec![123]);
+    assert_eq!(w.users, vec!["UID_456"]);
 
-  use super::*;
-  use crate::asset::AppriseAsset;
-  use crate::notify::{Notify, NotifyContext};
-  use crate::types::{NotifyFormat, NotifyType};
-  use crate::utils::parse::ParsedUrl;
-  use wiremock::matchers::{method, path};
-  use wiremock::{Mock, MockServer, ResponseTemplate};
+    // ?token= moves the host into the targets; everything is sorted the
+    // way upstream parse_list() does, and 0-prefixed topics are dropped
+    let w = parse("wxpusher://uid_b/45/123/bad?token=at_tok&to=UID_a,0");
+    assert_eq!(w.token, "at_tok");
+    assert_eq!(w.topics, vec![123, 45]);
+    assert_eq!(w.users, vec!["UID_a", "uid_b"]);
 
-  fn ctx(title: &str, body: &str) -> NotifyContext {
-    NotifyContext {
-      body: body.to_string(),
-      title: title.to_string(),
-      notify_type: NotifyType::Info,
-      body_format: NotifyFormat::Text,
-      attachments: vec![],
-      interpret_escapes: false,
-      interpret_emojis: false,
-      tags: vec![],
-      asset: AppriseAsset::default(),
-    }
-  }
-
-  fn make_wxpusher(server: &MockServer, uids: Vec<&str>) -> WxPusher {
-    let addr = server.address();
-    let base = format!("http://127.0.0.1:{}/api/send/message", addr.port());
-    WxPusher {
-      token: "AT_appid".to_string(),
-      uids: uids.iter().map(|s| s.to_string()).collect(),
-      verify_certificate: false,
-      tags: vec![],
-      api_url_override: Some(base),
-    }
-  }
-
-  #[tokio::test]
-  async fn test_wxpusher_basic_send_success() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-      .and(path("/api/send/message"))
-      .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"code": 1000})))
-      .expect(1)
-      .mount(&server)
-      .await;
-
-    let wp = make_wxpusher(&server, vec!["UID_abcd"]);
-    let result = wp.send(&ctx("My Title", "test body")).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap(), "WxPusher POST should succeed");
-  }
-
-  #[tokio::test]
-  async fn test_wxpusher_payload_correctness() {
-    use wiremock::matchers::body_json;
-    let server = MockServer::start().await;
-    let expected = serde_json::json!({
-        "appToken": "AT_appid",
-        "content": "My Title\ntest body",
-        "contentType": 1,
-        "uids": ["UID_abcd"],
-    });
-    Mock::given(method("POST"))
-      .and(path("/api/send/message"))
-      .and(body_json(&expected))
-      .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"code": 1000})))
-      .expect(1)
-      .mount(&server)
-      .await;
-
-    let wp = make_wxpusher(&server, vec!["UID_abcd"]);
-    let result = wp.send(&ctx("My Title", "test body")).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  #[tokio::test]
-  async fn test_wxpusher_http_500_returns_false() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST")).and(path("/api/send/message")).respond_with(ResponseTemplate::new(500).set_body_string("error")).expect(1).mount(&server).await;
-
-    let wp = make_wxpusher(&server, vec!["UID_abcd"]);
-    let result = wp.send(&ctx("title", "body")).await;
-    assert!(result.is_ok());
-    assert!(!result.unwrap(), "HTTP 500 should return false");
-  }
-
-  #[tokio::test]
-  async fn test_wxpusher_connection_refused_returns_error() {
-    let wp = WxPusher {
-      token: "AT_appid".to_string(),
-      uids: vec!["UID_abcd".to_string()],
-      verify_certificate: false,
-      tags: vec![],
-      api_url_override: Some("http://127.0.0.1:19999/api/send/message".to_string()),
-    };
-    let result = wp.send(&ctx("title", "body")).await;
-    assert!(result.is_err(), "Connection refused should return Err");
+    // Topic IDs can be longer than a u64
+    let w = parse(&format!("wxpusher://AT_appid/{}/{}", "9".repeat(21), "9".repeat(22)));
+    assert_eq!(w.topics, vec!["9".repeat(21).parse::<u128>().unwrap()]);
   }
 
   #[test]
-  fn test_wxpusher_from_url_struct_fields() {
-    let parsed = ParsedUrl::parse("wxpusher://AT_appid/UID_abcd/").unwrap();
-    let wp = WxPusher::from_url(&parsed).unwrap();
-    assert_eq!(wp.token, "AT_appid");
-    assert!(wp.uids.contains(&"UID_abcd".to_string()));
-  }
-
-  #[test]
-  fn test_wxpusher_token_from_query_param() {
-    let parsed = ParsedUrl::parse("wxpusher://123?token=AT_abc1234").unwrap();
-    let wp = WxPusher::from_url(&parsed).unwrap();
-    assert_eq!(wp.token, "AT_abc1234");
-    assert!(wp.uids.contains(&"123".to_string()));
-  }
-
-  #[test]
-  fn test_wxpusher_static_details() {
+  fn test_static_details() {
     let details = WxPusher::static_details();
     assert_eq!(details.service_name, "WxPusher");
     assert_eq!(details.protocols, vec!["wxpusher"]);
     assert!(!details.attachment_support);
+  }
+
+  async fn send(url: &str, ctx: &NotifyContext, status: u16, response: &str) -> Result<bool, NotifyError> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(response)).expect(1).mount(&server).await;
+    let svc = from_url(url).unwrap();
+    crate::notify::with_test_base(server.uri(), svc.send(ctx)).await
+  }
+
+  #[tokio::test]
+  async fn test_send_payload() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/api/send/message"))
+      .and(header("Content-Type", "application/json"))
+      .and(header("Accept", "application/json"))
+      .and(body_json(json!({
+        "appToken": "at_tok",
+        "content": "B",
+        "summary": "T",
+        "contentType": 1,
+        "topicIds": [123, 45],
+        "uids": ["UID_a", "uid_b"],
+        "url": null,
+      })))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "code": 1000 })))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let svc = from_url("wxpusher://uid_b/45/123/bad?token=at_tok&to=UID_a,0").unwrap();
+    let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_send_content_type_follows_format() {
+    for (format, content_type) in [(NotifyFormat::Html, 2), (NotifyFormat::Markdown, 3)] {
+      let server = MockServer::start().await;
+      Mock::given(method("POST"))
+        .and(body_json(json!({
+          "appToken": "AT_tok", "content": "B", "summary": "", "contentType": content_type,
+          "topicIds": [], "uids": ["UID_a"], "url": null,
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "code": 1000 })))
+        .expect(1)
+        .mount(&server)
+        .await;
+      let svc = from_url("wxpusher://AT_tok/UID_a").unwrap();
+      let ctx = NotifyContext { body: "B".into(), body_format: format, ..Default::default() };
+      assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+    }
+  }
+
+  #[tokio::test]
+  async fn test_send_failures() {
+    let ctx = NotifyContext { body: "B".into(), ..Default::default() };
+    // No valid targets: nothing is sent
+    assert!(!from_url("wxpusher://AT_appid/%20/").unwrap().send(&ctx).await.unwrap());
+    // Service error code, bad JSON, empty body and HTTP errors all fail
+    assert!(send("wxpusher://AT_appid/123", &ctx, 200, r#"{"code": 99}"#).await.is_err());
+    assert!(send("wxpusher://AT_appid/UID_345", &ctx, 200, "{").await.is_err());
+    assert!(send("wxpusher://AT_appid/UID_345", &ctx, 200, "").await.is_err());
+    assert!(send("wxpusher://AT_appid/123", &ctx, 999, r#"{"code": 1000}"#).await.is_err());
+    assert!(send("wxpusher://AT_appid/123", &ctx, 200, r#"{"code": 1000}"#).await.unwrap());
   }
 }
