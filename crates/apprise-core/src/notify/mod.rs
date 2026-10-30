@@ -75,6 +75,7 @@ pub mod notifiarr;
 pub mod notificationapi;
 pub mod notifico;
 pub mod ntfy;
+pub mod octopush;
 pub mod office365;
 pub mod one_signal;
 pub mod opsgenie;
