@@ -1099,3 +1099,38 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
   }
   out
 }
+
+/// Writes what this port produces (a generated key pair, signed and
+/// encrypted messages, an Autocrypt header) to `$APPRISE_PGP_DUMP`, so
+/// GnuPG or PGPy can check it independently:
+/// `APPRISE_PGP_DUMP=/tmp/out cargo test -p apprise-core --lib dump_pgp_artifacts -- --ignored`
+#[tokio::test]
+#[ignore]
+async fn dump_pgp_artifacts() {
+  let out = std::path::PathBuf::from(std::env::var("APPRISE_PGP_DUMP").expect("set APPRISE_PGP_DUMP"));
+  std::fs::create_dir_all(&out).unwrap();
+  let keys = out.join("keys");
+  let pgp = PgpController::new(None, None, Some("user@nuxref.com"), "Apprise", None).with_path(Some(keys.clone()));
+  assert!(pgp.keygen(None, None, false).await);
+  std::fs::write(out.join("autocrypt.txt"), pgp.autocrypt_header().await.unwrap()).unwrap();
+  let pgpy_pub = out.join("pgpy-pub.asc");
+  std::fs::write(&pgpy_pub, PGPY_PUB).unwrap();
+  let own_prv = keys.join("user-prv.asc").display().to_string();
+  let own_pub = keys.join("user-pub.asc").display().to_string();
+  let cases = [
+    ("signed.eml", format!("mailto://user:pass@nuxref.com/other@example.org?pgp=sign&pgpprv={}", own_prv)),
+    ("signed-encrypted.eml", format!("mailto://user:pass@nuxref.com/recipient@example.com?pgp=sign&pgpprv={}&pgppub={}", own_prv, pgpy_pub.display())),
+    ("encrypted-pgpy.eml", format!("mailto://user:pass@nuxref.com/recipient@example.com?pgp=encrypt&pgppub={}&pgpprv={}", pgpy_pub.display(), own_prv)),
+    ("encrypted-own.eml", format!("mailto://user:pass@nuxref.com?pgp=encrypt&pgppub={}", own_pub)),
+  ];
+  for (name, url) in cases {
+    let server = FakeSmtp::start(ServerConfig::default()).await;
+    let mut context = ctx("Ünïcode subject", "Line one\n.dot line\nHéllo wörld", NotifyFormat::Text);
+    context.attachments = vec![Attachment { name: "notes.txt".to_string(), data: b"attached\n".to_vec(), mime_type: "text/plain".to_string() }];
+    let (ok, _) = against(&server, email(&url).send(&context)).await;
+    assert!(ok.unwrap(), "{}", name);
+    // The exact bytes the server received, dot-stuffing undone
+    let raw = server.mails()[0].raw.split("\r\n").map(|l| l.strip_prefix('.').unwrap_or(l)).collect::<Vec<_>>().join("\r\n");
+    std::fs::write(out.join(name), raw).unwrap();
+  }
+}
