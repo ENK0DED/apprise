@@ -126,6 +126,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(sinch::Sinch::static_details());
   collect!(slack::Slack::static_details());
   collect!(smpp::Smpp::static_details());
+  collect!(smsc::Smsc::static_details());
   collect!(smseagle::SmsEagle::static_details());
   collect!(smsmanager::SmsManager::static_details());
   collect!(smtp2go::Smtp2Go::static_details());
@@ -275,6 +276,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(sinch::Sinch::from_url, "sinch");
   reg!(slack::Slack::from_url, "slack");
   reg!(smpp::Smpp::from_url, "smpp", "smpps");
+  reg!(smsc::Smsc::from_url, "smsc");
   reg!(smseagle::SmsEagle::from_url, "smseagle", "smseagles");
   reg!(smsmanager::SmsManager::from_url, "smsmanager", "smsmgr");
   reg!(smtp2go::Smtp2Go::from_url, "smtp2go");

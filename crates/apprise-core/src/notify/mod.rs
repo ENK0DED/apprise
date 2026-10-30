@@ -114,6 +114,7 @@ pub mod simplepush;
 pub mod sinch;
 pub mod slack;
 pub mod smpp;
+pub mod smsc;
 pub mod smseagle;
 pub mod smsmanager;
 pub mod smtp2go;
