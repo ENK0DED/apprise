@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_list};
+use crate::notify::sms_targets::{is_phone_no, parse_list, unquoted_host};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::aws::{AwsResponse, SigV4Request, flatten_response, sign};
 use crate::utils::parse::ParsedUrl;
@@ -119,7 +119,7 @@ impl Sns {
     }
 
     let secret = qs("secret").map(str::to_string).or(secret_from_path);
-    let access = qs("key").or_else(|| qs("access")).map(str::to_string).or_else(|| url.host.clone());
+    let access = qs("key").or_else(|| qs("access")).map(str::to_string).or_else(|| unquoted_host(url));
     let region = qs("region").map(str::to_string).or(region_from_path);
     let session_token = qs("token").map(str::to_string).or_else(|| url.user.clone().filter(|u| !u.is_empty()));
 

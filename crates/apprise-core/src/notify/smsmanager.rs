@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use async_trait::async_trait;
@@ -50,7 +50,7 @@ impl SmsManager {
     let batch = url.get("batch").map(parse_bool).unwrap_or(false);
 
     // The host is the first target
-    let mut entries = parse_phone_no(url.host.as_deref(), false);
+    let mut entries = parse_phone_no(unquoted_host(url), false);
     entries.extend(url.path_parts.iter().cloned());
     if let Some(to) = qs("to") {
       entries.extend(parse_phone_no([to], false));

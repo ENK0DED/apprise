@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use async_trait::async_trait;
@@ -22,7 +22,7 @@ pub struct Msg91 {
 impl Msg91 {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // msg91://template_id@authkey/phone1/phone2
-    let authkey = url.host.clone().unwrap_or_default();
+    let authkey = unquoted_host(url).unwrap_or_default();
     if authkey.is_empty() || !authkey.chars().all(|c| c.is_ascii_alphanumeric()) {
       tracing::warn!("An invalid MSG91 Authentication Key was specified.");
       return None;

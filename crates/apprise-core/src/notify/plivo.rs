@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use async_trait::async_trait;
@@ -32,12 +32,12 @@ impl Plivo {
     let auth_token = match qs("token") {
       Some(token) => {
         // The host is then the first target
-        if let Some(host) = url.host.clone().filter(|h| !h.is_empty()) {
+        if let Some(host) = unquoted_host(url).filter(|h| !h.is_empty()) {
           entries.insert(0, host);
         }
         token.to_string()
       }
-      None => url.host.clone().unwrap_or_default(),
+      None => unquoted_host(url).unwrap_or_default(),
     };
     let source = match qs("from") {
       Some(from) => Some(from.to_string()),

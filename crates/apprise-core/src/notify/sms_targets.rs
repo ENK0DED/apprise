@@ -19,6 +19,12 @@ pub(super) struct PhoneNo {
   pub(super) full: String,
 }
 
+/// The URL host, percent-decoded as upstream's `unquote(results["host"])`
+/// leaves it (the `url` crate keeps opaque hosts encoded).
+pub(super) fn unquoted_host(url: &crate::utils::parse::ParsedUrl) -> Option<String> {
+  url.host.as_deref().map(|h| urlencoding::decode(h).map(|d| d.into_owned()).unwrap_or_else(|_| h.to_string()))
+}
+
 fn is_list_delim(c: char, allow_whitespace: bool) -> bool {
   matches!(c, '[' | ']' | ';' | ',') || (allow_whitespace && c.is_whitespace())
 }

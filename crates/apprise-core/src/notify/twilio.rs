@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
@@ -85,7 +85,7 @@ impl Twilio {
     let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
     let account_sid = qs("sid").or_else(|| url.user.clone()).unwrap_or_default();
     let auth_token = qs("token").or_else(|| url.password.clone()).unwrap_or_default();
-    let source = qs("source").or_else(|| qs("from")).or_else(|| url.host.clone()).unwrap_or_default();
+    let source = qs("source").or_else(|| qs("from")).or_else(|| unquoted_host(url)).unwrap_or_default();
 
     if !is_prefixed_hex(&account_sid, "AC") {
       tracing::warn!("An invalid Twilio Account SID ({}) was specified.", account_sid);

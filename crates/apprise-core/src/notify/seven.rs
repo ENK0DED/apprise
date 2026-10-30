@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use async_trait::async_trait;
@@ -19,7 +19,7 @@ impl Seven {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // seven://apikey/targets?from=source&flash=yes&label=x
     let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty());
-    let apikey = url.host.clone().unwrap_or_default();
+    let apikey = unquoted_host(url).unwrap_or_default();
     if apikey.is_empty() {
       tracing::warn!("An invalid seven API Key was specified.");
       return None;

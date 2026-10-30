@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no};
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
@@ -100,7 +100,7 @@ impl Sfr {
       tracing::warn!("A SFR user (serviceId) and password (servicePassword) combination was not provided.");
       return None;
     }
-    let space_id = url.host.clone().unwrap_or_default();
+    let space_id = unquoted_host(url).unwrap_or_default();
     if space_id.is_empty() {
       tracing::warn!("A SFR Space ID is required.");
       return None;

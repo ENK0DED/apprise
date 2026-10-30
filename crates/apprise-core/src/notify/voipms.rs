@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_email, is_phone_no, parse_phone_no};
+use crate::notify::sms_targets::{is_email, is_phone_no, parse_phone_no, unquoted_host};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
@@ -35,7 +35,7 @@ impl VoipMs {
       tracing::warn!("Password has to be specified.");
       return None;
     };
-    let email = format!("{}@{}", url.password.as_deref().unwrap_or_default(), url.host.as_deref().unwrap_or_default());
+    let email = format!("{}@{}", url.password.as_deref().unwrap_or_default(), unquoted_host(url).unwrap_or_default());
     let Some(email) = is_email(&email) else {
       tracing::warn!("An invalid VoIPms user email: ({}) was specified.", email);
       return None;
