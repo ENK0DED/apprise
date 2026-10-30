@@ -6,7 +6,10 @@ use crate::asset::AppriseAsset;
 use crate::error::NotifyError;
 use crate::types::{NotifyFormat, NotifyType};
 
+pub mod options;
 pub mod registry;
+
+pub use options::{ConfiguredService, ServiceOptions};
 
 // ── Plugin modules ────────────────────────────────────────────────────────────
 pub mod africas_talking;
@@ -144,11 +147,33 @@ pub mod desktop;
 
 // ── Overflow mode ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverflowMode {
   Upstream, // send as-is, let service handle
   Truncate, // hard truncate to body_maxlen
   Split,    // split into multiple messages
+}
+
+impl OverflowMode {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::Upstream => "upstream",
+      Self::Truncate => "truncate",
+      Self::Split => "split",
+    }
+  }
+}
+
+impl std::str::FromStr for OverflowMode {
+  type Err = String;
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s.trim().to_lowercase().as_str() {
+      "upstream" => Ok(Self::Upstream),
+      "truncate" => Ok(Self::Truncate),
+      "split" => Ok(Self::Split),
+      other => Err(format!("Unknown overflow mode: {}", other)),
+    }
+  }
 }
 
 // ── Core types ────────────────────────────────────────────────────────────────
@@ -217,6 +242,12 @@ impl ServiceDetails {
 
 // ── Notify trait ─────────────────────────────────────────────────────────────
 
+/// A notification service plugin.
+///
+/// Every method added to this trait must also be forwarded in
+/// `ConfiguredService` (`notify/options.rs`). `registry::from_url` wraps
+/// every plugin in that type, so an unforwarded method silently falls back
+/// to the trait default instead of the plugin's own implementation.
 #[async_trait]
 pub trait Notify: Send + Sync {
   /// URL schemes handled by this plugin (e.g., ["discord"])
@@ -277,6 +308,20 @@ pub trait Notify: Send + Sync {
   fn body_max_line_count(&self) -> usize {
     0
   }
+
+  /// Convert one prepared body chunk into the service's own markup dialect
+  /// (upstream `NotifyBase.dialect_convert`). Called after the generic format
+  /// conversion. The orchestrator re-applies size limits to the result.
+  /// Keep implementations stateless and return unsupported formats unchanged.
+  fn dialect_convert(&self, body: &str, _body_format: &NotifyFormat) -> String {
+    body.to_string()
+  }
+
+  /// Common URL options parsed for this instance (`?retry=`, `?format=`, ...).
+  /// Only `ConfiguredService` returns `Some`.
+  fn service_options(&self) -> Option<&ServiceOptions> {
+    None
+  }
 }
 
 // ── Helper: build a reqwest client ───────────────────────────────────────────
@@ -288,3 +333,28 @@ pub fn build_client(verify_cert: bool) -> Result<reqwest::Client, NotifyError> {
 }
 
 pub const APP_ID: &str = concat!("Apprise/", env!("CARGO_PKG_VERSION"));
+
+// ── Helper: service base URLs that tests can redirect ────────────────────────
+
+#[cfg(test)]
+tokio::task_local! {
+  static TEST_SERVICE_BASE: String;
+}
+
+/// Return `default` (a fixed service base URL such as
+/// `https://api.telegram.org`). In unit tests, a call made inside
+/// [`with_test_base`] returns the mock server's base URL instead, so plugins
+/// with hard-coded hosts can be exercised against `wiremock`.
+pub(crate) fn service_base(default: &str) -> String {
+  #[cfg(test)]
+  if let Ok(base) = TEST_SERVICE_BASE.try_with(|b| b.clone()) {
+    return base;
+  }
+  default.to_string()
+}
+
+/// Run `fut` with every [`service_base`] call returning `base`.
+#[cfg(test)]
+pub(crate) async fn with_test_base<F: std::future::Future>(base: impl Into<String>, fut: F) -> F::Output {
+  TEST_SERVICE_BASE.scope(base.into(), fut).await
+}

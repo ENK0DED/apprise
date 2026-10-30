@@ -28,9 +28,12 @@
 pub mod asset;
 pub mod attachment;
 pub mod config;
+mod dispatch;
 pub mod error;
 pub mod notify;
+mod prepare;
 pub mod storage;
+pub mod tag;
 pub mod types;
 pub mod utils;
 
@@ -40,8 +43,6 @@ pub use error::{AttachError, ConfigError, NotifyError};
 pub use notify::registry;
 pub use notify::{Attachment, Notify, NotifyContext, OverflowMode, ServiceDetails};
 pub use types::{NotifyFormat, NotifyType, StorageMode};
-
-use utils::{emoji::interpret_emojis, escape::interpret_escapes, format::smart_split};
 
 /// Install the ring crypto provider for rustls. Safe to call multiple times.
 pub fn ensure_crypto_provider() {
@@ -216,79 +217,15 @@ impl Apprise {
     &self.asset
   }
 
-  /// Send notifications to all matching services in parallel.
-  ///
-  /// Services are dispatched concurrently using `tokio::task::JoinSet`.
-  /// Each service's contexts are sent sequentially within its task.
+  /// Send notifications to all matching services.
   pub async fn notify(&self, ctx: &NotifyContext) -> SendResult {
-    // Collect indices of filtered services + their prepared contexts
-    let work: Vec<(usize, Vec<NotifyContext>)> =
-      self.filtered_indices().into_iter().map(|i| (i, Self::prepare_contexts(self.services[i].as_ref(), ctx))).collect();
-    let total = work.len();
-
-    // Send concurrently — we need to avoid borrowing self across spawn,
-    // so we send each service sequentially here but all "at once" via
-    // a simple loop (tokio's cooperative multitasking still interleaves).
-    let mut succeeded = 0usize;
-    let mut failed = 0usize;
-    for (i, contexts) in &work {
-      let svc = &self.services[*i];
-      let mut ok = true;
-      for svc_ctx in contexts {
-        match svc.send(svc_ctx).await {
-          Ok(true) => {}
-          Ok(false) | Err(_) => {
-            ok = false;
-          }
-        }
-      }
-      if ok {
-        succeeded += 1;
-      } else {
-        failed += 1;
-      }
-    }
-
-    SendResult { total, succeeded, failed }
+    dispatch::notify(&self.services, &self.filtered_indices(), ctx).await
   }
 
-  /// Send notifications sequentially with optional rate limiting.
+  /// Send notifications one service at a time, honouring each service's
+  /// request rate.
   pub async fn notify_sequential(&self, ctx: &NotifyContext) -> SendResult {
-    let indices = self.filtered_indices();
-    let total = indices.len();
-    let mut succeeded = 0usize;
-    let mut failed = 0usize;
-    let mut last_send = std::time::Instant::now();
-
-    for i in &indices {
-      let svc = &self.services[*i];
-      let rate = svc.request_rate_per_sec();
-      if rate > 0.0 {
-        let min_interval = std::time::Duration::from_secs_f64(1.0 / rate);
-        let elapsed = last_send.elapsed();
-        if elapsed < min_interval {
-          tokio::time::sleep(min_interval - elapsed).await;
-        }
-      }
-      let contexts = Self::prepare_contexts(svc.as_ref(), ctx);
-      let mut svc_ok = true;
-      for svc_ctx in &contexts {
-        last_send = std::time::Instant::now();
-        match svc.send(svc_ctx).await {
-          Ok(true) => {}
-          Ok(false) | Err(_) => {
-            svc_ok = false;
-          }
-        }
-      }
-      if svc_ok {
-        succeeded += 1;
-      } else {
-        failed += 1;
-      }
-    }
-
-    SendResult { total, succeeded, failed }
+    dispatch::notify_sequential(&self.services, &self.filtered_indices(), ctx).await
   }
 
   /// Load an attachment from a file path or URL.
@@ -300,101 +237,7 @@ impl Apprise {
 
   /// Get indices of services matching the current tag filters.
   fn filtered_indices(&self) -> Vec<usize> {
-    if self.tag_groups.is_empty() {
-      return (0..self.services.len()).collect();
-    }
-    self
-      .services
-      .iter()
-      .enumerate()
-      .filter_map(|(i, svc)| {
-        let svc_tags: Vec<String> = svc.tags().iter().map(|t| t.to_lowercase()).collect();
-        if svc_tags.iter().any(|t| t == "always") {
-          return Some(i);
-        }
-        if self.tag_groups.iter().any(|and_group| {
-          if and_group.iter().any(|t| t == "all") {
-            return true;
-          }
-          and_group.iter().all(|t| svc_tags.contains(t))
-        }) {
-          Some(i)
-        } else {
-          None
-        }
-      })
-      .collect()
-  }
-
-  /// Prepare one or more NotifyContexts for a service, handling format conversion,
-  /// emoji/escape interpretation, title/body truncation, and overflow splitting.
-  fn prepare_contexts(svc: &dyn Notify, ctx: &NotifyContext) -> Vec<NotifyContext> {
-    let mut svc_ctx = ctx.clone();
-
-    // Per-service format conversion
-    let target_format = svc.notify_format();
-    if target_format != svc_ctx.body_format {
-      svc_ctx.body = utils::format::convert_format(&svc_ctx.body, &svc_ctx.body_format, &target_format);
-      svc_ctx.body_format = target_format;
-    }
-
-    // Escape / emoji interpretation
-    if svc_ctx.interpret_escapes {
-      svc_ctx.body = interpret_escapes(&svc_ctx.body);
-    }
-    if svc_ctx.interpret_emojis {
-      svc_ctx.body = interpret_emojis(&svc_ctx.body);
-    }
-
-    // Line-count truncation
-    let max_lines = svc.body_max_line_count();
-    if max_lines > 0 {
-      let lines: Vec<&str> = svc_ctx.body.lines().collect();
-      if lines.len() > max_lines {
-        svc_ctx.body = lines[..max_lines].join("\n");
-      }
-    }
-
-    // Title truncation
-    let title_max = svc.title_maxlen();
-    if title_max > 0 && svc_ctx.title.len() > title_max {
-      svc_ctx.title.truncate(title_max);
-    } else if title_max == 0 {
-      svc_ctx.title.clear();
-    }
-
-    // Overflow handling
-    let body_max = svc.body_maxlen();
-    match svc.overflow_mode() {
-      OverflowMode::Upstream => vec![svc_ctx],
-      OverflowMode::Truncate => {
-        if body_max > 0 && svc_ctx.body.len() > body_max {
-          svc_ctx.body.truncate(body_max);
-        }
-        vec![svc_ctx]
-      }
-      OverflowMode::Split => {
-        if body_max == 0 || svc_ctx.body.len() <= body_max {
-          return vec![svc_ctx];
-        }
-        let chunks = smart_split(&svc_ctx.body, body_max);
-        let original_title = svc_ctx.title.clone();
-        chunks
-          .into_iter()
-          .enumerate()
-          .map(|(i, chunk)| {
-            let mut chunk_ctx = svc_ctx.clone();
-            chunk_ctx.body = chunk;
-            if i > 0 {
-              chunk_ctx.title = String::new();
-            } else {
-              chunk_ctx.title = original_title.clone();
-            }
-            chunk_ctx
-          })
-          .collect()
-      }
-    }
+    self.services.iter().enumerate().filter(|(_, svc)| tag::is_match(&svc.tags(), &self.tag_groups)).map(|(i, _)| i).collect()
   }
 }
 

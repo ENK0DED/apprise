@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use super::Notify;
+use super::{ConfiguredService, Notify, ServiceOptions};
 use crate::utils::parse::ParsedUrl;
 
 pub type FactoryFn = fn(&ParsedUrl) -> Option<Box<dyn Notify>>;
@@ -303,13 +303,29 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   m
 }
 
-/// Instantiate a notifier from a URL string
+/// Instantiate a notifier from a URL string.
+///
+/// The plugin is wrapped in a [`ConfiguredService`] carrying the common URL
+/// options (`?retry=`, `?format=`, ...). A URL whose common options are
+/// invalid does not load.
 pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
   let parsed = ParsedUrl::parse(url)?;
+  let options = match ServiceOptions::from_url(&parsed) {
+    Ok(options) => options,
+    Err(e) => {
+      tracing::warn!("{}", e);
+      return None;
+    }
+  };
+  let plugin = instantiate(&parsed)?;
+  Some(Box::new(ConfiguredService::new(plugin, options)))
+}
 
+/// Find the plugin for a parsed URL and build it, without the common options.
+fn instantiate(parsed: &ParsedUrl) -> Option<Box<dyn Notify>> {
   // Direct schema match
   if let Some(factory) = registry().get(&parsed.schema) {
-    if let Some(notifier) = factory(&parsed) {
+    if let Some(notifier) = factory(parsed) {
       return Some(notifier);
     }
   }
@@ -354,7 +370,7 @@ pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
       for (pattern, schema_key) in host_patterns {
         if host_lower == *pattern || host_lower.ends_with(&format!(".{}", pattern)) {
           if let Some(factory) = reg.get(*schema_key) {
-            if let Some(notifier) = factory(&parsed) {
+            if let Some(notifier) = factory(parsed) {
               return Some(notifier);
             }
           }
@@ -364,7 +380,7 @@ pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
       // MSTeams: outlook.office.com or *.webhook.office.com
       if host_lower == "outlook.office.com" || host_lower.ends_with(".webhook.office.com") {
         if let Some(factory) = reg.get("msteams") {
-          if let Some(notifier) = factory(&parsed) {
+          if let Some(notifier) = factory(parsed) {
             return Some(notifier);
           }
         }
@@ -373,7 +389,7 @@ pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
       // Workflows: *.azure.com with /workflows/ in path
       if host_lower.ends_with(".azure.com") && (parsed.path.contains("workflows/") || parsed.path.starts_with("workflows/")) {
         if let Some(factory) = reg.get("workflow") {
-          if let Some(notifier) = factory(&parsed) {
+          if let Some(notifier) = factory(parsed) {
             return Some(notifier);
           }
         }
@@ -382,7 +398,7 @@ pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
       // Apprise API: URLs with /notify/ in path
       if parsed.path.contains("notify/") || parsed.path.starts_with("notify/") {
         if let Some(factory) = reg.get("apprise") {
-          if let Some(notifier) = factory(&parsed) {
+          if let Some(notifier) = factory(parsed) {
             return Some(notifier);
           }
         }
@@ -391,7 +407,7 @@ pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
       // Ryver: *.ryver.com
       if host_lower.ends_with(".ryver.com") {
         if let Some(factory) = reg.get("ryver") {
-          if let Some(notifier) = factory(&parsed) {
+          if let Some(notifier) = factory(parsed) {
             return Some(notifier);
           }
         }
@@ -400,7 +416,7 @@ pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
       // Mattermost: URLs containing /hooks/ in the path
       if parsed.path.starts_with("hooks/") || parsed.path.contains("/hooks/") || parsed.path.contains("hooks") {
         if let Some(factory) = reg.get("mmost") {
-          if let Some(notifier) = factory(&parsed) {
+          if let Some(notifier) = factory(parsed) {
             return Some(notifier);
           }
         }

@@ -1,5 +1,5 @@
 use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
 pub struct Prowl {
@@ -61,7 +61,7 @@ impl Notify for Prowl {
       ("priority", &self.priority.to_string()),
     ];
     let client = build_client(self.verify_certificate)?;
-    let resp = client.post("https://api.prowlapp.com/publicapi/add").header("User-Agent", APP_ID).form(&params).send().await?;
+    let resp = client.post(format!("{}/publicapi/add", service_base("https://api.prowlapp.com"))).header("User-Agent", APP_ID).form(&params).send().await?;
     if resp.status().is_success() {
       Ok(true)
     } else {
@@ -146,5 +146,25 @@ mod tests {
     assert_eq!(details.service_name, "Prowl");
     assert!(details.protocols.contains(&"prowl"));
     assert_eq!(details.service_url, Some("https://www.prowlapp.com"));
+  }
+
+  #[tokio::test]
+  async fn test_send_against_mock_server() {
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/publicapi/add"))
+      .and(body_string_contains("event=title"))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+
+    let svc = from_url(&format!("prowl://{}", "a".repeat(40))).unwrap();
+    let ctx = NotifyContext { title: "title".into(), body: "body".into(), ..Default::default() };
+    let ok = crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap();
+    assert!(ok);
   }
 }
