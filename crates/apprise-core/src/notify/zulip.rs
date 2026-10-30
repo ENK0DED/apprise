@@ -2,8 +2,8 @@ use async_trait::async_trait;
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::validate::is_email;
+use crate::utils::email::{is_email, parse_list};
+use crate::utils::parse::{ParsedUrl, unquote};
 
 const DEFAULT_HOSTNAME: &str = "zulipchat.com";
 const DEFAULT_STREAM: &str = "general";
@@ -25,7 +25,7 @@ impl Zulip {
     let is_name_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
 
     // Upstream matches a 1-32 character name at the start of the value
-    let raw_bot = url.user.as_deref().map(unquote).unwrap_or_default();
+    let raw_bot = url.user.clone().unwrap_or_default();
     let botname: String = raw_bot.trim().chars().take_while(|c| is_name_char(*c)).take(32).collect();
     if botname.is_empty() {
       tracing::warn!("The Zulip botname specified ({}) is invalid.", raw_bot);
@@ -33,7 +33,7 @@ impl Zulip {
     }
     let botname = botname.strip_suffix("-bot").map(String::from).unwrap_or(botname);
 
-    let raw_org = url.host.as_deref().map(unquote).unwrap_or_default();
+    let raw_org = url.host.clone().unwrap_or_default();
     let raw_org = raw_org.trim();
     let organization: String = raw_org.chars().take_while(|c| is_name_char(*c)).take(32).collect();
     if organization.is_empty() {
@@ -112,12 +112,20 @@ impl Notify for Zulip {
 
     let mut has_error = false;
     for target in &self.targets {
+      // A retry skips targets that already accepted the message
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       // Email addresses get a private message; anything else is a stream
-      let kind = if is_email(target) { "private" } else { "stream" };
+      let (kind, to) = match is_email(target) {
+        Some(e) => ("private", e.full_email),
+        None => ("stream", target.clone()),
+      };
       let body = url::form_urlencoded::Serializer::new(String::new())
-        .extend_pairs([("subject", ctx.title.as_str()), ("content", ctx.body.as_str()), ("type", kind), ("to", target.as_str())])
+        .extend_pairs([("subject", ctx.title.as_str()), ("content", ctx.body.as_str()), ("type", kind), ("to", to.as_str())])
         .finish();
       tracing::debug!("Zulip POST URL: {} (cert_verify={})", url, self.verify_certificate);
+      crate::notify::throttle().await;
       let resp = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -127,7 +135,10 @@ impl Notify for Zulip {
         .send()
         .await;
       match resp {
-        Ok(r) if r.status().as_u16() == 200 => tracing::info!("Sent Zulip notification to {}.", target),
+        Ok(r) if r.status().as_u16() == 200 => {
+          tracing::info!("Sent Zulip notification to {}.", target);
+          crate::delivery::mark_delivered(target, false);
+        }
         Ok(r) => {
           let status = r.status();
           let reason = if status.as_u16() == 401 { "Unauthorized - Invalid Token." } else { status.canonical_reason().unwrap_or("") };
@@ -136,7 +147,7 @@ impl Notify for Zulip {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Zulip notification to {}.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -145,29 +156,11 @@ impl Notify for Zulip {
   }
 }
 
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
-/// Upstream `parse_list()`: split on `[]`, `;`, `,` and whitespace, then
-/// de-duplicate and sort.
-fn parse_list(items: &[String]) -> Vec<String> {
-  let mut out: Vec<String> = items
-    .iter()
-    .flat_map(|i| i.split(|c: char| c == '[' || c == ']' || c == ';' || c == ',' || c.is_whitespace()))
-    .filter(|t| !t.is_empty())
-    .map(String::from)
-    .collect();
-  out.sort();
-  out.dedup();
-  out
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{header, method, path};
+  use wiremock::matchers::{body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse_zulip(url: &str) -> Zulip {
@@ -240,7 +233,7 @@ mod tests {
     let ctx = NotifyContext { title: "T".into(), body: "B b".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = crate::notify::custom_json::requests_to(&server, "POST", "/api/v1/messages").await;
     let bodies: Vec<String> = reqs.iter().map(|r| String::from_utf8_lossy(&r.body).into_owned()).collect();
     // Targets are sorted: stream1 goes first
     assert_eq!(bodies, vec!["subject=T&content=B+b&type=stream&to=stream1", "subject=T&content=B+b&type=private&to=user%40example.com"]);
@@ -249,7 +242,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure_continues() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(401)).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api/v1/messages")).respond_with(ResponseTemplate::new(401)).expect(2).mount(&server).await;
     let svc = from_url(&format!("zulip://botname@apprise/{}/a/b", "a".repeat(32))).unwrap();
     let ctx = NotifyContext { body: "B".into(), ..Default::default() };
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
@@ -264,5 +257,29 @@ mod tests {
     assert_eq!(details.service_name, "Zulip");
     assert_eq!(details.protocols, vec!["zulip"]);
     assert!(!details.attachment_support);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/api/v1/messages"))
+      .and(body_string_contains("to=b"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/api/v1/messages")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("zulip://botname@apprise/{}/a/b?retry=1&wait=0", "a".repeat(32))));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "B".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<String> = crate::notify::custom_json::requests_to(&server, "POST", "/api/v1/messages")
+      .await
+      .iter()
+      .map(|r| url::form_urlencoded::parse(&r.body).find(|(k, _)| k == "to").unwrap().1.into_owned())
+      .collect();
+    assert_eq!(sent, vec!["a", "b", "b"]);
   }
 }

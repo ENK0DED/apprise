@@ -5,21 +5,8 @@ use serde_json::{Value, json};
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::types::NotifyFormat;
-use crate::utils::parse::ParsedUrl;
-
-/// Upstream `parse_list()`: split on whitespace, commas, semicolons and
-/// brackets, then de-duplicate and sort.
-fn parse_list<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-  let mut items: Vec<String> = values
-    .into_iter()
-    .flat_map(|v| v.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '[' | ']')))
-    .filter(|s| !s.is_empty())
-    .map(String::from)
-    .collect();
-  items.sort();
-  items.dedup();
-  items
-}
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
 
 /// QQ notifications through a OneBot 11 HTTP server (NapCat, LLOneBot,
 /// Lagrange.OneBot, go-cqhttp).
@@ -41,22 +28,21 @@ impl OneBot {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     let host = url.host.clone().filter(|h| !h.is_empty())?;
 
-    // Read the token from the query string or URL user field
-    let token = url.get("token").filter(|t| !t.is_empty()).map(String::from).or_else(|| url.user.clone()).filter(|t| !t.is_empty());
+    // Read the token from the query string (unquoted once more, as
+    // upstream does) or URL user field
+    let token = url.get("token").filter(|t| !t.is_empty()).map(unquote).or_else(|| url.user.clone()).filter(|t| !t.is_empty());
 
-    // Treat every path entry as a target; ?to= adds more
-    let path_entries: Vec<String> = url
-      .path
-      .split([' ', '\t', '\r', '\n', ',', '\\', '/'])
-      .filter(|s| !s.is_empty())
-      .map(|s| urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string()))
-      .collect();
-    let to = url.get("to").filter(|t| !t.is_empty());
+    // Treat every path entry as a target; ?to= adds more (each entry
+    // unquoted, as upstream's URLBase.parse_list() does)
+    let mut entries = url.path_parts.clone();
+    if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
+      entries.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
+    }
 
     // Users may start with '@', groups with '#'; both hold 1 to 19 digits
     let mut users = Vec::new();
     let mut groups = Vec::new();
-    for target in parse_list(path_entries.iter().map(String::as_str).chain(to)) {
+    for target in parse_list(&entries) {
       let (is_group, id) = match target.strip_prefix('#') {
         Some(id) => (true, id),
         None => (false, target.strip_prefix('@').unwrap_or(&target)),
@@ -116,11 +102,12 @@ impl OneBot {
     if let Some(token) = &self.token {
       req = req.header("Authorization", format!("Bearer {}", token));
     }
+    crate::notify::throttle().await;
     let resp = match req.send().await {
       Ok(resp) => resp,
       Err(e) => {
         tracing::warn!("A Connection error occurred sending OneBot {}.", action);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return false;
       }
     };
@@ -180,7 +167,10 @@ impl Notify for OneBot {
   fn title_maxlen(&self) -> usize {
     0
   }
-
+  /// Upstream does not throttle OneBot servers
+  fn request_rate_per_sec(&self) -> f64 {
+    0.0
+  }
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     if self.users.is_empty() && self.groups.is_empty() {
       tracing::warn!("There are no OneBot targets to notify.");
@@ -195,11 +185,17 @@ impl Notify for OneBot {
     // Targets that failed are left alone for the rest of this notification
     let mut failed = vec![false; targets.len()];
 
+    // A retry skips the messages a target already accepted
     if !ctx.body.is_empty() {
       for (i, (action, field, id)) in targets.iter().enumerate() {
+        let key = format!("{}:{}", field, id);
+        if crate::delivery::is_delivered(&key, false) {
+          continue;
+        }
         let payload = json!({ *field: id, "message": [{ "type": "text", "data": { "text": ctx.body } }] });
         if self.post(&client, action, &payload).await {
           tracing::info!("Sent OneBot notification to {} {}.", field, id);
+          crate::delivery::mark_delivered(&key, false);
         } else {
           failed[i] = true;
         }
@@ -207,11 +203,11 @@ impl Notify for OneBot {
     }
 
     // Send each attachment as its own message
-    for attachment in &ctx.attachments {
-      if failed.iter().all(|f| *f) {
-        break;
+    for (no, attachment) in ctx.attachments.iter().enumerate() {
+      let key = |field: &str, id: u64| format!("attachment:{}:{}:{}", field, id, no + 1);
+      if targets.iter().enumerate().all(|(i, (_, field, id))| failed[i] || crate::delivery::is_delivered(&key(field, *id), false)) {
+        continue;
       }
-
       // Base64 avoids requiring the server to access a local path
       let mut data = json!({ "file": format!("base64://{}", base64::engine::general_purpose::STANDARD.encode(&attachment.data)) });
 
@@ -231,13 +227,15 @@ impl Notify for OneBot {
       let segment = json!({ "type": kind, "data": data });
 
       for (i, (action, field, id)) in targets.iter().enumerate() {
-        if failed[i] {
+        if failed[i] || crate::delivery::is_delivered(&key(field, *id), false) {
           continue;
         }
         let payload = json!({ *field: id, "message": [segment] });
         if !self.post(&client, action, &payload).await {
           failed[i] = true;
+          continue;
         }
+        crate::delivery::mark_delivered(&key(field, *id), false);
       }
     }
 
@@ -345,8 +343,8 @@ mod tests {
     Mock::given(method("POST")).and(path("/send_private_msg")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
     let svc = from_url(&format!("onebot://{}/111", addr(&server))).unwrap();
     assert!(svc.send(&NotifyContext { body: "hello".into(), ..Default::default() }).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
-    assert!(requests.iter().find(|r| r.url.path() == "/send_private_msg").unwrap().headers.get("Authorization").is_none());
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/send_private_msg").await;
+    assert!(requests[0].headers.get("Authorization").is_none());
   }
 
   #[tokio::test]
@@ -360,7 +358,12 @@ mod tests {
     // Failures reported inside an HTTP 200 reply
     for reply in [json!({"status": "failed", "retcode": 100}), json!({"status": "ok", "retcode": 1404}), json!({"retcode": null}), json!({"retcode": "0"})] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(reply.clone())).expect(1).mount(&server).await;
+      Mock::given(method("POST"))
+        .and(path("/send_private_msg"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(reply.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
       let svc = from_url(&format!("onebot://{}/@111", addr(&server))).unwrap();
       assert!(!svc.send(&NotifyContext { body: "hello".into(), ..Default::default() }).await.unwrap(), "reply {}", reply);
     }
@@ -368,14 +371,14 @@ mod tests {
     // Async replies (retcode 1) and unreadable replies are successes
     for reply in [r#"{"status": "async", "retcode": 1}"#, "", "not json", "[]"] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string(reply)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/send_private_msg")).respond_with(ResponseTemplate::new(200).set_body_string(reply)).expect(1).mount(&server).await;
       let svc = from_url(&format!("onebot://{}/@111", addr(&server))).unwrap();
       assert!(svc.send(&NotifyContext { body: "hello".into(), ..Default::default() }).await.unwrap(), "reply {}", reply);
     }
 
     for code in [400u16, 401, 403, 404, 406, 500] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/send_private_msg")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let svc = from_url(&format!("onebot://{}/@111", addr(&server))).unwrap();
       assert!(!svc.send(&NotifyContext { body: "hello".into(), ..Default::default() }).await.unwrap(), "code {}", code);
     }
@@ -385,7 +388,7 @@ mod tests {
   async fn test_send_attachments() {
     let server = MockServer::start().await;
     let b64 = |d: &[u8]| format!("base64://{}", base64::engine::general_purpose::STANDARD.encode(d));
-    Mock::given(method("POST")).and(body_json(text("user_id", 111, "hello"))).respond_with(ok()).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/send_private_msg")).and(body_json(text("user_id", 111, "hello"))).respond_with(ok()).expect(1).mount(&server).await;
     for segment in [
       json!({"type": "image", "data": {"file": b64(b"PNG")}}),
       json!({"type": "record", "data": {"file": b64(b"MP3")}}),
@@ -420,7 +423,7 @@ mod tests {
   async fn test_send_attachment_only_and_failed_targets() {
     // An empty body sends only the attachment
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ok()).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/send_private_msg")).respond_with(ok()).expect(1).mount(&server).await;
     let svc = from_url(&format!("onebot://{}/@111", addr(&server))).unwrap();
     let mut ctx = NotifyContext::default();
     ctx.attachments.push(Attachment { name: "a.png".into(), data: b"PNG".to_vec(), mime_type: "image/png".into() });
@@ -444,5 +447,31 @@ mod tests {
     let svc = parse("onebot://localhost/1");
     assert_eq!(svc.title_maxlen(), 0);
     assert_eq!(svc.body_maxlen(), 4500);
+    assert_eq!(svc.request_rate_per_sec(), 0.0);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/send_private_msg")).respond_with(ok()).expect(1).mount(&server).await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/send_group_msg"))
+      .and(body_json(text("group_id", 222, "hello")))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/send_group_msg")).respond_with(ok()).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("onebot://{}/@111/%23222?retry=1&wait=0", addr(&server))));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "hello".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<Value> = crate::notify::custom_json::requests_to(&server, "POST", "/send_group_msg")
+      .await
+      .iter()
+      .map(|r| r.body_json::<Value>().unwrap()["group_id"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!(222), json!(222)]);
   }
 }

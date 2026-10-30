@@ -4,14 +4,17 @@ use serde_json::{Value, json};
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyFormat;
-use crate::utils::parse::ParsedUrl;
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
+
+/// Errors that mean the cached access token is no longer usable.
+const TOKEN_ERROR_CODES: &[i64] = &[40001, 40014, 42001];
 
 /// WeCom (WeChat Work / Enterprise WeChat) application messages sent to
 /// users, departments or tags of an organisation.
 ///
-/// Upstream caches the access token in the persistent store for its
-/// two-hour lifetime. The port has no store yet, so every send fetches a
-/// fresh token first.
+/// The access token is cached in the persistent store for its two-hour
+/// lifetime, as upstream does; without a store every send fetches one.
 pub struct WeChat {
   corpid: String,
   corpsecret: String,
@@ -26,17 +29,17 @@ pub struct WeChat {
 
 impl WeChat {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let corpid = url.user.as_deref().map(unquote).unwrap_or_default().trim().to_string();
+    let corpid = url.user.clone().unwrap_or_default().trim().to_string();
     if corpid.is_empty() {
       tracing::warn!("A WeChat (WeCom) Corp ID must be specified.");
       return None;
     }
-    let corpsecret = url.password.as_deref().map(unquote).unwrap_or_default().trim().to_string();
+    let corpsecret = url.password.clone().unwrap_or_default().trim().to_string();
     if corpsecret.is_empty() {
       tracing::warn!("A WeChat (WeCom) App Secret must be specified.");
       return None;
     }
-    let agentid = url.host.as_deref().map(unquote).unwrap_or_default();
+    let agentid = url.host.clone().unwrap_or_default();
     let agentid = agentid.trim();
     let agentid = match agentid.bytes().all(|c| c.is_ascii_digit()).then(|| agentid.parse::<u64>().ok()).flatten() {
       Some(id) => id,
@@ -46,9 +49,10 @@ impl WeChat {
       }
     };
 
-    let mut entries = split_path(&url.path);
+    let mut entries = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|v| !v.is_empty()) {
-      entries.push(to.to_string());
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      entries.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
     let (mut users, mut departments, mut tag_ids) = (Vec::new(), Vec::new(), Vec::new());
     for target in parse_list(&entries) {
@@ -78,8 +82,14 @@ impl WeChat {
     }
   }
 
-  /// Fetch an access token; `None` (after logging why) on any failure.
+  /// The cached access token, or a fresh one; `None` (after logging why)
+  /// on any failure.
   async fn access_token(&self, client: &reqwest::Client, base: &str) -> Option<String> {
+    let cached = crate::storage::with_service_store(|s| s.get("access_token")).flatten();
+    if let Some(token) = cached.as_ref().and_then(Value::as_str).filter(|t| !t.is_empty()) {
+      return Some(token.to_string());
+    }
+    crate::notify::throttle().await;
     let resp = client
       .get(format!("{}/cgi-bin/gettoken", base))
       .header("User-Agent", APP_ID)
@@ -89,7 +99,8 @@ impl WeChat {
     let resp = match resp {
       Ok(r) => r,
       Err(e) => {
-        tracing::warn!("A Connection error occurred fetching the WeChat access token: {}", e.without_url());
+        tracing::warn!("A Connection error occurred fetching the WeChat access token.");
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return None;
       }
     };
@@ -104,7 +115,13 @@ impl WeChat {
       return None;
     }
     match content.get("access_token").and_then(Value::as_str).filter(|t| !t.is_empty()) {
-      Some(token) => Some(token.to_string()),
+      Some(token) => {
+        // Keep it until five minutes before it expires (at least a minute)
+        let expires_in = content.get("expires_in").and_then(Value::as_i64).unwrap_or(7200);
+        let ttl = std::time::Duration::from_secs((expires_in - 300).max(60) as u64);
+        crate::storage::with_service_store(|s| s.set("access_token", json!(token), Some(ttl), true));
+        Some(token.to_string())
+      }
       None => {
         tracing::warn!("WeChat access token response contained no token.");
         None
@@ -151,28 +168,6 @@ fn api_error(content: &Value) -> Option<String> {
   Some(format!("errcode={}: {}", errcode, message))
 }
 
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
-/// Upstream `URLBase.split_path`: split on whitespace, commas and slashes,
-/// then unquote each entry.
-fn split_path(path: &str) -> Vec<String> {
-  path.split([' ', '\t', '\r', '\n', ',', '\\', '/']).filter(|s| !s.is_empty()).map(unquote).collect()
-}
-
-/// Upstream `parse_list`: split on whitespace, commas, semicolons and
-/// brackets, then sort and drop duplicates.
-fn parse_list(items: &[String]) -> Vec<String> {
-  let mut out: Vec<String> = items
-    .iter()
-    .flat_map(|s| s.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '[' | ']')).filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>())
-    .collect();
-  out.sort();
-  out.dedup();
-  out
-}
-
 #[async_trait]
 impl Notify for WeChat {
   fn schemas(&self) -> &[&str] {
@@ -194,6 +189,9 @@ impl Notify for WeChat {
   // No title field; the title is folded into the body
   fn title_maxlen(&self) -> usize {
     0
+  }
+  fn url_identifier(&self) -> Option<Vec<String>> {
+    Some(vec!["wechat".into(), self.corpid.clone(), self.corpsecret.clone(), self.agentid.to_string()])
   }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
@@ -222,6 +220,7 @@ impl Notify for WeChat {
       payload["totag"] = json!(self.tag_ids.join("|"));
     }
 
+    crate::notify::throttle().await;
     let resp = client
       .post(format!("{}/cgi-bin/message/send?access_token={}", base, token))
       .header("User-Agent", APP_ID)
@@ -232,7 +231,8 @@ impl Notify for WeChat {
     let resp = match resp {
       Ok(r) => r,
       Err(e) => {
-        tracing::warn!("A Connection error occurred sending WeChat (WeCom) notification: {}", e.without_url());
+        tracing::warn!("A Connection error occurred sending WeChat (WeCom) notification.");
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return Ok(false);
       }
     };
@@ -245,6 +245,10 @@ impl Notify for WeChat {
     }
     let content: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     if let Some(error) = api_error(&content) {
+      // A rejected token is dropped so the next send fetches a new one
+      if content.get("errcode").and_then(Value::as_i64).is_some_and(|c| TOKEN_ERROR_CODES.contains(&c)) {
+        crate::storage::with_service_store(|s| s.remove("access_token"));
+      }
       tracing::warn!("Failed to send WeChat (WeCom) notification: {}.", error);
       return Ok(false);
     }
@@ -285,14 +289,7 @@ mod tests {
   }
 
   async fn posts(server: &MockServer) -> Vec<Value> {
-    server
-      .received_requests()
-      .await
-      .unwrap()
-      .iter()
-      .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/cgi-bin/message/send")
-      .map(|r| serde_json::from_slice(&r.body).unwrap())
-      .collect()
+    crate::notify::custom_json::requests_to(server, "POST", "/cgi-bin/message/send").await.iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect()
   }
 
   fn ctx(body: &str) -> NotifyContext {
@@ -442,7 +439,8 @@ mod tests {
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap());
     // Nothing is requested without a recipient (other processes probing
     // localhost ports can still reach the mock server, so only look at ours)
-    assert!(server.received_requests().await.unwrap().iter().all(|r| !r.url.path().starts_with("/cgi-bin")));
+    assert!(posts(&server).await.is_empty());
+    assert!(crate::notify::custom_json::requests_to(&server, "GET", "/cgi-bin/gettoken").await.is_empty());
   }
 
   #[tokio::test]
@@ -481,7 +479,7 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn test_send_fetches_token_every_time() {
+  async fn test_send_without_store_fetches_token_every_time() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
       .and(path("/cgi-bin/gettoken"))
@@ -499,5 +497,38 @@ mod tests {
     for _ in 0..2 {
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap());
     }
+  }
+
+  #[tokio::test]
+  async fn test_store_keeps_the_access_token() {
+    let server = MockServer::start().await;
+    // One token serves both notifications until WeCom rejects it
+    Mock::given(method("GET"))
+      .and(path("/cgi-bin/gettoken"))
+      .respond_with(ResponseTemplate::new(200).set_body_string(TOKEN_RESPONSE))
+      .expect(2)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST"))
+      .and(path("/cgi-bin/message/send"))
+      .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"errcode": 42001, "errmsg": "access_token expired"}"#))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/cgi-bin/message/send")).respond_with(ResponseTemplate::new(200).set_body_string(SEND_OK)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&url("/@all")));
+    // The first send is refused with an expired token, which is dropped
+    assert!(!crate::notify::with_test_base(server.uri(), a.notify(&ctx("B"))).await.is_success());
+    for _ in 0..2 {
+      assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("B"))).await.is_success());
+    }
+    let tokens: Vec<String> = crate::notify::custom_json::requests_to(&server, "POST", "/cgi-bin/message/send")
+      .await
+      .iter()
+      .map(|r| r.url.query_pairs().find(|(k, _)| k == "access_token").unwrap().1.into_owned())
+      .collect();
+    assert_eq!(tokens, vec!["TOKEN12345678"; 3]);
   }
 }

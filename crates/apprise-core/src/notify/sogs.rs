@@ -6,7 +6,9 @@ use ed25519_dalek::{Signer, SigningKey};
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::email::parse_list;
+use crate::utils::http::read_bounded_response;
+use crate::utils::parse::{ParsedUrl, unquote};
 
 /// Stop reading a response once it grows past a normal acknowledgement; a
 /// hostile or compromised server cannot make us buffer more than this.
@@ -31,10 +33,11 @@ impl SessionOgs {
     let host = url.host.clone().filter(|h| !h.is_empty())?;
 
     // The public key is the URL user; ?key= and then ?public_key= override it
-    let mut public_key = url.user.as_deref().map(unquote);
+    // Upstream unquotes the query values once more
+    let mut public_key = url.user.clone();
     for key in ["key", "public_key"] {
       if let Some(v) = url.get(key).filter(|v| !v.is_empty()) {
-        public_key = Some(v.to_string());
+        public_key = Some(unquote(v));
       }
     }
     let Some(public_key) = decode_key(public_key.as_deref()) else {
@@ -43,18 +46,19 @@ impl SessionOgs {
     };
 
     // The bot seed is the URL password; ?seed= overrides it
-    let mut seed = url.password.as_deref().filter(|p| !p.is_empty()).map(unquote);
+    let mut seed = url.password.clone();
     if let Some(v) = url.get("seed").filter(|v| !v.is_empty()) {
-      seed = Some(v.to_string());
+      seed = Some(unquote(v));
     }
     let Some(seed) = decode_key(seed.as_deref()) else {
       tracing::warn!("The SOGS bot seed must be exactly 64 hex characters.");
       return None;
     };
 
-    let mut entries = split_path(&url.path);
+    let mut entries = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|v| !v.is_empty()) {
-      entries.push(to.to_string());
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      entries.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
     let mut rooms = Vec::new();
     for room in parse_list(&entries) {
@@ -143,22 +147,23 @@ impl SessionOgs {
       req = req.header(name, value);
     }
 
+    crate::notify::throttle().await;
     let resp = match req.body(body.to_string()).send().await {
       Ok(r) => r,
       Err(e) => {
-        tracing::warn!("A connection error occurred posting to SOGS room {:?}: {}", room, e);
+        tracing::warn!("A connection error occurred posting to SOGS room {:?}: {}", room, crate::error::loggable_http_error(&e));
         return false;
       }
     };
     let status = resp.status().as_u16();
-    let content = match read_bounded(resp, MAX_RESPONSE_SIZE).await {
+    let content = match read_bounded_response(resp, MAX_RESPONSE_SIZE).await {
       Ok(Some(content)) => content,
       Ok(None) => {
         tracing::warn!("SOGS response from room {:?} exceeds {} bytes; not parsing it.", room, MAX_RESPONSE_SIZE);
         return false;
       }
       Err(e) => {
-        tracing::warn!("A connection error occurred posting to SOGS room {:?}: {}", room, e);
+        tracing::warn!("A connection error occurred posting to SOGS room {:?}: {}", room, crate::error::loggable_http_error(&e));
         return false;
       }
     };
@@ -170,19 +175,6 @@ impl SessionOgs {
     tracing::info!("Sent SOGS notification to room {:?}.", room);
     true
   }
-}
-
-/// Read a response body, giving up (`None`) once it exceeds `max` bytes
-/// instead of buffering all of it first.
-async fn read_bounded(mut resp: reqwest::Response, max: usize) -> Result<Option<Vec<u8>>, reqwest::Error> {
-  let mut content = Vec::new();
-  while let Some(chunk) = resp.chunk().await? {
-    if content.len() + chunk.len() > max {
-      return Ok(None);
-    }
-    content.extend_from_slice(&chunk);
-  }
-  Ok(Some(content))
 }
 
 /// Encode text as a Session protocol `Content { dataMessage { body } }`
@@ -231,28 +223,6 @@ fn is_room(s: &str) -> bool {
   (1..=64).contains(&s.len()) && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
-/// Upstream `URLBase.split_path`: split on whitespace, commas and slashes,
-/// then unquote each entry.
-fn split_path(path: &str) -> Vec<String> {
-  path.split([' ', '\t', '\r', '\n', ',', '\\', '/']).filter(|s| !s.is_empty()).map(unquote).collect()
-}
-
-/// Upstream `parse_list`: split on whitespace, commas, semicolons and
-/// brackets, then sort and drop duplicates.
-fn parse_list(items: &[String]) -> Vec<String> {
-  let mut out: Vec<String> = items
-    .iter()
-    .flat_map(|s| s.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '[' | ']')).filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>())
-    .collect();
-  out.sort();
-  out.dedup();
-  out
-}
-
 /// The server's meaning of an HTTP status, for the log.
 fn error_hint(status: u16) -> &'static str {
   match status {
@@ -294,9 +264,15 @@ impl Notify for SessionOgs {
     let client = build_client(self.verify_certificate)?;
     let mut has_error = false;
     for room in &self.rooms {
+      // A retry skips rooms that already accepted the message
+      if crate::delivery::is_delivered(room, false) {
+        continue;
+      }
       if !self.post(&client, room, &body).await {
         has_error = true;
+        continue;
       }
+      crate::delivery::mark_delivered(room, false);
     }
     Ok(!has_error)
   }
@@ -314,7 +290,7 @@ mod tests {
   /// The POSTs this test sent; other processes probing localhost ports can
   /// reach a mock server too, so anything else is ignored.
   async fn received(server: &MockServer) -> Vec<wiremock::Request> {
-    server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect()
+    server.received_requests().await.unwrap_or_default().into_iter().filter(|r| r.method.as_str() == "POST" && r.url.path().starts_with("/room/")).collect()
   }
 
   const SEED: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -564,5 +540,27 @@ mod tests {
     let server = mock_rooms(&[(ROOM, 201, fits.as_str())]).await;
     let svc = from_url(&url_for(&server, ROOM)).unwrap();
     assert!(svc.send(&NotifyContext { body: "B".into(), ..Default::default() }).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/room/alpha/message")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    // The second room fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/room/beta/message"))
+      .and(header("Content-Type", "application/json"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/room/beta/message")).respond_with(ResponseTemplate::new(201)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("{}?retry=1&wait=0", url_for(&server, "alpha/beta"))));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "B".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<String> =
+      crate::notify::custom_json::requests_to(&server, "POST", "/room/beta/message").await.iter().map(|r| r.url.path().to_string()).collect();
+    assert_eq!(sent, vec!["/room/beta/message", "/room/beta/message"]);
   }
 }

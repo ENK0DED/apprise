@@ -4,7 +4,8 @@ use serde_json::json;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyType;
-use crate::utils::parse::ParsedUrl;
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
 
 /// The channel notified when none is given.
 const DEFAULT_CHANNEL: &str = "general";
@@ -35,8 +36,8 @@ impl Trigv {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // The API key is the user of a user@host URL, or the host itself
     let (api_key, host) = match &url.user {
-      Some(user) => (unquote(user), url.host.clone()),
-      None => (url.host.as_deref().map(unquote).unwrap_or_default(), None),
+      Some(user) => (user.clone(), url.host.clone()),
+      None => (url.host.clone().unwrap_or_default(), None),
     };
     let api_key = api_key.trim().to_string();
     if !is_api_key(&api_key) {
@@ -44,9 +45,10 @@ impl Trigv {
       return None;
     }
 
-    let mut entries = split_path(&url.path);
+    let mut entries = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|v| !v.is_empty()) {
-      entries.push(to.to_string());
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      entries.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
     let mut channels = Vec::new();
     for channel in parse_list(&entries) {
@@ -61,13 +63,14 @@ impl Trigv {
       channels.push(DEFAULT_CHANNEL.to_string());
     }
 
-    let urgency = url.get("urgency").filter(|v| !v.is_empty()).map(|v| v.to_lowercase()).unwrap_or_else(|| "standard".to_string());
+    // Upstream unquotes these query values once more
+    let urgency = url.get("urgency").filter(|v| !v.is_empty()).map(|v| unquote(v).to_lowercase()).unwrap_or_else(|| "standard".to_string());
     if urgency != "standard" && urgency != "time_sensitive" {
       tracing::warn!("An invalid Trigv urgency ({}) was specified.", urgency);
       return None;
     }
 
-    let opt = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(str::to_string);
+    let opt = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote);
     Some(Self {
       api_key,
       channels,
@@ -136,28 +139,6 @@ fn is_channel(s: &str) -> bool {
   !b.is_empty() && b.len() <= 120 && b[0].is_ascii_alphanumeric() && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-')
 }
 
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
-/// Upstream `URLBase.split_path`: split on whitespace, commas and slashes,
-/// then unquote each entry.
-fn split_path(path: &str) -> Vec<String> {
-  path.split([' ', '\t', '\r', '\n', ',', '\\', '/']).filter(|s| !s.is_empty()).map(unquote).collect()
-}
-
-/// Upstream `parse_list`: split on whitespace, commas, semicolons and
-/// brackets, then sort and drop duplicates.
-fn parse_list(items: &[String]) -> Vec<String> {
-  let mut out: Vec<String> = items
-    .iter()
-    .flat_map(|s| s.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '[' | ']')).filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>())
-    .collect();
-  out.sort();
-  out.dedup();
-  out
-}
-
 fn truncate_chars(s: &str, max: usize) -> String {
   s.chars().take(max).collect()
 }
@@ -205,6 +186,10 @@ impl Notify for Trigv {
 
     let mut has_error = false;
     for channel in &self.channels {
+      // A retry skips channels that already accepted the message
+      if crate::delivery::is_delivered(channel, false) {
+        continue;
+      }
       let mut payload = json!({
         "channel": channel,
         "title": truncate_chars(&title, TITLE_MAXLEN),
@@ -224,6 +209,7 @@ impl Notify for Trigv {
       }
       payload["delivery_urgency"] = json!(urgency);
 
+      crate::notify::throttle().await;
       let resp = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -234,7 +220,10 @@ impl Notify for Trigv {
         .await;
       match resp {
         // 202 is a new event and 200 an idempotent duplicate
-        Ok(r) if matches!(r.status().as_u16(), 200 | 202) => tracing::info!("Sent Trigv notification to {}.", channel),
+        Ok(r) if matches!(r.status().as_u16(), 200 | 202) => {
+          tracing::info!("Sent Trigv notification to {}.", channel);
+          crate::delivery::mark_delivered(channel, false);
+        }
         Ok(r) => {
           let status = r.status().as_u16();
           tracing::warn!("Failed to send Trigv notification to {}: {}error={}.", channel, error_hint(status), status);
@@ -242,7 +231,7 @@ impl Notify for Trigv {
           has_error = true;
         }
         Err(e) => {
-          tracing::warn!("A Connection error occurred sending Trigv notification to {}: {}", channel, e.without_url());
+          tracing::warn!("A Connection error occurred sending Trigv notification to {}: {}", channel, crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -268,13 +257,13 @@ mod tests {
   use super::*;
   use crate::notify::registry::from_url;
   use serde_json::Value;
-  use wiremock::matchers::{header, method, path};
+  use wiremock::matchers::{body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   /// The POSTs this test sent; other processes probing localhost ports can
   /// reach a mock server too, so anything else is ignored.
   async fn received(server: &MockServer) -> Vec<wiremock::Request> {
-    server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect()
+    crate::notify::custom_json::requests_to(server, "POST", "/api/v1/events").await
   }
 
   const KEY: &str = "trgv_a1b2c3d4_0123456789abcdef0123456789abcdef";
@@ -289,7 +278,7 @@ mod tests {
 
   async fn send_ok(url: &str, ctx: &NotifyContext) -> (bool, Vec<wiremock::Request>) {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(202)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api/v1/events")).respond_with(ResponseTemplate::new(202)).mount(&server).await;
     let svc = from_url(url).unwrap();
     let ok = crate::notify::with_test_base(server.uri(), svc.send(ctx)).await.unwrap();
     (ok, received(&server).await)
@@ -478,8 +467,8 @@ mod tests {
   #[tokio::test]
   async fn test_send_partial_failure() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).mount(&server).await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(202)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api/v1/events")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api/v1/events")).respond_with(ResponseTemplate::new(202)).mount(&server).await;
     let svc = from_url(&format!("trigvs://{}/alerts/ops", KEY)).unwrap();
     let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
@@ -491,7 +480,7 @@ mod tests {
   async fn test_send_failures() {
     for status in [401u16, 422, 999, 204] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/api/v1/events")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("trigvs://{}", KEY)).unwrap();
       let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "status {}", status);
@@ -499,5 +488,31 @@ mod tests {
     let svc = from_url(&format!("trigvs://{}/a/b", KEY)).unwrap();
     let ctx = NotifyContext { body: "B".into(), ..Default::default() };
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second channel fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/api/v1/events"))
+      .and(body_partial_json(json!({"channel": "ops"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/api/v1/events")).respond_with(ResponseTemplate::new(202)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("trigvs://{}/alerts/ops?retry=1&wait=0", KEY)));
+    assert!(
+      crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() })).await.is_success()
+    );
+    let sent: Vec<serde_json::Value> = crate::notify::custom_json::requests_to(&server, "POST", "/api/v1/events")
+      .await
+      .iter()
+      .map(|r| r.body_json::<serde_json::Value>().unwrap()["channel"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!("alerts"), json!("ops"), json!("ops")]);
   }
 }

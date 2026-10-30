@@ -1,10 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
-
-/// Native push URL prefix (upstream `parse_native_url`).
-const NATIVE_PREFIX: &str = "https://qmsg.zendee.cn/send/";
 
 /// QQ Push (Qmsg): `qq://{token}`.
 pub struct Qq {
@@ -15,18 +12,11 @@ pub struct Qq {
 
 impl Qq {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let token = if url.schema == "https" || url.schema == "http" {
-      // https://qmsg.zendee.cn/send/{token}, nothing after
-      let prefix = url.raw.get(..NATIVE_PREFIX.len())?;
-      if !prefix.eq_ignore_ascii_case(NATIVE_PREFIX) {
-        return None;
-      }
-      url.raw[NATIVE_PREFIX.len()..].to_string()
-    } else {
-      match url.get("token").filter(|t| !t.is_empty()) {
-        Some(t) => t.to_string(),
-        None => urlencoding::decode(url.host.as_deref().unwrap_or_default()).ok()?.into_owned(),
-      }
+    // The registry turns https://qmsg.zendee.cn/send/{token} into
+    // qq://{token}; upstream unquotes ?token= once more
+    let token = match url.get("token").filter(|t| !t.is_empty()) {
+      Some(t) => unquote(t),
+      None => url.host.clone().unwrap_or_default(),
     };
     if !(24..=64).contains(&token.len()) || !token.chars().all(|c| c.is_ascii_alphanumeric()) {
       tracing::warn!("The QQ Push token is invalid.");
@@ -64,6 +54,7 @@ impl Notify for Qq {
     let msg = if ctx.title.is_empty() { ctx.body.clone() } else { format!("{}\n{}", ctx.title, ctx.body) };
     let url = format!("{}/send/{}", service_base("https://qmsg.zendee.cn"), self.token);
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client.post(&url).header("User-Agent", APP_ID).form(&[("msg", msg.as_str())]).send().await?;
     let status = resp.status();
     if status == reqwest::StatusCode::OK {
@@ -123,8 +114,8 @@ mod tests {
     assert_eq!(q.token, TOKEN);
     let q = Qq::from_url(&ParsedUrl::parse(&format!("qq://{}?token={}", "b".repeat(30), TOKEN)).unwrap()).unwrap();
     assert_eq!(q.token, TOKEN);
-    let q = Qq::from_url(&ParsedUrl::parse(&format!("https://qmsg.zendee.cn/send/{}", TOKEN)).unwrap()).unwrap();
-    assert_eq!(q.token, TOKEN);
+    // The registry converts the native URL
+    assert_eq!(from_url(&format!("https://qmsg.zendee.cn/send/{}", TOKEN)).unwrap().schemas(), ["qq"]);
   }
 
   #[test]
@@ -155,7 +146,7 @@ mod tests {
   async fn test_send_failure() {
     for code in [500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path(format!("/send/{}", TOKEN))).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let svc = from_url(&format!("qq://{}", TOKEN)).unwrap();
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.is_err());

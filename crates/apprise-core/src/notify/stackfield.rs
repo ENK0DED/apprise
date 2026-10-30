@@ -3,7 +3,7 @@ use serde_json::json;
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
 
 /// Stackfield room notifications through an incoming chat-message webhook.
 pub struct Stackfield {
@@ -14,15 +14,12 @@ pub struct Stackfield {
 
 impl Stackfield {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // https://www.stackfield.com/apiwh/{token} is accepted as-is
-    if url.schema == "http" || url.schema == "https" {
-      return Self::from_url(&ParsedUrl::parse(&native_url(&url.raw)?)?);
-    }
-
-    // ?token= wins over the host, which is handy in config files
+    // The registry turns the native webhook URL into stackfield://{token}.
+    // ?token= wins over the host, which is handy in config files; upstream
+    // unquotes it once more.
     let token = match url.get("token").filter(|t| !t.is_empty()) {
-      Some(t) => t.to_string(),
-      None => unquote(url.host.as_deref()?),
+      Some(t) => unquote(t),
+      None => url.host.clone()?,
     };
     let token = token.trim();
     if !is_uuid(token) {
@@ -42,31 +39,6 @@ impl Stackfield {
       attachment_support: false,
     }
   }
-}
-
-/// Upstream `parse_native_url`: `https://(www.)stackfield.com/apiwh/{uuid}[/][?params]`
-/// becomes `stackfield://{uuid}/[?params]`.
-fn native_url(raw: &str) -> Option<String> {
-  let rest = strip_prefix_ci(raw, "https://").or_else(|| strip_prefix_ci(raw, "http://"))?;
-  let (before, params) = match rest.find('?') {
-    Some(i) if i + 1 < rest.len() => (&rest[..i], &rest[i..]),
-    Some(_) => return None,
-    None => (rest, ""),
-  };
-  let before = before.strip_suffix('/').unwrap_or(before);
-  let token = strip_prefix_ci(before, "www.stackfield.com/apiwh/").or_else(|| strip_prefix_ci(before, "stackfield.com/apiwh/"))?;
-  if !is_uuid(token) {
-    return None;
-  }
-  Some(format!("stackfield://{}/{}", token, params))
-}
-
-fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-  if s.len() >= prefix.len() && s.is_char_boundary(prefix.len()) && s[..prefix.len()].eq_ignore_ascii_case(prefix) { Some(&s[prefix.len()..]) } else { None }
-}
-
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
 }
 
 /// Stackfield webhook tokens are standard UUIDs (either case).
@@ -107,10 +79,11 @@ impl Notify for Stackfield {
     let url = format!("{}/apiwh/{}", service_base("https://www.stackfield.com"), self.token);
 
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = match client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await {
       Ok(r) => r,
       Err(e) => {
-        tracing::warn!("A Connection error occurred sending Stackfield notification: {}", e.without_url());
+        tracing::warn!("A Connection error occurred sending Stackfield notification: {}", crate::error::loggable_http_error(&e));
         return Ok(false);
       }
     };
@@ -136,7 +109,9 @@ mod tests {
   const TOKEN: &str = "11111111-2222-3333-4444-555555555555";
 
   fn parse(url: &str) -> Option<Stackfield> {
-    Stackfield::from_url(&ParsedUrl::parse(url)?)
+    // Convert a native URL the way the registry does
+    let native = crate::notify::registry::NATIVE_URLS.iter().find_map(|n| (n.convert)(url));
+    Stackfield::from_url(&ParsedUrl::parse(native.as_deref().unwrap_or(url))?)
   }
 
   #[test]
@@ -214,7 +189,7 @@ mod tests {
   async fn test_send_failures() {
     for status in [500u16, 999, 204] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path(format!("/apiwh/{}", TOKEN))).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("stackfield://{}", TOKEN)).unwrap();
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "status {}", status);

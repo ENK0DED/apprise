@@ -1,6 +1,6 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -15,37 +15,13 @@ fn is_key(s: &str) -> bool {
   !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// Strip `prefix` from the start of `s`, ignoring ASCII case.
-fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-  s.get(..prefix.len()).filter(|p| p.eq_ignore_ascii_case(prefix)).map(|_| &s[prefix.len()..])
-}
-
-/// Upstream `parse_native_url`:
-/// `https?://qyapi.weixin.qq.com/cgi-bin/webhook/send/?key={key}/&{params}`.
-/// Returns the equivalent `wecombot://{key}?{params}` URL.
-fn native_to_apprise(raw: &str) -> Option<String> {
-  let rest = strip_prefix_ci(raw, "https://").or_else(|| strip_prefix_ci(raw, "http://"))?;
-  let rest = strip_prefix_ci(rest, "qyapi.weixin.qq.com/cgi-bin/webhook/send")?;
-  let rest = rest.strip_prefix('/').unwrap_or(rest);
-  let rest = strip_prefix_ci(rest, "?key=")?;
-  let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).unwrap_or(rest.len());
-  let (key, rest) = rest.split_at(end);
-  if key.is_empty() {
-    return None;
-  }
-  let rest = rest.strip_prefix('/').unwrap_or(rest);
-  let params = rest.strip_prefix('&').unwrap_or(rest);
-  Some(if params.is_empty() { format!("wecombot://{}", key) } else { format!("wecombot://{}?{}", key, params) })
-}
-
 impl WeComBot {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    if url.schema == "https" || url.schema == "http" {
-      return Self::from_url(&ParsedUrl::parse(&native_to_apprise(&url.raw)?)?);
-    }
-    let mut key = urlencoding::decode(url.host.as_deref().unwrap_or_default()).ok()?.into_owned();
+    // The registry turns the native webhook URL into wecombot://{key}
+    let mut key = url.host.clone().unwrap_or_default();
+    // Upstream unquotes ?key= once more
     if let Some(k) = url.get("key").filter(|k| !k.is_empty()) {
-      key = k.to_string();
+      key = unquote(k);
     }
     if !is_key(&key) {
       tracing::warn!("An invalid WeCom Bot Webhook Key was specified.");
@@ -89,6 +65,7 @@ impl Notify for WeComBot {
     let payload = json!({ "msgtype": "text", "text": { "content": ctx.body } });
     let url = format!("{}/cgi-bin/webhook/send", service_base("https://qyapi.weixin.qq.com"));
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client
       .post(&url)
       .query(&[("key", &self.key)])
@@ -115,8 +92,14 @@ mod tests {
   use wiremock::matchers::{body_json, header, method, path, query_param};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
+  /// Parse `url`, converting a native URL the way the registry does.
+  fn parse(url: &str) -> Option<WeComBot> {
+    let native = crate::notify::registry::NATIVE_URLS.iter().find_map(|n| (n.convert)(url));
+    WeComBot::from_url(&ParsedUrl::parse(native.as_deref().unwrap_or(url))?)
+  }
+
   fn key_of(url: &str) -> Option<String> {
-    ParsedUrl::parse(url).and_then(|p| WeComBot::from_url(&p)).map(|w| w.key)
+    parse(url).map(|w| w.key)
   }
 
   #[test]
@@ -159,7 +142,7 @@ mod tests {
 
   #[test]
   fn test_native_options_are_kept() {
-    let w = WeComBot::from_url(&ParsedUrl::parse("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=BOTKEY&verify=no").unwrap()).unwrap();
+    let w = parse("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=BOTKEY&verify=no").unwrap();
     assert!(!w.verify_certificate);
   }
 
@@ -195,7 +178,7 @@ mod tests {
   async fn test_send_failure() {
     for code in [500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/cgi-bin/webhook/send")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let svc = from_url("wecombot://botkey").unwrap();
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&NotifyContext::default())).await.is_err());
     }

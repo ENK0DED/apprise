@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Attachment, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
 
 const TWITTER_API: &str = "https://api.twitter.com";
 const X_API: &str = "https://api.x.com";
@@ -73,7 +74,7 @@ impl Twitter {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // {schema}://{ckey}/{csecret}/{akey}/{asecret}/{targets}
     let mut tokens = url.path_parts.iter().cloned();
-    let ckey = url.host.as_deref().map(unquote).unwrap_or_default().trim().to_string();
+    let ckey = url.host.clone().unwrap_or_default().trim().to_string();
     let csecret = tokens.next().unwrap_or_default().trim().to_string();
     let akey = tokens.next().unwrap_or_default().trim().to_string();
     let asecret = tokens.next().unwrap_or_default().trim().to_string();
@@ -100,7 +101,8 @@ impl Twitter {
     let mut raw_targets: Vec<String> = url.user.iter().cloned().collect();
     raw_targets.extend(tokens);
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      raw_targets.push(to.to_string());
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      raw_targets.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
     let mut targets = Vec::new();
     let mut has_error = false;
@@ -214,9 +216,8 @@ impl Twitter {
     };
     if let Some(wait) = wait {
       tracing::debug!("Twitter rate limit reached; waiting {:.2}s", wait.as_secs_f64());
-      tokio::time::sleep(wait).await;
     }
-
+    crate::notify::throttle_for(wait).await;
     tracing::debug!("Twitter {} URL: {} (cert_verify={})", method, url, self.verify_certificate);
     let mut builder = client.request(method.clone(), url).header("User-Agent", APP_ID).header("Authorization", self.oauth1_header(method.as_str(), url));
     builder = match body {
@@ -232,7 +233,7 @@ impl Twitter {
       Ok(r) => r,
       Err(e) => {
         tracing::warn!("Exception received when sending Twitter {} to {}: ", method, url);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return (false, json!({}));
       }
     };
@@ -354,6 +355,11 @@ impl Twitter {
     let total = payloads.len();
     let mut has_error = false;
     for (no, payload) in payloads.into_iter().enumerate() {
+      // A retry skips the tweets that already went out
+      let key = (no + 1).to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
       let (ok, response) = self.fetch(client, reqwest::Method::POST, &url, Body::Json(payload)).await;
       if !ok {
         has_error = true;
@@ -367,6 +373,7 @@ impl Twitter {
       let link = response["data"].get("id").and_then(id_string).map(|id| format!("https://x.com/i/web/status/{}", id)).unwrap_or_else(|| "unknown".into());
       tracing::debug!("Tweet [{:02}/{:02}] Details: {}", no + 1, total, link);
       tracing::info!("Sent [{:02}/{:02}] Twitter notification as public tweet.", no + 1, total);
+      crate::delivery::mark_delivered(&key, false);
     }
     !has_error
   }
@@ -395,12 +402,18 @@ impl Twitter {
     let mut has_error = false;
     for (no, payload) in payloads.iter().enumerate() {
       for (screen_name, user_id) in &users {
+        // A retry skips the messages a user already received
+        let key = format!("{}:{}", no + 1, user_id);
+        if crate::delivery::is_delivered(&key, false) {
+          continue;
+        }
         let url = format!("{}/2/dm_conversations/with/{}/messages", service_base(TWITTER_API), user_id);
         if !self.fetch(client, reqwest::Method::POST, &url, Body::Json(payload.clone())).await.0 {
           has_error = true;
           continue;
         }
         tracing::info!("Sent [{:02}/{:02}] Twitter DM notification to @{}.", no + 1, payloads.len(), screen_name);
+        crate::delivery::mark_delivered(&key, false);
       }
     }
     !has_error
@@ -431,7 +444,10 @@ impl Notify for Twitter {
   fn title_maxlen(&self) -> usize {
     0
   }
-
+  /// Upstream only waits for the rate limit Twitter announces
+  fn request_rate_per_sec(&self) -> f64 {
+    0.0
+  }
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let Some(targets) = &self.targets else {
       tracing::warn!("No valid Twitter targets to notify.");
@@ -503,29 +519,11 @@ fn merge_users(into: &mut Vec<(String, String)>, from: &[(String, String)]) {
   }
 }
 
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
-/// Upstream `parse_list()`: split on `[]`, `;`, `,` and whitespace, then
-/// de-duplicate and sort.
-fn parse_list(items: &[String]) -> Vec<String> {
-  let mut out: Vec<String> = items
-    .iter()
-    .flat_map(|i| i.split(|c: char| c == '[' || c == ']' || c == ';' || c == ',' || c.is_whitespace()))
-    .filter(|t| !t.is_empty())
-    .map(String::from)
-    .collect();
-  out.sort();
-  out.dedup();
-  out
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{header_exists, method, path, query_param};
+  use wiremock::matchers::{header_exists, method, path, path_regex, query_param};
   use wiremock::{Mock, MockServer, Request as MockRequest, ResponseTemplate};
 
   fn parse_twitter(url: &str) -> Twitter {
@@ -634,7 +632,7 @@ mod tests {
     let svc = from_url("tweet://ckey/csecret/akey/asecret").unwrap();
     let ctx = NotifyContext { body: "hello".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = crate::notify::custom_json::requests_to(&server, "POST", "/2/tweets").await;
     assert_eq!(json_bodies(&reqs, "/2/tweets"), vec![json!({"text": "hello"})]);
     assert_eq!(reqs[0].headers.get("content-type").unwrap(), "application/json");
     assert!(reqs[0].headers.get("authorization").unwrap().to_str().unwrap().starts_with("OAuth oauth_nonce=\""));
@@ -755,7 +753,7 @@ mod tests {
     // Identity lookup fails
     let server = MockServer::start().await;
     Mock::given(method("GET")).and(path("/2/users/me")).respond_with(ResponseTemplate::new(500)).mount(&server).await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
+    Mock::given(method("POST")).and(path_regex("^/2/dm_conversations/")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
     let svc = from_url("twitter://ckey/csecret/akey/asecret").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
@@ -806,5 +804,33 @@ mod tests {
     assert_eq!(details.service_name, "Twitter");
     assert_eq!(details.protocols, vec!["x", "twitter", "tweet"]);
     assert!(details.attachment_support);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+      .and(path("/2/users/by"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": [{"username": "user1", "id": "11"}, {"username": "user2", "id": "22"}]})))
+      .expect(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/2/dm_conversations/with/11/messages")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    // The second user fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/2/dm_conversations/with/22/messages"))
+      .and(header_exists("Authorization"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/2/dm_conversations/with/22/messages")).respond_with(ResponseTemplate::new(201)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("twitter://ckey/csecret/akey/asecret/user1/user2?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "hello".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<String> =
+      crate::notify::custom_json::requests_to(&server, "POST", "/2/dm_conversations/with/22/messages").await.iter().map(|r| r.url.path().to_string()).collect();
+    assert_eq!(sent, vec!["/2/dm_conversations/with/22/messages"; 2]);
   }
 }

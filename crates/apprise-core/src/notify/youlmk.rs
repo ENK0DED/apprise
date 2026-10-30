@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::asset::AppriseAsset;
+use crate::asset::NotifyImageSize;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyType;
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
 
 /// The four priorities a sender may set, lowest first.
 const PRIORITIES: [&str; 4] = ["low", "normal", "high", "critical"];
@@ -49,14 +49,13 @@ pub struct YouLmk {
 
 impl YouLmk {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // The key door pasted as-is: https://youlmk.com/k/{key}
-    if url.schema == "http" || url.schema == "https" {
-      return Self::from_url(&ParsedUrl::parse(&native_url(&url.raw)?)?);
-    }
-
-    let mut token = url.host.as_deref().map(unquote);
-    if let Some(t) = url.get("token").filter(|t| !t.is_empty()) {
-      token = Some(t.to_string());
+    // The registry turns the key door pasted as-is
+    // (https://youlmk.com/k/{key}) into youlmk://{key}. Upstream unquotes
+    // the query values once more.
+    let qsd = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote);
+    let mut token = url.host.clone();
+    if let Some(t) = qsd("token") {
+      token = Some(t);
     }
     let token = token.unwrap_or_default().trim().to_string();
     if !is_token(&token) {
@@ -64,9 +63,9 @@ impl YouLmk {
       return None;
     }
 
-    let priority = match url.get("priority").filter(|p| !p.is_empty()) {
+    let priority = match qsd("priority") {
       None => None,
-      Some(p) => match youlmk_priority(p) {
+      Some(p) => match youlmk_priority(&p) {
         Some(p) => Some(p),
         None => {
           tracing::warn!("An invalid YouLMK priority ({}) was specified.", p);
@@ -77,8 +76,8 @@ impl YouLmk {
 
     let mut priority_map = [NotifyType::Info, NotifyType::Success, NotifyType::Warning, NotifyType::Failure].map(|t| default_priority(&t));
     for (slot, key) in priority_map.iter_mut().zip(["info", "success", "warning", "failure"]) {
-      if let Some(value) = url.get(key).filter(|v| !v.is_empty()) {
-        match youlmk_priority(value) {
+      if let Some(value) = qsd(key) {
+        match youlmk_priority(&value) {
           Some(p) => *slot = p,
           None => {
             tracing::warn!("An invalid YouLMK priority ({}) was specified.", value);
@@ -88,7 +87,7 @@ impl YouLmk {
       }
     }
 
-    let url_label = url.get("url_label").filter(|l| !l.is_empty()).map(|l| {
+    let url_label = qsd("url_label").map(|l| {
       if l.chars().count() > URL_LABEL_MAXLEN {
         tracing::warn!("The YouLMK link label was truncated.");
       }
@@ -99,9 +98,9 @@ impl YouLmk {
       token,
       priority,
       priority_map,
-      link: url.get("url").filter(|v| !v.is_empty()).map(str::to_string),
+      link: qsd("url"),
       url_label,
-      group: url.get("group").filter(|v| !v.is_empty()).map(str::to_string),
+      group: qsd("group"),
       include_image: url.get("image").map(parse_bool).unwrap_or(false),
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
@@ -145,43 +144,6 @@ fn is_token(s: &str) -> bool {
     None
   };
   rest.is_some_and(|r| r.bytes().all(|c| c.is_ascii_alphanumeric()))
-}
-
-/// Upstream `parse_native_url`: `https://(www.)youlmk.com/k/{key}[/][?params]`
-/// becomes `youlmk://{key}/[?params]`.
-fn native_url(raw: &str) -> Option<String> {
-  let rest = strip_prefix_ci(raw, "https://").or_else(|| strip_prefix_ci(raw, "http://"))?;
-  let (before, params) = match rest.find('?') {
-    Some(i) if i + 1 < rest.len() => (&rest[..i], &rest[i..]),
-    Some(_) => return None,
-    None => (rest, ""),
-  };
-  let before = before.strip_suffix('/').unwrap_or(before);
-  let key = strip_prefix_ci(before, "www.youlmk.com/k/").or_else(|| strip_prefix_ci(before, "youlmk.com/k/"))?;
-  let suffix = strip_prefix_ci(key, "k_")?;
-  if suffix.is_empty() || !suffix.bytes().all(|c| c.is_ascii_alphanumeric()) {
-    return None;
-  }
-  Some(format!("youlmk://{}/{}", key, params))
-}
-
-fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-  if s.len() >= prefix.len() && s.is_char_boundary(prefix.len()) && s[..prefix.len()].eq_ignore_ascii_case(prefix) { Some(&s[prefix.len()..]) } else { None }
-}
-
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
-/// Upstream `AppriseAsset.image_url()`: the notification-type image at `xy`
-/// (`256x256`), or `None` when the asset disables images.
-fn image_url(asset: &AppriseAsset, notify_type: &NotifyType, xy: &str) -> Option<String> {
-  const DEFAULT_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
-  let mask = asset.image_url_mask.as_deref().unwrap_or(DEFAULT_MASK);
-  if mask.is_empty() {
-    return None;
-  }
-  Some(mask.replace("{THEME}", &asset.theme).replace("{TYPE}", notify_type.as_str()).replace("{XY}", xy).replace("{EXTENSION}", ".png"))
 }
 
 #[async_trait]
@@ -240,7 +202,7 @@ impl Notify for YouLmk {
       payload["group"] = json!(group);
     }
     if self.include_image
-      && let Some(image) = image_url(&ctx.asset, &ctx.notify_type, "256x256")
+      && let Some(image) = ctx.image_url(NotifyImageSize::Xy256)
     {
       payload["image"] = json!(image);
     }
@@ -252,10 +214,11 @@ impl Notify for YouLmk {
       req = req.header("Authorization", format!("Bearer {}", self.token));
     }
 
+    crate::notify::throttle().await;
     let resp = match req.send().await {
       Ok(r) => r,
       Err(e) => {
-        tracing::warn!("A Connection error occurred posting to YouLMK: {}", e.without_url());
+        tracing::warn!("A Connection error occurred posting to YouLMK: {}", crate::error::loggable_http_error(&e));
         return Ok(false);
       }
     };
@@ -296,19 +259,24 @@ mod tests {
   /// The POSTs this test sent; other processes probing localhost ports can
   /// reach a mock server too, so anything else is ignored.
   async fn received(server: &MockServer) -> Vec<wiremock::Request> {
-    server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect()
+    let mut requests = crate::notify::custom_json::requests_to(server, "POST", "/v1/notify").await;
+    requests.extend(crate::notify::custom_json::requests_to(server, "POST", &format!("/k/{}", KEY)).await);
+    requests
   }
 
   const TOKEN: &str = "ylk_a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
   const KEY: &str = "k_7hq2nk3f9qd8w4";
 
+  /// Parse `url`, converting a native URL the way the registry does.
   fn parse(url: &str) -> Option<YouLmk> {
-    YouLmk::from_url(&ParsedUrl::parse(url)?)
+    let native = crate::notify::registry::NATIVE_URLS.iter().find_map(|n| (n.convert)(url));
+    YouLmk::from_url(&ParsedUrl::parse(native.as_deref().unwrap_or(url))?)
   }
 
   async fn send_one(url: &str, ctx: &NotifyContext) -> (bool, Vec<wiremock::Request>) {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/notify")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    Mock::given(method("POST")).and(path(format!("/k/{}", KEY))).respond_with(ResponseTemplate::new(200)).mount(&server).await;
     let svc = from_url(url).unwrap();
     let ok = crate::notify::with_test_base(server.uri(), svc.send(ctx)).await.unwrap();
     (ok, received(&server).await)
@@ -491,7 +459,7 @@ mod tests {
   async fn test_send_failures() {
     for status in [401u16, 402, 500, 999, 202] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1/notify")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("youlmk://{}", TOKEN)).unwrap();
       let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "status {}", status);
