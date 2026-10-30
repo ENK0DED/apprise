@@ -1,130 +1,298 @@
 use async_trait::async_trait;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use serde_json::{Map, Value};
 
+use crate::asset::AppriseAsset;
 use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::notify::apprise_api::uuid4;
+use crate::notify::{APP_ID, Attachment, Notify, NotifyContext, ServiceDetails, build_client, service_base};
+use crate::types::{NotifyFormat, NotifyType};
 use crate::utils::parse::ParsedUrl;
+use crate::utils::qsd;
+use crate::utils::validate::is_ipaddr;
+
+/// Upstream `AppriseAsset.image_url_mask`, used when the asset sets none.
+const DEFAULT_IMAGE_URL_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
+
+/// The notification icon URL for `notify_type` at `size` (`"256x256"`),
+/// built from the asset's URL mask like upstream `AppriseAsset.image_url()`.
+pub(crate) fn image_url(asset: &AppriseAsset, notify_type: &NotifyType, size: &str) -> String {
+  let mask = asset.image_url_mask.as_deref().unwrap_or(DEFAULT_IMAGE_URL_MASK);
+  let mut out = String::with_capacity(mask.len());
+  let mut rest = mask;
+  // One pass, case-insensitive, so substituted values are never rescanned
+  'outer: while !rest.is_empty() {
+    for (key, value) in [("{THEME}", asset.theme.as_str()), ("{TYPE}", notify_type.as_str()), ("{XY}", size), ("{EXTENSION}", ".png")] {
+      if rest.len() >= key.len() && rest.is_char_boundary(key.len()) && rest[..key.len()].eq_ignore_ascii_case(key) {
+        out.push_str(value);
+        rest = &rest[key.len()..];
+        continue 'outer;
+      }
+    }
+    let c = rest.chars().next().unwrap();
+    out.push(c);
+    rest = &rest[c.len_utf8()..];
+  }
+  out
+}
+
+/// Upstream `is_hostname()`: RFC 1123 labels (underscores allowed), an
+/// optional trailing dot, or an IP address.
+pub(crate) fn py_is_hostname(host: &str) -> bool {
+  if host.is_empty() || host.len() > 253 {
+    return false;
+  }
+  let h = host.strip_suffix('.').unwrap_or(host);
+  let labels: Vec<&str> = h.split('.').collect();
+  if labels.len() == 4 && h.chars().all(|c| c.is_ascii_digit() || c == '.') {
+    return is_ipaddr(h);
+  }
+  let label_ok = |l: &str| {
+    let ok_chars = l.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    let first = l.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
+    let last_ok = !l.ends_with('_') && !l.ends_with('-');
+    match l.len() {
+      1 => l.chars().all(|c| c.is_ascii_alphabetic()),
+      2..=63 => ok_chars && first && last_ok,
+      _ => false,
+    }
+  };
+  labels.iter().all(|l| label_ok(l)) || is_ipaddr(h.trim_start_matches('[').trim_end_matches(']'))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Mode {
+  Cloud,
+  Private,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Auth {
+  Basic,
+  Token,
+}
+
+/// Upstream `NTFY_PRIORITY_MAP`: the first key the value starts with wins.
+const PRIORITY_MAP: &[(&str, &str)] = &[
+  ("l", "low"),
+  ("mo", "low"),
+  ("n", "default"),
+  ("h", "high"),
+  ("e", "max"),
+  ("mi", "min"),
+  ("ma", "max"),
+  ("d", "default"),
+  ("1", "min"),
+  ("2", "low"),
+  ("3", "default"),
+  ("4", "high"),
+  ("5", "max"),
+];
+
+/// Serialised JSON above this size is uploaded as a file instead.
+const JSON_UPSTREAM_SIZE_LIMIT: usize = 8000;
 
 pub struct Ntfy {
-  host: Option<String>,
+  mode: Mode,
+  host: String,
   port: Option<u16>,
-  topics: Vec<String>,
   secure: bool,
+  user: Option<String>,
+  password: Option<String>,
+  auth: Auth,
+  token: Option<String>,
+  topics: Vec<String>,
   priority: &'static str,
-  auth: Option<NtfyAuth>,
+  /// `?attach=`: a URL ntfy attaches itself.
+  attach: Option<String>,
+  filename: Option<String>,
+  click: Option<String>,
+  delay: Option<String>,
+  email: Option<String>,
+  /// `?xtags=` (or the legacy `?tags=`): ntfy's own tags, sent as `X-Tags`.
+  xtags: Vec<String>,
+  actions: Option<String>,
+  include_image: bool,
+  avatar_url: Option<String>,
   verify_certificate: bool,
+  /// Apprise routing tags. Only `?tag=` sets them; `?tags=` belongs to ntfy.
   tags: Vec<String>,
 }
 
-enum NtfyAuth {
-  Basic { user: String, pass: String },
-  Token(String),
+/// A query value as upstream reads it: `qsd` value, unquoted once more.
+fn arg(url: &ParsedUrl, key: &str) -> Option<String> {
+  qsd::get(url, key).filter(|v| !v.is_empty()).map(|v| qsd::unquote(&v))
+}
+
+/// The part after the last `/`, or `None` when that is empty.
+fn basename(path: &str) -> Option<String> {
+  Some(path.rsplit('/').next().unwrap_or(path).to_string()).filter(|s| !s.is_empty())
+}
+
+/// Length of upstream's `json.dumps()` of a flat string map: ASCII-escaped
+/// with `", "` and `": "` separators.
+fn py_dumps_len(payload: &[(&str, &str)]) -> usize {
+  let quoted = |s: &str| -> usize {
+    2 + s
+      .chars()
+      .map(|c| match c {
+        '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+        c if (c as u32) < 0x20 => 6,
+        c if c.is_ascii() => 1,
+        c if (c as u32) > 0xFFFF => 12,
+        _ => 6,
+      })
+      .sum::<usize>()
+  };
+  2 + payload.iter().map(|(k, v)| quoted(k) + 2 + quoted(v)).sum::<usize>() + payload.len().saturating_sub(1) * 2
 }
 
 impl Ntfy {
-  const CLOUD_HOST: &'static str = "ntfy.sh";
+  const CLOUD_NOTIFY_URL: &'static str = "https://ntfy.sh";
 
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // ntfy://topic  (cloud mode)
-    // ntfy://host/topic  or  ntfys://host/topics
-    // ntfy://user:pass@host/topic
-    // ntfy://token@host/topic  (if user starts with "tk_")
-    // https://ntfy.sh?to=topic
-
-    let secure = url.schema == "ntfys" || url.schema == "https";
-
-    // Validate auth mode if specified
-    if let Some(auth_mode) = url.get("auth") {
-      match auth_mode.to_lowercase().as_str() {
-        "token" | "bearer" | "basic" | "login" | "" => {}
-        _ => return None,
-      }
-    }
-
-    // Validate mode if specified
-    if let Some(mode) = url.get("mode") {
-      match mode.to_lowercase().as_str() {
-        "cloud" | "private" | "" => {}
-        _ => return None,
-      }
-    }
-
-    // Validate hostname if present (reject hosts starting/ending with hyphen or containing invalid chars)
-    if let Some(ref h) = url.host {
-      if h.starts_with('-') || h.starts_with('_') || h.ends_with('-') {
-        return None;
-      }
-    }
-
-    // Determine host and topics
-    let (host, mut topics): (Option<String>, Vec<String>) = match &url.host {
-      None => (None, vec![]),
-      Some(h) if url.schema == "https" || url.schema == "http" => {
-        // For https://ntfy.sh URLs, host is the server
-        if h == Self::CLOUD_HOST || h.ends_with(".ntfy.sh") {
-          (Some(h.clone()), url.path_parts.clone())
-        } else {
-          // Not an ntfy host — reject
-          return None;
-        }
-      }
-      Some(h) if url.path_parts.is_empty() => {
-        // ntfy://topic  — host IS the topic, use cloud
-        (None, vec![h.clone()])
-      }
-      Some(h) => {
-        // ntfy://host/topic1/topic2
-        (Some(h.clone()), url.path_parts.clone())
-      }
-    };
-
-    // Support ?to= query param for topics
-    if let Some(to) = url.get("to") {
-      topics.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
-    }
-
-    if topics.is_empty() {
+    // Native https://ntfy.sh/topic URLs always use cloud mode
+    let native = url.schema == "http" || url.schema == "https";
+    if native && (!url.host.as_deref().is_some_and(|h| h.eq_ignore_ascii_case("ntfy.sh")) || url.user.is_some() || url.password.is_some() || url.port.is_some())
+    {
       return None;
     }
 
-    // Determine authentication
-    let auth_mode = url.get("auth").map(|s| s.to_lowercase());
+    let host = if native { String::new() } else { url.host.clone().unwrap_or_default() };
+    let user = url.user.clone().filter(|u| !u.is_empty());
+    let password = url.password.clone().filter(|p| !p.is_empty());
 
-    let auth = if let Some(token_val) = url.get("token") {
-      // ?token=xxx param
-      Some(NtfyAuth::Token(token_val.to_string()))
-    } else {
-      match (&url.user, &url.password) {
-        (Some(u), _) if u.starts_with("tk_") => Some(NtfyAuth::Token(u.clone())),
-        (Some(u), Some(p)) if auth_mode.as_deref() == Some("token") || auth_mode.as_deref() == Some("bearer") => {
-          // When auth=token, use the password as the token
-          Some(NtfyAuth::Token(p.clone()))
-        }
-        (None, Some(p)) if auth_mode.as_deref() == Some("token") || auth_mode.as_deref() == Some("bearer") => Some(NtfyAuth::Token(p.clone())),
-        (Some(u), _) if auth_mode.as_deref() == Some("token") || auth_mode.as_deref() == Some("bearer") => Some(NtfyAuth::Token(u.clone())),
-        (Some(u), Some(p)) => Some(NtfyAuth::Basic { user: u.clone(), pass: p.clone() }),
-        _ => None,
+    let mut targets: Vec<String> = url.path_parts.clone();
+    if let Some(to) = qsd::get(url, "to").filter(|v| !v.is_empty()) {
+      targets.extend(qsd::parse_list(&to));
+    }
+
+    // Authentication
+    let mut auth: Option<String> = None;
+    let mut token = None;
+    if let Some(t) = arg(url, "token") {
+      auth = Some("token".into());
+      token = Some(t);
+    }
+    if let Some(a) = qsd::get(url, "auth").filter(|v| !v.is_empty()) {
+      auth = Some(qsd::unquote(&a.trim().to_lowercase()));
+    }
+    if auth.is_none()
+      && let Some(u) = &user
+      && password.is_none()
+    {
+      let is_token = u.len() > 3 && u[..3].eq_ignore_ascii_case("tk_") && !u[3..].starts_with([' ', '\t']);
+      auth = Some(if is_token { "token" } else { "basic" }.into());
+    }
+    if auth.as_deref() == Some("token") && token.is_none() {
+      token = if user.is_some() && password.is_none() { user.clone() } else { password.clone() };
+    }
+    let auth = match auth.as_deref().unwrap_or("basic") {
+      "basic" => Auth::Basic,
+      "token" => Auth::Token,
+      other => {
+        tracing::warn!("An invalid ntfy Authentication type ({}) was specified.", other);
+        return None;
       }
     };
 
-    let priority = url
-      .get("priority")
-      .map(|p| match p.to_lowercase().as_str() {
-        "min" | "1" => "min",
-        "low" | "2" => "low",
-        "high" | "4" => "high",
-        "max" | "urgent" | "5" => "max",
-        _ => "default",
-      })
-      .unwrap_or("default");
+    // Mode
+    let mode = if native {
+      "cloud".to_string()
+    } else {
+      match qsd::get(url, "mode").filter(|v| !v.is_empty()) {
+        Some(m) => qsd::unquote(&m.trim().to_lowercase()),
+        None if (py_is_hostname(&host) || is_ipaddr(&host)) && !targets.is_empty() => "private".into(),
+        None => "cloud".into(),
+      }
+    };
+    let mode = match mode.as_str() {
+      "cloud" => Mode::Cloud,
+      "private" => Mode::Private,
+      other => {
+        tracing::warn!("An invalid ntfy Mode ({}) was specified.", other);
+        return None;
+      }
+    };
+    match mode {
+      // ntfy://topic: the host is the first topic
+      Mode::Cloud if !host.to_lowercase().contains("ntfy.sh") => targets.insert(0, host.clone()),
+      Mode::Private if !py_is_hostname(&host) => return None,
+      _ => {}
+    }
 
-    Some(Self { host, port: url.port, topics, secure, priority, auth, verify_certificate: url.verify_certificate(), tags: url.tags() })
+    let mut topics = Vec::new();
+    for t in targets {
+      let topic = t.trim();
+      if (1..=64).contains(&topic.len()) && topic.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        topics.push(topic.to_string());
+      } else {
+        tracing::warn!("A specified ntfy topic ({}) is invalid and will be ignored", t);
+      }
+    }
+
+    let priority = match qsd::get(url, "priority").filter(|v| !v.is_empty()) {
+      Some(p) => {
+        let p = qsd::unquote(&p).to_lowercase();
+        PRIORITY_MAP.iter().find(|(k, _)| p.starts_with(k)).map(|(_, v)| *v).unwrap_or("default")
+      }
+      None => "default",
+    };
+
+    // ?attach= takes its filename from the URL unless ?filename= is given
+    let attach = arg(url, "attach");
+    let mut filename = None;
+    if let Some(a) = &attach {
+      if let Some(p) = ParsedUrl::parse(a).filter(|p| p.host.as_deref().is_some_and(py_is_hostname)) {
+        filename = basename(&p.path);
+      }
+      if let Some(f) = arg(url, "filename") {
+        filename = basename(&f);
+      }
+    }
+
+    // Non-ASCII click URLs are encoded once here (and again when sent)
+    let click = arg(url, "click").map(|c| if c.is_ascii() { c } else { qsd::quote(&c, ":/?&=[]") });
+
+    let xtags =
+      qsd::get(url, "xtags").filter(|v| !v.is_empty()).or_else(|| qsd::get(url, "tags")).map(|t| qsd::parse_list(&qsd::unquote(&t))).unwrap_or_default();
+
+    // Upstream parse_bool() with a default of yes
+    let include_image = qsd::get(url, "image").is_none_or(|v| {
+      let head: String = v.to_lowercase().chars().take(2).collect();
+      !["de", "di", "ne", "f", "n", "no", "of", "0", "fa"].contains(&head.as_str())
+    });
+
+    Some(Self {
+      mode,
+      host,
+      port: url.port,
+      secure: url.schema.ends_with('s'),
+      user,
+      password,
+      auth,
+      token,
+      topics,
+      priority,
+      attach,
+      filename,
+      click,
+      delay: arg(url, "delay"),
+      email: arg(url, "email"),
+      xtags,
+      actions: arg(url, "actions"),
+      include_image,
+      avatar_url: qsd::get(url, "avatar_url").map(|v| qsd::unquote(&v)),
+      verify_certificate: url.verify_certificate(),
+      tags: url.get("tag").map(|t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
+    })
   }
 
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
-      service_name: "Ntfy",
-      service_url: Some("https://ntfy.sh"),
-      setup_url: Some("https://docs.ntfy.sh/publish/"),
+      service_name: "ntfy",
+      service_url: Some("https://ntfy.sh/"),
+      setup_url: Some("https://appriseit.com/services/ntfy/"),
       protocols: vec!["ntfy", "ntfys"],
       description: "Send notifications via ntfy.sh (self-hosted or cloud).",
       attachment_support: true,
@@ -132,12 +300,147 @@ impl Ntfy {
   }
 
   fn base_url(&self) -> String {
-    let schema = if self.secure { "https" } else { "http" };
-    match (&self.host, self.port) {
-      (Some(h), Some(p)) => format!("{}://{}:{}", schema, h, p),
-      (Some(h), None) => format!("{}://{}", schema, h),
-      _ => format!("https://{}", Self::CLOUD_HOST),
+    match self.mode {
+      Mode::Cloud => service_base(Self::CLOUD_NOTIFY_URL),
+      Mode::Private => {
+        let schema = if self.secure { "https" } else { "http" };
+        match self.port {
+          Some(p) => format!("{}://{}:{}", schema, self.host, p),
+          None => format!("{}://{}", schema, self.host),
+        }
+      }
     }
+  }
+
+  fn headers(&self, ctx: &NotifyContext, icon: Option<&str>) -> Result<HeaderMap, NotifyError> {
+    let mut list: Vec<(&str, String)> = vec![("User-Agent", APP_ID.to_string())];
+    if self.mode == Mode::Private
+      && self.auth == Auth::Token
+      && let Some(t) = &self.token
+    {
+      list.push(("Authorization", format!("Bearer {}", t)));
+    }
+    if let Some(icon) = icon {
+      list.push(("X-Icon", icon.to_string()));
+    }
+    if ctx.body_format == NotifyFormat::Markdown {
+      list.push(("X-Markdown", "yes".into()));
+    }
+    if self.priority != "default" {
+      list.push(("X-Priority", self.priority.into()));
+    }
+    if let Some(d) = &self.delay {
+      list.push(("X-Delay", d.clone()));
+    }
+    if let Some(c) = &self.click {
+      list.push(("X-Click", qsd::quote(c, ":/?@&=#")));
+    }
+    if let Some(e) = &self.email {
+      list.push(("X-Email", e.clone()));
+    }
+    if !self.xtags.is_empty() {
+      list.push(("X-Tags", self.xtags.join(",")));
+    }
+    if let Some(a) = &self.actions {
+      list.push(("X-Actions", a.clone()));
+    }
+    let mut map = HeaderMap::new();
+    for (k, v) in list {
+      let value = HeaderValue::from_str(&v).map_err(|_| NotifyError::InvalidParam(format!("invalid value for header {}", k)))?;
+      map.insert(HeaderName::from_bytes(k.as_bytes()).expect("valid header name"), value);
+    }
+    Ok(map)
+  }
+
+  /// Publish one message (or one attachment) to `topic`.
+  async fn send_one(
+    &self,
+    client: &reqwest::Client,
+    ctx: &NotifyContext,
+    topic: &str,
+    title: &str,
+    body: &str,
+    attach: Option<&Attachment>,
+    icon: Option<&str>,
+  ) -> Result<bool, NotifyError> {
+    if self.mode == Mode::Private && self.auth == Auth::Token && self.token.is_none() {
+      tracing::warn!("No Ntfy Token was specified");
+      return Ok(false);
+    }
+    let mut headers = self.headers(ctx, icon)?;
+    let mut url = self.base_url();
+
+    let mut fields: Vec<(&str, &str)> = Vec::new();
+    if !title.is_empty() {
+      fields.push(("title", title));
+    }
+    if !body.is_empty() {
+      fields.push(("message", body));
+    }
+
+    let mut req = match attach {
+      None => {
+        let mut payload: Vec<(&str, &str)> = vec![("topic", topic)];
+        if let Some(a) = &self.attach {
+          payload.push(("attach", a));
+          if let Some(f) = &self.filename {
+            payload.push(("filename", f));
+          }
+        }
+        payload.extend(fields);
+
+        if py_dumps_len(&payload) > JSON_UPSTREAM_SIZE_LIMIT {
+          // Too big for a JSON message; upload it as a file instead
+          let mime = match ctx.body_format {
+            NotifyFormat::Markdown => "text/markdown",
+            NotifyFormat::Text => "text/plain",
+            NotifyFormat::Html => "text/html",
+          };
+          let content = if title.is_empty() { body.to_string() } else { format!("{}\n{}", title, body) };
+          let att = Attachment { name: format!("{}.txt", uuid4()), data: content.into_bytes(), mime_type: mime.into() };
+          return Box::pin(self.send_one(client, ctx, topic, "", "", Some(&att), icon)).await;
+        }
+
+        headers.insert(reqwest::header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let json: Map<String, Value> = payload.into_iter().map(|(k, v)| (k.to_string(), Value::String(v.to_string()))).collect();
+        client.post(&url).headers(headers).body(serde_json::to_string(&json)?)
+      }
+      Some(att) => {
+        url = format!("{}/{}", url, topic);
+        let mut params: Vec<(&str, &str)> = vec![("filename", &att.name)];
+        params.extend(fields);
+        client.post(&url).headers(headers).query(&params).body(att.data.clone())
+      }
+    };
+    if self.mode == Mode::Private
+      && self.auth == Auth::Basic
+      && let Some(u) = &self.user
+    {
+      // `requests` sends a missing password as the string `None`
+      req = req.basic_auth(u, Some(self.password.clone().unwrap_or_else(|| "None".into())));
+    }
+
+    tracing::debug!("ntfy POST URL: {} (cert_verify={})", url, self.verify_certificate);
+    let resp = match req.send().await {
+      Ok(r) => r,
+      Err(e) => {
+        tracing::warn!("A Connection error occurred sending ntfy:{} notification.", url);
+        tracing::debug!("Socket Exception: {}", e);
+        return Ok(false);
+      }
+    };
+    let status = resp.status().as_u16();
+    if status == 200 {
+      tracing::info!("Sent ntfy notification to '{}'.", url);
+      return Ok(true);
+    }
+    let text = resp.text().await.unwrap_or_default();
+    let (error, code) = match serde_json::from_str::<Value>(&text) {
+      Ok(v) => (v.get("error").and_then(|e| e.as_str()).unwrap_or("").to_string(), v.get("code").and_then(|c| c.as_i64()).unwrap_or(status as i64)),
+      Err(_) => (String::new(), status as i64),
+    };
+    tracing::warn!("Failed to send ntfy notification to topic '{}': {}{}error={}.", topic, error, if error.is_empty() { "" } else { ", " }, code);
+    Ok(false)
   }
 }
 
@@ -147,7 +450,7 @@ impl Notify for Ntfy {
     &["ntfy", "ntfys"]
   }
   fn service_name(&self) -> &str {
-    "Ntfy"
+    "ntfy"
   }
   fn details(&self) -> ServiceDetails {
     Self::static_details()
@@ -155,96 +458,81 @@ impl Notify for Ntfy {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn attachment_support(&self) -> bool {
+    true
+  }
+  fn title_maxlen(&self) -> usize {
+    200
+  }
+  fn body_maxlen(&self) -> usize {
+    7800
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
+    if self.topics.is_empty() {
+      tracing::warn!("There are no ntfy topics to notify");
+      return Ok(false);
+    }
+
+    let icon = if self.include_image {
+      Some(self.avatar_url.clone().filter(|a| !a.is_empty()).unwrap_or_else(|| image_url(&ctx.asset, &ctx.notify_type, "256x256")))
+    } else {
+      None
+    };
+
     let client = build_client(self.verify_certificate)?;
-    let base = self.base_url();
-    let mut all_ok = true;
-
-    for topic in &self.topics {
-      let url = format!("{}/{}", base, topic);
-      let mut req = client.post(&url).header("User-Agent", APP_ID).header("X-Priority", self.priority);
-
-      // Only add markdown header when format is markdown (matching Python)
-      if ctx.body_format == crate::types::NotifyFormat::Markdown {
-        req = req.header("X-Markdown", "yes");
+    let mut has_error = false;
+    // Upstream pops topics off the end of its list
+    for topic in self.topics.iter().rev() {
+      if ctx.attachments.is_empty() {
+        if !self.send_one(&client, ctx, topic, &ctx.title, &ctx.body, None, icon.as_deref()).await? {
+          has_error = true;
+        }
+        continue;
       }
-
-      if !ctx.title.is_empty() {
-        req = req.header("X-Title", &ctx.title);
-      }
-
-      req = match &self.auth {
-        Some(NtfyAuth::Basic { user, pass }) => req.basic_auth(user, Some(pass)),
-        Some(NtfyAuth::Token(t)) => req.header("Authorization", format!("Bearer {}", t)),
-        None => req,
-      };
-
-      if ctx.attachments.len() == 1 {
-        // Single attachment: send as binary body with message in headers
-        let attach = &ctx.attachments[0];
-        let mut att_req = client.put(&url).header("User-Agent", APP_ID).header("X-Priority", self.priority).header("X-Filename", &attach.name);
-        if !ctx.title.is_empty() {
-          att_req = att_req.header("X-Title", &ctx.title);
-        }
-        att_req = att_req.header("X-Message", &ctx.body);
-        att_req = match &self.auth {
-          Some(NtfyAuth::Basic { user, pass }) => att_req.basic_auth(user, Some(pass)),
-          Some(NtfyAuth::Token(t)) => att_req.header("Authorization", format!("Bearer {}", t)),
-          None => att_req,
-        };
-        let resp = att_req.body(attach.data.clone()).send().await?;
-        if !resp.status().is_success() {
-          let body = resp.text().await.unwrap_or_default();
-          tracing::warn!("Ntfy send to {} failed: {}", topic, body);
-          all_ok = false;
-        }
-      } else {
-        // No attachments or multiple: send text message first
-        let resp = req.body(ctx.body.clone()).send().await?;
-        if !resp.status().is_success() {
-          let body = resp.text().await.unwrap_or_default();
-          tracing::warn!("Ntfy send to {} failed: {}", topic, body);
-          all_ok = false;
-        }
-
-        // Send each attachment as a separate PUT
-        for att in &ctx.attachments {
-          let att_url = format!("{}/{}", base, topic);
-          let mut att_req = client.put(&att_url).header("User-Agent", APP_ID).header("X-Filename", &att.name);
-          att_req = match &self.auth {
-            Some(NtfyAuth::Basic { user, pass }) => att_req.basic_auth(user, Some(pass)),
-            Some(NtfyAuth::Token(t)) => att_req.header("Authorization", format!("Bearer {}", t)),
-            None => att_req,
-          };
-          let resp = att_req.body(att.data.clone()).send().await?;
-          if !resp.status().is_success() {
-            all_ok = false;
-          }
+      // One upload per attachment; the first carries the title and body
+      for (no, att) in ctx.attachments.iter().enumerate() {
+        let (title, body) = if no == 0 { (ctx.title.as_str(), ctx.body.as_str()) } else { ("", "") };
+        if !self.send_one(&client, ctx, topic, title, body, Some(att), icon.as_deref()).await? {
+          return Ok(false);
         }
       }
     }
-    Ok(all_ok)
+    Ok(!has_error)
   }
 }
 
 #[cfg(test)]
 mod tests {
+  use super::*;
   use crate::notify::registry::from_url;
+  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
+
+  fn ntfy(url: &str) -> Ntfy {
+    Ntfy::from_url(&ParsedUrl::parse(url).unwrap()).unwrap()
+  }
+
+  const ICON: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/default/apprise-info-256x256.png";
 
   #[test]
   fn test_valid_urls() {
     let urls = vec![
+      "ntfy://",
+      "ntfys://",
+      "ntfy://:@/",
+      "ntfy://user:pass@localhost?mode=private",
+      "ntfy://user:pass@localhost/#/!/@",
       "ntfy://user@localhost/topic/",
       "ntfy://ntfy.sh/topic1/topic2/",
       "ntfy://localhost/topic1/topic2/",
       "ntfy://localhost/topic1/?email=user@gmail.com",
+      "ntfy://localhost/topic1/?xtags=tag1,tag2,tag3",
       "ntfy://localhost/topic1/?tags=tag1,tag2,tag3",
       "ntfy://localhost/topic1/?actions=view%2CExample%2Chttp://www.example.com/%3Bview%2CTest%2Chttp://www.test.com/",
       "ntfy://localhost/topic1/?delay=3600",
       "ntfy://localhost/topic1/?title=A%20Great%20Title",
       "ntfy://localhost/topic1/?click=yes",
-      "ntfy://localhost/topic1/?email=user@example.com",
       "ntfy://localhost/topic1/?image=False",
       "ntfy://localhost/topic1/?avatar_url=ttp://localhost/test.jpg",
       "ntfy://localhost/topic1/?attach=http://example.com/file.jpg",
@@ -255,6 +543,7 @@ mod tests {
       "ntfy://:abcd123456@localhost/topic1?auth=token",
       "ntfy://localhost/topic1?token=abc1234",
       "ntfy://user:token@localhost/topic1?auth=token",
+      "ntfy://localhost/topic1?auth=token",
       "ntfy://localhost/topic1/?priority=default",
       "ntfy://localhost/topic1/?priority=high",
       "ntfy://user:pass@localhost:8080/topic/",
@@ -271,548 +560,244 @@ mod tests {
 
   #[test]
   fn test_invalid_urls() {
-    let urls = vec![
+    for url in [
       "https://just/a/random/host/that/means/nothing",
+      "https://sub.ntfy.sh/topic",
       "ntfys://user:web/token@localhost/topic/?mode=invalid",
       "ntfys://token@localhost/topic/?auth=invalid",
       "ntfys://user:web@-_/topic1/topic2/?mode=private",
-    ];
-    for url in &urls {
+    ] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
   }
 
-  // ── Behavioral tests using wiremock ──────────────────────────────────
+  #[test]
+  fn test_parse_modes_and_topics() {
+    let n = ntfy("ntfy://topic1");
+    assert_eq!((n.mode, n.topics.clone()), (Mode::Cloud, vec!["topic1".to_string()]));
 
-  use super::*;
-  use crate::asset::AppriseAsset;
-  use crate::notify::{Notify, NotifyContext};
-  use crate::types::{NotifyFormat, NotifyType};
-  use base64::Engine;
-  use wiremock::matchers::{header, method, path};
-  use wiremock::{Mock, MockServer, ResponseTemplate};
+    let n = ntfy("ntfy://user:pass@topic1/topic2/topic3/?mode=cloud");
+    assert_eq!(n.topics, vec!["topic1", "topic2", "topic3"]);
 
-  /// Helper: build a NotifyContext with sensible defaults.
+    let n = ntfy("ntfy://user:pass@ntfy.sh/topic1/topic2/?mode=cloud");
+    assert_eq!(n.topics, vec!["topic1", "topic2"]);
+
+    // A host with topics is a private server, even ntfy.sh
+    let n = ntfy("ntfy://ntfy.sh/topic1/topic2/");
+    assert_eq!((n.mode, n.base_url()), (Mode::Private, "http://ntfy.sh".to_string()));
+
+    let n = ntfy("https://ntfy.sh/t1/t2?mode=private");
+    assert_eq!((n.mode, n.topics.clone(), n.base_url()), (Mode::Cloud, vec!["t1".to_string(), "t2".to_string()], "https://ntfy.sh".to_string()));
+
+    let n = ntfy("ntfys://user:pass@localhost:8080?to=topic,abc---&priority=max");
+    assert_eq!(
+      (n.mode, n.topics.clone(), n.base_url()),
+      (Mode::Private, vec!["abc---".to_string(), "topic".to_string()], "https://localhost:8080".to_string())
+    );
+
+    // Invalid topics are dropped, the URL still loads
+    let n = ntfy("ntfy://user:pass@localhost/#/!/@");
+    assert!(n.topics.is_empty());
+    assert!(ntfy("ntfy://").topics.is_empty());
+  }
+
+  #[test]
+  fn test_parse_auth() {
+    let n = ntfy("ntfy://tk_abcd123456@localhost/topic1");
+    assert_eq!((n.auth, n.token.as_deref()), (Auth::Token, Some("tk_abcd123456")));
+    let n = ntfy("ntfy://abcd123456@localhost/topic1?auth=token");
+    assert_eq!((n.auth, n.token.as_deref()), (Auth::Token, Some("abcd123456")));
+    let n = ntfy("ntfy://:abcd123456@localhost/topic1?auth=token");
+    assert_eq!((n.auth, n.token.as_deref()), (Auth::Token, Some("abcd123456")));
+    let n = ntfy("ntfy://user:token@localhost/topic1?auth=token");
+    assert_eq!((n.auth, n.token.as_deref()), (Auth::Token, Some("token")));
+    let n = ntfy("ntfy://localhost/topic1?token=abc1234");
+    assert_eq!((n.auth, n.token.as_deref()), (Auth::Token, Some("abc1234")));
+    let n = ntfy("ntfy://user@localhost/topic1");
+    assert_eq!((n.auth, n.token.as_deref()), (Auth::Basic, None));
+    let n = ntfy("ntfy://localhost/topic1?auth=token");
+    assert_eq!((n.auth, n.token.as_deref()), (Auth::Token, None));
+  }
+
+  #[test]
+  fn test_parse_options() {
+    for (value, expected) in [
+      ("min", "min"),
+      ("1", "min"),
+      ("low", "low"),
+      ("moderate", "low"),
+      ("normal", "default"),
+      ("high", "high"),
+      ("4", "high"),
+      ("max", "max"),
+      ("emergency", "max"),
+      ("urgent", "default"),
+      ("", "default"),
+    ] {
+      assert_eq!(ntfy(&format!("ntfy://localhost/t?priority={}", value)).priority, expected, "{value}");
+    }
+
+    let n = ntfy("ntfy://localhost/t?attach=http://example.com/path/file.jpg");
+    assert_eq!((n.attach.as_deref(), n.filename.as_deref()), (Some("http://example.com/path/file.jpg"), Some("file.jpg")));
+    let n = ntfy("ntfy://localhost/t?attach=http://example.com/file.jpg&filename=/a/smoke.jpg");
+    assert_eq!(n.filename.as_deref(), Some("smoke.jpg"));
+    assert_eq!(ntfy("ntfy://localhost/t?attach=http://example.com/").filename, None);
+    assert_eq!(ntfy("ntfy://localhost/t?attach=http://-%20").filename, None);
+    // ?filename= alone means nothing
+    assert_eq!(ntfy("ntfy://localhost/t?filename=a.jpg").filename, None);
+
+    // xtags= wins over the legacy tags=; neither becomes a routing tag
+    let n = ntfy("ntfy://localhost/t?xtags=b,a&tags=c&tag=route");
+    assert_eq!((n.xtags.clone(), n.tags.clone()), (vec!["a".to_string(), "b".to_string()], vec!["route".to_string()]));
+    let n = ntfy("ntfy://localhost/t?tags=smile,de");
+    assert_eq!(n.xtags, vec!["de", "smile"]);
+    assert!(n.tags().is_empty());
+
+    assert!(!ntfy("ntfy://localhost/t?image=False").include_image);
+    assert!(ntfy("ntfy://localhost/t?image=bogus").include_image);
+    assert_eq!(ntfy("ntfy://localhost/t?click=http://a.com/%C3%A9%20x").click.as_deref(), Some("http://a.com/%C3%A9%20x"));
+  }
+
+  #[test]
+  fn test_image_url_and_hostname() {
+    let asset = AppriseAsset::default();
+    assert_eq!(image_url(&asset, &NotifyType::Info, "256x256"), ICON);
+    let custom = AppriseAsset { image_url_mask: Some("http://x/{theme}/{TYPE}-{xy}{EXTENSION}?{TYPE}".into()), ..AppriseAsset::default() };
+    assert_eq!(image_url(&custom, &NotifyType::Warning, "72x72"), "http://x/default/warning-72x72.png?warning");
+
+    for ok in ["localhost", "my_host", "a", "ntfy.sh.", "10.0.0.1", "a1.b-c"] {
+      assert!(py_is_hostname(ok), "{ok}");
+    }
+    for bad in ["", "-_", "_a", "a-", "a..b", "1"] {
+      assert!(!py_is_hostname(bad), "{bad}");
+    }
+  }
+
+  #[test]
+  fn test_py_dumps_len() {
+    let payload = [("topic", "t"), ("message", "a\"\u{e9}\u{1F600}\n")];
+    // len(json.dumps({"topic": "t", "message": "a\"\u00e9\U0001F600\n"})) in Python
+    assert_eq!(py_dumps_len(&payload), 52);
+  }
+
   fn ctx(title: &str, body: &str) -> NotifyContext {
-    NotifyContext {
-      body: body.to_string(),
-      title: title.to_string(),
-      notify_type: NotifyType::Info,
-      body_format: NotifyFormat::Text,
-      attachments: vec![],
-      interpret_escapes: false,
-      interpret_emojis: false,
-      tags: vec![],
-      asset: AppriseAsset::default(),
-    }
+    NotifyContext { title: title.into(), body: body.into(), ..Default::default() }
   }
-
-  /// Helper: create an Ntfy instance pointing at the mock server.
-  fn ntfy_for_mock(server: &MockServer, url_suffix: &str) -> Ntfy {
-    let addr = server.address();
-    let port = addr.port();
-    let url_str = format!("ntfy://localhost:{}/{}", port, url_suffix);
-    let parsed = ParsedUrl::parse(&url_str).expect("parse test URL");
-    Ntfy::from_url(&parsed).expect("create Ntfy from test URL")
-  }
-
-  // ── 1. JSON/body payload correctness ─────────────────────────────────
 
   #[tokio::test]
-  async fn test_basic_send_body_and_headers() {
+  async fn test_private_json_publish() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-      .and(path("/mytopic"))
-      .and(header("X-Title", "hello"))
-      .and(header("X-Priority", "default"))
-      .respond_with(ResponseTemplate::new(200))
-      .expect(1)
+      .and(path("/"))
+      .and(header("Content-Type", "application/json"))
+      .and(header("User-Agent", APP_ID))
+      .and(header("X-Icon", ICON))
+      .and(header("Authorization", "Basic dXNlcjpwYXNz"))
+      .and(header("X-Priority", "max"))
+      .and(header("X-Delay", "10"))
+      .and(header("X-Click", "http://a.com/%25C3%25A9%2520x"))
+      .and(header("X-Email", "a@b.c"))
+      .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+      .expect(2)
       .mount(&server)
       .await;
 
-    let ntfy = ntfy_for_mock(&server, "mytopic");
-    let result = ntfy.send(&ctx("hello", "world")).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
+    // Matches pycapture.py for the same options
+    let n = ntfy(&format!(
+      "ntfy://user:pass@localhost:{}/t1/t2?priority=max&xtags=b,a&click=http://a.com/\u{e9} x&delay=10&email=a@b.c&actions=view,x,y",
+      server.address().port()
+    ));
+    assert!(n.send(&ctx("title", "body")).await.unwrap());
+
+    // wiremock splits header values on commas, so check these directly
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests[0].headers.get("X-Tags").unwrap(), "a,b");
+    assert_eq!(requests[0].headers.get("X-Actions").unwrap(), "view,x,y");
+    let topics: Vec<Value> = requests.iter().map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()).collect();
+    assert_eq!(topics[0], serde_json::json!({"topic": "t2", "title": "title", "message": "body"}));
+    assert_eq!(topics[1], serde_json::json!({"topic": "t1", "title": "title", "message": "body"}));
+    assert!(requests[0].headers.get("X-Markdown").is_none());
   }
 
   #[tokio::test]
-  async fn test_send_no_title_omits_header() {
-    let server = MockServer::start().await;
-    // When title is empty, X-Title header should NOT be present
-    Mock::given(method("POST")).and(path("/mytopic")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
-
-    let ntfy = ntfy_for_mock(&server, "mytopic");
-    let c = ctx("", "body only");
-    let result = ntfy.send(&c).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  #[tokio::test]
-  async fn test_multiple_topics_sends_multiple_requests() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST")).and(path("/topic1")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
-    Mock::given(method("POST")).and(path("/topic2")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
-
-    let addr = server.address();
-    let url_str = format!("ntfy://localhost:{}/topic1/topic2", addr.port());
-    let parsed = ParsedUrl::parse(&url_str).unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-
-    let result = ntfy.send(&ctx("t", "b")).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  // ── 2. Correct endpoint URLs ─────────────────────────────────────────
-
-  #[test]
-  fn test_cloud_mode_base_url() {
-    // ntfy://topic — no host → cloud mode → https://ntfy.sh
-    let parsed = ParsedUrl::parse("ntfy://mytopic").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-    assert_eq!(ntfy.base_url(), "https://ntfy.sh");
-  }
-
-  #[test]
-  fn test_private_mode_base_url_with_port() {
-    let parsed = ParsedUrl::parse("ntfy://user:pass@myhost:9090/topic").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-    assert_eq!(ntfy.base_url(), "http://myhost:9090");
-  }
-
-  #[test]
-  fn test_private_secure_base_url() {
-    let parsed = ParsedUrl::parse("ntfys://user:pass@myhost/topic").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-    assert_eq!(ntfy.base_url(), "https://myhost");
-  }
-
-  #[test]
-  fn test_ntfy_sh_host_is_cloud() {
-    let parsed = ParsedUrl::parse("ntfy://ntfy.sh/topic1/topic2").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-    assert_eq!(ntfy.base_url(), "http://ntfy.sh");
-    assert_eq!(ntfy.topics, vec!["topic1", "topic2"]);
-  }
-
-  // ── 3. Attachment handling ───────────────────────────────────────────
-
-  #[tokio::test]
-  async fn test_single_attachment_uses_put_with_filename() {
-    let server = MockServer::start().await;
-    // Single attachment: PUT to /topic with X-Filename and X-Message
-    Mock::given(method("PUT"))
-      .and(path("/mytopic"))
-      .and(header("X-Filename", "photo.jpg"))
-      .and(header("X-Message", "check this out"))
-      .respond_with(ResponseTemplate::new(200))
-      .expect(1)
-      .mount(&server)
-      .await;
-
-    let ntfy = ntfy_for_mock(&server, "mytopic");
-    let mut c = ctx("", "check this out");
-    c.attachments.push(crate::notify::Attachment {
-      name: "photo.jpg".to_string(),
-      data: vec![0xFF, 0xD8, 0xFF], // fake JPEG bytes
-      mime_type: "image/jpeg".to_string(),
-    });
-
-    let result = ntfy.send(&c).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  #[tokio::test]
-  async fn test_single_attachment_with_title() {
-    let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-      .and(path("/mytopic"))
-      .and(header("X-Filename", "file.gif"))
-      .and(header("X-Title", "wonderful"))
-      .and(header("X-Message", "test"))
-      .respond_with(ResponseTemplate::new(200))
-      .expect(1)
-      .mount(&server)
-      .await;
-
-    let ntfy = ntfy_for_mock(&server, "mytopic");
-    let mut c = ctx("wonderful", "test");
-    c.attachments.push(crate::notify::Attachment { name: "file.gif".to_string(), data: b"GIF89a".to_vec(), mime_type: "image/gif".to_string() });
-
-    let result = ntfy.send(&c).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  #[tokio::test]
-  async fn test_multiple_attachments_sends_post_then_puts() {
-    let server = MockServer::start().await;
-
-    // First: POST with the text body
-    Mock::given(method("POST")).and(path("/mytopic")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
-
-    // Then: PUT for each attachment (2 attachments)
-    Mock::given(method("PUT")).and(path("/mytopic")).and(header("X-Filename", "a.gif")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
-
-    Mock::given(method("PUT")).and(path("/mytopic")).and(header("X-Filename", "b.png")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
-
-    let ntfy = ntfy_for_mock(&server, "mytopic");
-    let mut c = ctx("title", "test");
-    c.attachments.push(crate::notify::Attachment { name: "a.gif".to_string(), data: b"GIF89a".to_vec(), mime_type: "image/gif".to_string() });
-    c.attachments.push(crate::notify::Attachment { name: "b.png".to_string(), data: b"PNG".to_vec(), mime_type: "image/png".to_string() });
-
-    let result = ntfy.send(&c).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  // ── 4. Auth headers ──────────────────────────────────────────────────
-
-  #[tokio::test]
-  async fn test_bearer_token_auth() {
+  async fn test_token_markdown_attach_url_and_no_image() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-      .and(path("/mytopic"))
-      .and(header("Authorization", "Bearer tk_mytoken123"))
+      .and(path("/"))
+      .and(header("Authorization", "Bearer tk_abc"))
+      .and(header("X-Markdown", "yes"))
+      .and(body_json(serde_json::json!({"topic": "topic", "attach": "http://example.com/path/file.jpg", "filename": "file.jpg", "message": "body"})))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
       .mount(&server)
       .await;
 
-    let addr = server.address();
-    let url_str = format!("ntfy://tk_mytoken123@localhost:{}/mytopic", addr.port());
-    let parsed = ParsedUrl::parse(&url_str).unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-
-    let result = ntfy.send(&ctx("t", "b")).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
+    let n = ntfy(&format!("ntfy://tk_abc@localhost:{}/topic?attach=http://example.com/path/file.jpg&image=no", server.address().port()));
+    let c = NotifyContext { body_format: NotifyFormat::Markdown, ..ctx("", "body") };
+    assert!(n.send(&c).await.unwrap());
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests[0].headers.get("X-Icon").is_none());
   }
 
   #[tokio::test]
-  async fn test_basic_auth() {
+  async fn test_attachments_upload() {
     let server = MockServer::start().await;
-    // reqwest sends Basic auth as "Basic base64(user:pass)"
-    let expected = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("myuser:mypass"));
-    Mock::given(method("POST"))
-      .and(path("/mytopic"))
-      .and(header("Authorization", expected.as_str()))
-      .respond_with(ResponseTemplate::new(200))
-      .expect(1)
-      .mount(&server)
-      .await;
+    Mock::given(method("POST")).and(path("/topic")).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
 
-    let addr = server.address();
-    let url_str = format!("ntfy://myuser:mypass@localhost:{}/mytopic", addr.port());
-    let parsed = ParsedUrl::parse(&url_str).unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
+    let n = ntfy(&format!("ntfy://localhost:{}/topic?image=no&avatar_url=http://x/y.png", server.address().port()));
+    let mut c = ctx("title", "body");
+    c.attachments.push(Attachment { name: "a.txt".into(), data: b"hello".to_vec(), mime_type: "text/plain".into() });
+    c.attachments.push(Attachment { name: "b.png".into(), data: b"\x89PNG\r\n".to_vec(), mime_type: "image/png".into() });
+    assert!(n.send(&c).await.unwrap());
 
-    let result = ntfy.send(&ctx("t", "b")).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
+    let requests = server.received_requests().await.unwrap();
+    let query = |i: usize| -> Vec<(String, String)> { requests[i].url.query_pairs().into_owned().collect() };
+    assert_eq!(query(0), vec![("filename".into(), "a.txt".into()), ("title".into(), "title".into()), ("message".into(), "body".into())]);
+    assert_eq!(query(1), vec![("filename".to_string(), "b.png".to_string())]);
+    assert_eq!(requests[0].body, b"hello");
+    assert_eq!(requests[1].body, b"\x89PNG\r\n");
+    assert!(requests[0].headers.get("Content-Type").is_none());
   }
 
   #[tokio::test]
-  async fn test_token_auth_via_query_param() {
+  async fn test_cloud_avatar_and_large_message_upload() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-      .and(path("/mytopic"))
-      .and(header("Authorization", "Bearer abc1234"))
+      .and(path("/topic"))
+      .and(header("X-Icon", "http://x/y.png"))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
       .mount(&server)
       .await;
 
-    let addr = server.address();
-    let url_str = format!("ntfy://localhost:{}/mytopic?token=abc1234", addr.port());
-    let parsed = ParsedUrl::parse(&url_str).unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
+    let n = ntfy("ntfy://topic?avatar_url=http://x/y.png");
+    assert_eq!(n.mode, Mode::Cloud);
+    let body = "x".repeat(8000);
+    assert!(crate::notify::with_test_base(server.uri(), n.send(&ctx("Title", &body))).await.unwrap());
 
-    let result = ntfy.send(&ctx("t", "b")).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
+    let requests = server.received_requests().await.unwrap();
+    let query: Vec<(String, String)> = requests[0].url.query_pairs().into_owned().collect();
+    assert_eq!(query.len(), 1);
+    assert!(query[0].1.ends_with(".txt") && query[0].1.len() == 40);
+    assert_eq!(requests[0].body, format!("Title\n{}", body).into_bytes());
   }
 
   #[tokio::test]
-  async fn test_auth_token_mode_uses_password_as_token() {
+  async fn test_failures() {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-      .and(path("/mytopic"))
-      .and(header("Authorization", "Bearer secrettoken"))
-      .respond_with(ResponseTemplate::new(200))
-      .expect(1)
-      .mount(&server)
-      .await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(400).set_body_string(r#"{"code": 40001, "error": "bad"}"#)).expect(2).mount(&server).await;
+    // Every topic is tried even after a failure
+    let n = ntfy(&format!("ntfy://localhost:{}/t1/t2", server.address().port()));
+    assert!(!n.send(&ctx("t", "b")).await.unwrap());
 
-    let addr = server.address();
-    let url_str = format!("ntfy://user:secrettoken@localhost:{}/mytopic?auth=token", addr.port());
-    let parsed = ParsedUrl::parse(&url_str).unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-
-    let result = ntfy.send(&ctx("t", "b")).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  #[tokio::test]
-  async fn test_bearer_token_on_attachment_put() {
+    // 2xx other than 200 is a failure too
     let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-      .and(path("/mytopic"))
-      .and(header("Authorization", "Bearer tk_mytoken123"))
-      .and(header("X-Filename", "file.txt"))
-      .respond_with(ResponseTemplate::new(200))
-      .expect(1)
-      .mount(&server)
-      .await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(202)).expect(1).mount(&server).await;
+    assert!(!ntfy(&format!("ntfy://localhost:{}/t1", server.address().port())).send(&ctx("t", "b")).await.unwrap());
 
-    let addr = server.address();
-    let url_str = format!("ntfy://tk_mytoken123@localhost:{}/mytopic", addr.port());
-    let parsed = ParsedUrl::parse(&url_str).unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-
-    let mut c = ctx("", "msg");
-    c.attachments.push(crate::notify::Attachment { name: "file.txt".to_string(), data: b"hello".to_vec(), mime_type: "text/plain".to_string() });
-
-    let result = ntfy.send(&c).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  // ── 5. Error handling ────────────────────────────────────────────────
-
-  #[tokio::test]
-  async fn test_http_500_returns_false() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST")).and(path("/mytopic")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
-
-    let ntfy = ntfy_for_mock(&server, "mytopic");
-    let result = ntfy.send(&ctx("title", "body")).await;
-    assert!(result.is_ok());
-    assert!(!result.unwrap(), "HTTP 500 should return false");
-  }
-
-  #[tokio::test]
-  async fn test_http_403_returns_false() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST")).and(path("/mytopic")).respond_with(ResponseTemplate::new(403)).expect(1).mount(&server).await;
-
-    let ntfy = ntfy_for_mock(&server, "mytopic");
-    let result = ntfy.send(&ctx("title", "body")).await;
-    assert!(result.is_ok());
-    assert!(!result.unwrap(), "HTTP 403 should return false");
-  }
-
-  #[tokio::test]
-  async fn test_connection_refused_returns_error() {
-    // Point at a port that nothing is listening on
-    let parsed = ParsedUrl::parse("ntfy://localhost:19999/mytopic").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-
-    let result = ntfy.send(&ctx("title", "body")).await;
-    assert!(result.is_err(), "Connection refused should return Err");
-  }
-
-  #[tokio::test]
-  async fn test_partial_failure_multiple_topics() {
-    // topic1 succeeds, topic2 fails with 500 → result should be false
-    let server = MockServer::start().await;
-    Mock::given(method("POST")).and(path("/topic1")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
-    Mock::given(method("POST")).and(path("/topic2")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
-
-    let addr = server.address();
-    let url_str = format!("ntfy://localhost:{}/topic1/topic2", addr.port());
-    let parsed = ParsedUrl::parse(&url_str).unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-
-    let result = ntfy.send(&ctx("t", "b")).await;
-    assert!(result.is_ok());
-    assert!(!result.unwrap(), "Partial failure should return false");
-  }
-
-  #[tokio::test]
-  async fn test_attachment_upload_failure_returns_false() {
-    let server = MockServer::start().await;
-    // Single attachment PUT returns 500
-    Mock::given(method("PUT")).and(path("/mytopic")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
-
-    let ntfy = ntfy_for_mock(&server, "mytopic");
-    let mut c = ctx("", "msg");
-    c.attachments.push(crate::notify::Attachment { name: "file.txt".to_string(), data: b"data".to_vec(), mime_type: "text/plain".to_string() });
-
-    let result = ntfy.send(&c).await;
-    assert!(result.is_ok());
-    assert!(!result.unwrap(), "Attachment upload failure should return false");
-  }
-
-  // ── 6. Markdown mode ─────────────────────────────────────────────────
-
-  #[tokio::test]
-  async fn test_markdown_format_sends_header() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST")).and(path("/mytopic")).and(header("X-Markdown", "yes")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
-
-    let ntfy = ntfy_for_mock(&server, "mytopic");
-    let mut c = ctx("title", "**bold** text");
-    c.body_format = NotifyFormat::Markdown;
-
-    let result = ntfy.send(&c).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  #[tokio::test]
-  async fn test_text_format_no_markdown_header() {
-    let server = MockServer::start().await;
-    // This mock requires X-Markdown NOT to be present.
-    // We mount a mock that expects no X-Markdown and returns 200,
-    // plus a catch-all that would fail if X-Markdown was sent.
-    Mock::given(method("POST")).and(path("/mytopic")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
-
-    let ntfy = ntfy_for_mock(&server, "mytopic");
-    let c = ctx("title", "plain text");
-    // body_format defaults to Text
-
-    let result = ntfy.send(&c).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  // ── 7. Priority handling ─────────────────────────────────────────────
-
-  #[tokio::test]
-  async fn test_high_priority_header() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST")).and(path("/mytopic")).and(header("X-Priority", "high")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
-
-    let addr = server.address();
-    let url_str = format!("ntfy://localhost:{}/mytopic?priority=high", addr.port());
-    let parsed = ParsedUrl::parse(&url_str).unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-
-    let result = ntfy.send(&ctx("t", "b")).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  #[tokio::test]
-  async fn test_max_priority_header() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST")).and(path("/mytopic")).and(header("X-Priority", "max")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
-
-    let addr = server.address();
-    let url_str = format!("ntfy://localhost:{}/mytopic?priority=max", addr.port());
-    let parsed = ParsedUrl::parse(&url_str).unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-
-    let result = ntfy.send(&ctx("t", "b")).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  #[tokio::test]
-  async fn test_numeric_priority() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST")).and(path("/mytopic")).and(header("X-Priority", "min")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
-
-    let addr = server.address();
-    let url_str = format!("ntfy://localhost:{}/mytopic?priority=1", addr.port());
-    let parsed = ParsedUrl::parse(&url_str).unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-
-    let result = ntfy.send(&ctx("t", "b")).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
-  }
-
-  // ── 8. URL parsing edge cases ────────────────────────────────────────
-
-  #[test]
-  fn test_no_topics_returns_none() {
-    // ntfy:// with no topics should fail to construct
-    let parsed = ParsedUrl::parse("ntfy://").unwrap();
-    assert!(Ntfy::from_url(&parsed).is_none());
-  }
-
-  #[test]
-  fn test_to_query_param_adds_topics() {
-    let parsed = ParsedUrl::parse("ntfys://user:pass@localhost?to=topicA").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-    assert!(ntfy.topics.contains(&"topicA".to_string()));
-  }
-
-  #[test]
-  fn test_cloud_mode_explicit() {
-    let parsed = ParsedUrl::parse("ntfy://user:pass@topic1/topic2/topic3/?mode=cloud").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-    // In cloud mode with no real host, topics come from path + host
-    assert!(ntfy.topics.len() >= 2);
-  }
-
-  #[test]
-  fn test_invalid_mode_rejected() {
-    let parsed = ParsedUrl::parse("ntfys://user:pass@localhost/topic/?mode=invalid").unwrap();
-    assert!(Ntfy::from_url(&parsed).is_none());
-  }
-
-  #[test]
-  fn test_invalid_auth_rejected() {
-    let parsed = ParsedUrl::parse("ntfys://token@localhost/topic/?auth=invalid").unwrap();
-    assert!(Ntfy::from_url(&parsed).is_none());
-  }
-
-  #[test]
-  fn test_tk_prefix_detected_as_token() {
-    let parsed = ParsedUrl::parse("ntfy://tk_abcd123456@localhost/topic1").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-    match &ntfy.auth {
-      Some(NtfyAuth::Token(t)) => assert_eq!(t, "tk_abcd123456"),
-      other => panic!("Expected Token auth, got {:?}", other.is_some()),
-    }
-  }
-
-  #[test]
-  fn test_token_query_param() {
-    let parsed = ParsedUrl::parse("ntfy://localhost/topic1?token=abc1234").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-    match &ntfy.auth {
-      Some(NtfyAuth::Token(t)) => assert_eq!(t, "abc1234"),
-      other => panic!("Expected Token auth, got {:?}", other.is_some()),
-    }
-  }
-
-  #[test]
-  fn test_basic_auth_parsed() {
-    let parsed = ParsedUrl::parse("ntfy://myuser:mypass@localhost:8080/topic").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-    match &ntfy.auth {
-      Some(NtfyAuth::Basic { user, pass }) => {
-        assert_eq!(user, "myuser");
-        assert_eq!(pass, "mypass");
-      }
-      other => panic!("Expected Basic auth, got {:?}", other.is_some()),
-    }
-  }
-
-  #[test]
-  fn test_secure_flag() {
-    let parsed = ParsedUrl::parse("ntfys://localhost/topic").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-    assert!(ntfy.secure);
-
-    let parsed = ParsedUrl::parse("ntfy://localhost/topic").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-    assert!(!ntfy.secure);
-  }
-
-  #[test]
-  fn test_tags_parsed() {
-    let parsed = ParsedUrl::parse("ntfy://localhost/topic?tag=cool,rust").unwrap();
-    let ntfy = Ntfy::from_url(&parsed).unwrap();
-    assert!(ntfy.tags.contains(&"cool".to_string()));
-    assert!(ntfy.tags.contains(&"rust".to_string()));
+    // No topics, missing token, connection failure
+    assert!(!ntfy("ntfy://").send(&ctx("t", "b")).await.unwrap());
+    assert!(!ntfy("ntfy://localhost/topic1?auth=token").send(&ctx("t", "b")).await.unwrap());
+    assert!(!ntfy("ntfy://127.0.0.1:1/topic1").send(&ctx("t", "b")).await.unwrap());
   }
 }

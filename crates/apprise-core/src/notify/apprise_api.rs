@@ -15,17 +15,20 @@ const METHODS: &[&str] = &["form", "json"];
 /// default) sends it in the `X-Apprise-Config-ID` header.
 const VERSIONS: &[&str] = &["1", "2"];
 
+/// A random (version 4) UUID.
+pub(crate) fn uuid4() -> String {
+  let mut b: [u8; 16] = rand::random();
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  let h = hex::encode(b);
+  format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+}
+
 /// Identifies this process to Apprise API servers so they can spot relay
 /// loops (upstream `AppriseAsset._uid`, one UUID4 per process).
 fn apprise_uid() -> &'static str {
   static UID: OnceLock<String> = OnceLock::new();
-  UID.get_or_init(|| {
-    let mut b: [u8; 16] = rand::random();
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    let h = hex::encode(b);
-    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
-  })
+  UID.get_or_init(uuid4)
 }
 
 /// A token of 1 to `max` letters, digits, `_` or `-`.

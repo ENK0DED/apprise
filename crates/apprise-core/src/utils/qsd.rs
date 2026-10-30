@@ -71,6 +71,24 @@ pub fn unquote(s: &str) -> String {
   String::from_utf8_lossy(&urlencoding::decode_binary(s.as_bytes())).into_owned()
 }
 
+/// Percent-encode `s` like Python's `urllib.parse.quote`: letters, digits,
+/// `_.-~` and the characters in `safe` are kept, everything else is encoded
+/// as UTF-8.
+pub fn quote(s: &str, safe: &str) -> String {
+  let mut out = String::with_capacity(s.len());
+  for c in s.chars() {
+    if c.is_ascii_alphanumeric() || "_.-~".contains(c) || safe.contains(c) {
+      out.push(c);
+    } else {
+      let mut buf = [0u8; 4];
+      for b in c.encode_utf8(&mut buf).bytes() {
+        out.push_str(&format!("%{:02X}", b));
+      }
+    }
+  }
+  out
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -117,6 +135,12 @@ mod tests {
   fn test_parse_list() {
     assert_eq!(parse_list("b,a, c  d/e\\f,,a;g"), vec!["a", "b", "c", "d/e\\f", "g"]);
     assert!(parse_list(" , ").is_empty());
+  }
+
+  #[test]
+  fn test_quote() {
+    assert_eq!(quote("http://a.com/\u{e9} x?a=1&b=%", ":/?&="), "http://a.com/%C3%A9%20x?a=1&b=%25");
+    assert_eq!(quote("a~b_c.d-e*", ""), "a~b_c.d-e%2A");
   }
 
   #[test]
