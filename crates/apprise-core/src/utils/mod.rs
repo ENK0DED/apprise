@@ -17,5 +17,6 @@ pub mod sanitize;
 pub mod socket;
 pub mod templates;
 pub mod time;
+pub mod url_args;
 pub mod urlbase;
 pub mod validate;

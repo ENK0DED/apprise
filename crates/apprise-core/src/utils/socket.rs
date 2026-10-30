@@ -132,6 +132,100 @@ pub fn coerce_timeout(secs: f64) -> Result<TimeoutConfig, String> {
   TimeoutConfig::from_secs(secs)
 }
 
+/// Upstream `URLBase.socket_connect_timeout`, in seconds.
+pub const DEFAULT_SOCKET_CONNECT_TIMEOUT: f64 = 4.0;
+
+/// Upstream `URLBase.socket_read_timeout`, in seconds.
+pub const DEFAULT_SOCKET_READ_TIMEOUT: f64 = 4.0;
+
+/// The socket connect and read timeouts of a URL: `?cto=` and `?rto=`, or
+/// the upstream defaults of 4 seconds each. Values that are not a positive
+/// number fall back to the default, as `ServiceOptions` does.
+pub fn url_timeouts(url: &crate::utils::parse::ParsedUrl) -> TimeoutConfig {
+  let value = |key: &str, default: f64| url.get(key).and_then(|v| v.trim().parse::<f64>().ok()).filter(|n| n.is_finite() && *n > 0.0).unwrap_or(default);
+  TimeoutConfig::Split { connect: Some(value("cto", DEFAULT_SOCKET_CONNECT_TIMEOUT)), read: Some(value("rto", DEFAULT_SOCKET_READ_TIMEOUT)) }
+}
+
+/// A rustls connector for raw TCP plugins.
+///
+/// With `verify` set, the server certificate must chain to a Mozilla root
+/// and match the name it is checked against (upstream `CERT_REQUIRED` with
+/// `check_hostname`). Without it, any certificate is accepted (upstream
+/// `CERT_NONE`, the `?verify=no` URL option).
+pub fn tls_connector(verify: bool) -> tokio_rustls::TlsConnector {
+  crate::ensure_crypto_provider();
+  let config = if verify {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth()
+  } else {
+    rustls::ClientConfig::builder().dangerous().with_custom_certificate_verifier(std::sync::Arc::new(AcceptAnyCertificate::new())).with_no_client_auth()
+  };
+  tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
+}
+
+/// Certificate verifier behind `?verify=no`: every certificate is accepted.
+/// Handshake signatures are still checked so the session keys stay bound to
+/// the certificate the server presented.
+#[derive(Debug)]
+struct AcceptAnyCertificate(rustls::crypto::WebPkiSupportedAlgorithms);
+
+impl AcceptAnyCertificate {
+  fn new() -> Self {
+    Self(rustls::crypto::ring::default_provider().signature_verification_algorithms)
+  }
+}
+
+impl rustls::client::danger::ServerCertVerifier for AcceptAnyCertificate {
+  fn verify_server_cert(
+    &self,
+    _end_entity: &rustls::pki_types::CertificateDer<'_>,
+    _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+    _server_name: &rustls::pki_types::ServerName<'_>,
+    _ocsp_response: &[u8],
+    _now: rustls::pki_types::UnixTime,
+  ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+    Ok(rustls::client::danger::ServerCertVerified::assertion())
+  }
+
+  fn verify_tls12_signature(
+    &self,
+    message: &[u8],
+    cert: &rustls::pki_types::CertificateDer<'_>,
+    dss: &rustls::DigitallySignedStruct,
+  ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+    rustls::crypto::verify_tls12_signature(message, cert, dss, &self.0)
+  }
+
+  fn verify_tls13_signature(
+    &self,
+    message: &[u8],
+    cert: &rustls::pki_types::CertificateDer<'_>,
+    dss: &rustls::DigitallySignedStruct,
+  ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+    rustls::crypto::verify_tls13_signature(message, cert, dss, &self.0)
+  }
+
+  fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+    self.0.supported_schemes()
+  }
+}
+
+/// A TLS acceptor for tests of the raw-socket plugins, with a self-signed
+/// certificate for `localhost` and `127.0.0.1` (valid until 2126).
+#[cfg(test)]
+pub(crate) fn test_tls_acceptor() -> tokio_rustls::TlsAcceptor {
+  use base64::Engine;
+  const CERT_DER: &str = "MIIBmzCCAUGgAwIBAgIUHDSzYecy1X4n48MGhv8zBUVdsOgwCgYIKoZIzj0EAwIwFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTAzMDA1MDMxOFoYDzIxMjYxMDA2MDUwMzE4WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATVYK0hJr30ola9SZxnmyK5EHVY+n9n3RlYQGXrRdR1+MTSEhP3IuKidzohfbKhcVvKXT9F+DZXHJX/NXMHVHzuo28wbTAdBgNVHQ4EFgQUn2wtLITa3gfGa/s6IYZPB7+YEcMwHwYDVR0jBBgwFoAUn2wtLITa3gfGa/s6IYZPB7+YEcMwDwYDVR0TAQH/BAUwAwEB/zAaBgNVHREEEzARgglsb2NhbGhvc3SHBH8AAAEwCgYIKoZIzj0EAwIDSAAwRQIgfu3SM0e5ylzsHSoV34x8CrxccRR1kjKvO70IYa04Pc4CIQD9c+VNfOpXdGAZigNorHAbaxs3Tgtb4psOjrfWr8VJdg==";
+  const KEY_DER: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg/HKD2wnsJF0wgJ7HrPuBTscl39R6RBDPk0kfyv0A/OWhRANCAATVYK0hJr30ola9SZxnmyK5EHVY+n9n3RlYQGXrRdR1+MTSEhP3IuKidzohfbKhcVvKXT9F+DZXHJX/NXMHVHzu";
+  crate::ensure_crypto_provider();
+  let decode = |s: &str| base64::engine::general_purpose::STANDARD.decode(s).unwrap();
+  let cert = rustls::pki_types::CertificateDer::from(decode(CERT_DER));
+  let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(decode(KEY_DER)));
+  let config = rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(vec![cert], key).unwrap();
+  tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -183,5 +277,22 @@ mod tests {
     let cfg = TimeoutConfig::from_secs(0.0).unwrap();
     assert_eq!(cfg.connect_timeout(), Some(Duration::from_secs(0)));
     assert_eq!(cfg.read_timeout(), Some(Duration::from_secs(0)));
+  }
+
+  #[test]
+  fn test_url_timeouts() {
+    let parse = |u: &str| url_timeouts(&crate::utils::parse::ParsedUrl::parse(u).unwrap());
+    let cfg = parse("irc://host/#chan");
+    assert_eq!(cfg.connect_timeout(), Some(Duration::from_secs(4)));
+    assert_eq!(cfg.read_timeout(), Some(Duration::from_secs(4)));
+
+    let cfg = parse("irc://host/#chan?cto=2.5&rto=20");
+    assert_eq!(cfg.connect_timeout(), Some(Duration::from_secs_f64(2.5)));
+    assert_eq!(cfg.read_timeout(), Some(Duration::from_secs(20)));
+
+    // Unusable values keep the defaults
+    let cfg = parse("irc://host/#chan?cto=0&rto=abc");
+    assert_eq!(cfg.connect_timeout(), Some(Duration::from_secs(4)));
+    assert_eq!(cfg.read_timeout(), Some(Duration::from_secs(4)));
   }
 }
