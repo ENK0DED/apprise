@@ -646,6 +646,43 @@ mod tests {
     assert_eq!(load_config_text(&content, text, &insecure).await.unwrap().items.len(), 2);
   }
 
+  /// Replays configurations run through upstream `config_parse()`
+  /// (testdata/gen_config_parity.py): same services, same tags.
+  #[test]
+  fn test_config_parse_parity() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!("testdata/config_parity.json")).unwrap();
+    // Upstream shows a tag by its name: lowercased, priority prefix gone.
+    let name = |raw: &str| -> String {
+      let lower = raw.trim().to_lowercase();
+      match lower.split_once(':') {
+        Some((p, rest)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => rest.to_string(),
+        _ => lower,
+      }
+    };
+    for case in cases.as_array().unwrap() {
+      let content = case["content"].as_str().unwrap();
+      let format = if case["format"] == "yaml" { ConfigFormat::Yaml } else { ConfigFormat::Text };
+      let got: Vec<Vec<String>> = match config_parse(content, format, &LoadOptions::default()) {
+        Ok(out) => out
+          .items
+          .iter()
+          .map(|i| {
+            let tags = match i {
+              ConfigItem::Service(s) => s.tags(),
+              ConfigItem::Pending(p) => p.tags(),
+            };
+            let mut tags: Vec<String> = tags.iter().map(|t| name(t)).collect();
+            tags.sort();
+            tags
+          })
+          .collect(),
+        Err(_) => Vec::new(),
+      };
+      let expected: Vec<Vec<String>> = serde_json::from_value(case["services"].clone()).unwrap();
+      assert_eq!(got, expected, "{} config:\n{}", case["format"], content);
+    }
+  }
+
   #[test]
   fn test_apply_groups_exact_match() {
     let mut g = GroupTags::new();

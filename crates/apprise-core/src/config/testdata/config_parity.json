@@ -1,0 +1,314 @@
+[
+ {
+  "format": "text",
+  "content": "json://localhost\nxml://localhost\n",
+  "services": [
+   [],
+   []
+  ]
+ },
+ {
+  "format": "text",
+  "content": "# c\n; c\n  tagA, tagB = json://localhost\n=xml://localhost\n",
+  "services": [
+   [
+    "taga",
+    "tagb"
+   ],
+   []
+  ]
+ },
+ {
+  "format": "text",
+  "content": "groupA, groupB = tagB, tagC\ngroupC = groupA\ngroupD = groupE\ngroupE = tagD\ntagA=json://localhost/?A\ntagB=json://localhost/?B\ntagC=json://localhost/?C\ntagD=json://localhost/?D\n",
+  "services": [
+   [
+    "taga"
+   ],
+   [
+    "groupa",
+    "groupb",
+    "groupc",
+    "tagb"
+   ],
+   [
+    "groupa",
+    "groupb",
+    "groupc",
+    "tagc"
+   ],
+   [
+    "groupd",
+    "groupe",
+    "tagd"
+   ]
+  ]
+ },
+ {
+  "format": "text",
+  "content": "mygrouptag=mytagA\nmytagA=json://localhost\nother=json://localhost\n",
+  "services": [
+   [
+    "mygrouptag",
+    "mytaga"
+   ],
+   [
+    "other"
+   ]
+  ]
+ },
+ {
+  "format": "text",
+  "content": "2:endpoint=json://localhost\nalerts:3=json://localhost\n",
+  "services": [
+   [
+    "endpoint"
+   ]
+  ]
+ },
+ {
+  "format": "text",
+  "content": "json://localhost?tag=foo\nbar=ntfy://localhost/topic?tags=emoji\n",
+  "services": [
+   [],
+   [
+    "bar"
+   ]
+  ]
+ },
+ {
+  "format": "text",
+  "content": "json://localhost\n!!! bad line\n",
+  "services": []
+ },
+ {
+  "format": "text",
+  "content": "not a url\njson://localhost\n",
+  "services": [
+   []
+  ]
+ },
+ {
+  "format": "text",
+  "content": "grp=tag\ntag=json://localhost/?1\nTAG=json://localhost/?2\n",
+  "services": [
+   [
+    "grp",
+    "tag"
+   ],
+   [
+    "tag"
+   ]
+  ]
+ },
+ {
+  "format": "text",
+  "content": "unknown://host\njson://localhost\n",
+  "services": [
+   []
+  ]
+ },
+ {
+  "format": "text",
+  "content": "https://discord.com/api/webhooks/0123456789/abcdefg\nd=https://mattermost.example.com/hooks/abc\nhttps://example.com/hooks/abc\n",
+  "services": [
+   [],
+   [
+    "d"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "urls:\n  - json://localhost\n  - xml://localhost\n",
+  "services": [
+   [],
+   []
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "version: 2\nurls:\n  - json://localhost\n",
+  "services": []
+ },
+ {
+  "format": "yaml",
+  "content": "urls:\n  - json://localhost\n  bad: [\n",
+  "services": []
+ },
+ {
+  "format": "yaml",
+  "content": "tag: admin, devops\nurls:\n  - json://localhost\n  - xml://localhost:\n      tag: local\n",
+  "services": [
+   [
+    "admin",
+    "devops"
+   ],
+   [
+    "admin",
+    "devops",
+    "local"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "tags:\n  - a\n  - b\nurls:\n  - json://localhost:\n      tags: c\n",
+  "services": [
+   [
+    "a",
+    "b",
+    "c"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "urls:\n  - json://localhost:\n      tag: a\n      tags: b\n",
+  "services": [
+   [
+    "a"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "urls:\n  - json://localhost:\n    - to: a\n      tag: one\n    - to: b\n    - not-a-mapping\n    tag: shared\n",
+  "services": [
+   [
+    "one"
+   ],
+   [
+    "shared"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "groups:\n  admins: tagA, tagB\n  devops:\n    - tagX\n    - tagY\n  everyone:\n    - admins\n    - devops\nurls:\n  - json://localhost:\n      tag: tagA\n  - json://localhost:\n      tag: tagY\n  - json://localhost\n",
+  "services": [
+   [
+    "admins",
+    "everyone",
+    "taga"
+   ],
+   [
+    "devops",
+    "everyone",
+    "tagy"
+   ],
+   []
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "groups:\n  - g1, g2: t1\n  - g3:\n    - t1: ignored\n  - nonsense\nurls:\n  - json://localhost:\n      tag: t1\n",
+  "services": [
+   [
+    "g1",
+    "g2",
+    "g3",
+    "t1"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "urls:\n  - json://localhost:\n      tag: alerts:3\n  - json://localhost:\n      tag: 2:alerts\n",
+  "services": [
+   [
+    "alerts"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "urls:\n  - format: markdown\n    json://localhost:\n    tag: sib\n",
+  "services": [
+   [
+    "sib"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "urls:\n  - json://localhost:\n    tag: sib\n",
+  "services": [
+   [
+    "sib"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "urls:\n  - json://a:\n      tag: x\n      tag: y\n",
+  "services": [
+   [
+    "y"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "base: &base\n  tag: shared\nurls:\n  - json://a:\n      <<: *base\n  - json://b: *base\n",
+  "services": [
+   [
+    "shared"
+   ],
+   [
+    "shared"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "urls:\n  - ntfy://localhost/topic?tags=emoji:\n      tag: mine\n",
+  "services": [
+   [
+    "mine"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "urls:\n  - unknown://host\n  - 42\n  - json://localhost\n",
+  "services": [
+   []
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "urls:\n  - https://discord.com/api/webhooks/0123456789/abcdefg:\n      tag: d\n",
+  "services": [
+   [
+    "d"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "template:\n  - t\nurls:\n  - ${t}://localhost\n  - json://localhost:\n      tag: ${t}\n  - json://localhost/${other}\n",
+  "services": [
+   []
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "template:\n  - t: path\nurls:\n  - json://localhost/${t}:\n      tag: tt\n",
+  "services": [
+   [
+    "tt"
+   ]
+  ]
+ },
+ {
+  "format": "yaml",
+  "content": "urls: json://localhost\n",
+  "services": []
+ },
+ {
+  "format": "yaml",
+  "content": "- json://localhost\n",
+  "services": []
+ }
+]
