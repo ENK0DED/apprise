@@ -26,9 +26,6 @@ const MQTT_SECURE_PORT: u16 = 8883;
 /// Seconds the broker waits between packets before it drops us.
 const KEEPALIVE_SECS: u16 = 30;
 
-/// Minimum gap between two publishes (upstream `request_rate_per_sec`).
-const PUBLISH_INTERVAL: Duration = Duration::from_millis(500);
-
 /// Upstream `socket_connect_timeout` and `socket_read_timeout` defaults.
 const DEFAULT_TIMEOUT_SECS: f64 = 4.0;
 
@@ -112,7 +109,6 @@ pub struct Mqtt {
 #[derive(Default)]
 struct State {
   connection: Option<Connection>,
-  last_publish: Option<Instant>,
 }
 
 impl Mqtt {
@@ -229,6 +225,10 @@ impl Notify for Mqtt {
   fn body_maxlen(&self) -> usize {
     268_435_455
   }
+  /// Seconds between two publishes
+  fn request_rate_per_sec(&self) -> f64 {
+    0.5
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     if self.topics.is_empty() {
@@ -238,14 +238,12 @@ impl Notify for Mqtt {
 
     let mut state = self.state.lock().await;
     for topic in &self.topics {
-      // Space our publishes out like upstream's throttle()
-      if let Some(last) = state.last_publish {
-        let elapsed = last.elapsed();
-        if elapsed < PUBLISH_INTERVAL {
-          tokio::time::sleep(PUBLISH_INTERVAL - elapsed).await;
-        }
+      // Skip a topic that already accepted this message so a retry does not
+      // deliver it twice
+      if crate::delivery::is_delivered(topic, false) {
+        continue;
       }
-      state.last_publish = Some(Instant::now());
+      crate::notify::throttle().await;
 
       let url = format!("{}:{}/{}", self.host, self.port, topic);
       let conn = match self.connection(&mut state.connection).await {
@@ -266,6 +264,7 @@ impl Notify for Mqtt {
         tracing::debug!("MQTT Exception: {}", e);
         return Err(e);
       }
+      crate::delivery::mark_delivered(topic, false);
     }
 
     tracing::info!("Sent MQTT notification");
@@ -960,11 +959,12 @@ mod tests {
   #[tokio::test]
   async fn test_send_multiple_topics() {
     let (port, log) = broker(Script::default()).await;
-    let svc = from_url(&format!("mqtt://127.0.0.1:{}/my/topic,my/other/topic", port)).unwrap();
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("mqtt://127.0.0.1:{}/my/topic,my/other/topic", port)));
     let started = Instant::now();
-    assert!(svc.send(&ctx("test=test")).await.unwrap());
-    // Publishes are spaced out like upstream's throttle
-    assert!(started.elapsed() >= PUBLISH_INTERVAL);
+    assert!(crate::notify::with_throttling_in_tests(apprise.notify(&ctx("test=test"))).await.is_success());
+    // Publishes are spaced out like upstream's throttle (0.5s)
+    assert!(started.elapsed() >= Duration::from_millis(500), "{:?}", started.elapsed());
     wait_for(&log, 0, 3).await;
 
     let sent = packets(&log, 0);

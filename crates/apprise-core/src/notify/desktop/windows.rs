@@ -54,6 +54,10 @@ impl Notify for Windows {
   fn body_max_line_count(&self) -> usize {
     2
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
+    0.0
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     #[cfg(windows)]
@@ -61,6 +65,7 @@ impl Notify for Windows {
       let (title, body, duration) = (ctx.title.clone(), ctx.body.clone(), self.duration);
       let icon = self.include_image.then(|| super::image_png(&ctx.notify_type));
       // The balloon is shown, then taken down again after our duration
+      crate::notify::throttle().await;
       let shown = tokio::task::spawn_blocking(move || balloon::show(&title, &body, icon, duration)).await.map_err(|e| NotifyError::Other(e.to_string()))?;
       match shown {
         Ok(()) => {

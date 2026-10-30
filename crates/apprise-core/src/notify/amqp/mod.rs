@@ -26,7 +26,7 @@ use tokio::net::TcpStream;
 use crate::error::NotifyError;
 use crate::notify::{Notify, NotifyContext, ServiceDetails, ServiceOptions};
 use crate::types::NotifyFormat;
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list, unquote};
 
 const AMQP_PORT: u16 = 5672;
 const AMQP_SECURE_PORT: u16 = 5671;
@@ -161,23 +161,16 @@ impl Amqp {
     let priority = bounded("priority", given("priority"), u8::MAX.into()).ok()?.map(|v| v as u8);
     let ttl = bounded("ttl", given("ttl"), u32::MAX.into()).ok()?.map(|v| v as u32);
 
-    // Extra headers come from +key=value arguments (a '+' may arrive as ' ')
-    let headers =
-      url.qsd.iter().filter_map(|(k, v)| k.strip_prefix(['+', ' ']).map(|k| (k.trim().to_string(), v.clone()))).filter(|(k, _)| !k.is_empty()).collect();
+    // Extra headers come from +key=value arguments, unquoted once more as
+    // upstream does
+    let headers = url.qsd_add.iter().map(|(k, v)| (unquote(k), unquote(v))).filter(|(k, _)| !k.is_empty()).collect();
 
     // Path targets split on slashes; to= keeps them for AMQP 1.0 addresses
-    let mut found: Vec<String> = url
-      .path
-      .split([' ', '\t', '\r', '\n', ',', '\\', '/'])
-      .filter(|s| !s.is_empty())
-      .map(|s| urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string()))
-      .collect();
+    let mut found = url.path_parts.clone();
     if let Some(to) = url.get("to") {
       found.push(to.to_string());
     }
-    let mut targets: Vec<String> = found.iter().flat_map(|t| split_list(t)).map(String::from).collect();
-    targets.sort();
-    targets.dedup();
+    let mut targets = parse_list(&found.join(" "));
     if version == Version::V091 {
       targets.retain(|t| {
         let fits = t.len() <= SHORTSTR_MAX;
@@ -247,11 +240,6 @@ fn bounded(key: &str, value: Option<&str>, max: i64) -> Result<Option<i64>, ()> 
   }
 }
 
-/// Split on Apprise's list delimiters (upstream `parse_list`).
-fn split_list(value: &str) -> impl Iterator<Item = &str> {
-  value.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '[' | ']')).filter(|s| !s.is_empty())
-}
-
 #[async_trait]
 impl Notify for Amqp {
   fn schemas(&self) -> &[&str] {
@@ -272,6 +260,14 @@ impl Notify for Amqp {
   fn body_maxlen(&self) -> usize {
     16_777_216
   }
+  /// Text, Markdown and HTML go out as given, labelled with their type
+  fn notify_formats(&self) -> Vec<NotifyFormat> {
+    vec![NotifyFormat::Text, NotifyFormat::Markdown, NotifyFormat::Html]
+  }
+  fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
+    0.0
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     // With an exchange (such as a fanout one) and no targets, publish once
@@ -281,10 +277,16 @@ impl Notify for Amqp {
       tracing::warn!("There are no AMQP targets to notify.");
       return Ok(false);
     }
+    // A retry skips targets that already accepted this message
+    let targets: Vec<String> = targets.into_iter().filter(|t| !crate::delivery::is_delivered(t, false)).collect();
+    if targets.is_empty() {
+      return Ok(true);
+    }
 
     let message = self.message(ctx);
     let url = format!("{}:{}", self.config.host, self.config.port);
     tracing::debug!("AMQP {} connect: {} (cert_verify={})", self.version.as_str(), url, self.config.verify_certificate);
+    crate::notify::throttle().await;
 
     let mut publisher = match self.version {
       Version::V091 => Publisher::V091(v091::Publisher::new(self.config.clone())),
@@ -299,10 +301,14 @@ impl Notify for Amqp {
     let mut has_error = false;
     for target in &targets {
       let target_name = if target.is_empty() { format!("exchange {}", self.config.exchange) } else { target.clone() };
+      crate::notify::throttle().await;
       tracing::debug!("AMQP publish to {}/{}", url, target_name);
       tracing::trace!("AMQP Payload: {}", ctx.body);
       match publisher.publish(target, &message).await {
-        Ok(()) => tracing::info!("Sent AMQP notification to {}.", target_name),
+        Ok(()) => {
+          crate::delivery::mark_delivered(target, false);
+          tracing::info!("Sent AMQP notification to {}.", target_name);
+        }
         Err(e) => {
           // Move on to our next target
           tracing::warn!("Failed to publish AMQP notification to {}.", target_name);
@@ -587,6 +593,9 @@ pub(crate) mod tests {
     let a = parse("amqp://localhost/q?priority=4&ttl=100&+source=nas").unwrap();
     let ctx = NotifyContext { body: "Title\r\nBody".into(), ..Default::default() };
     let m = a.message(&ctx);
+    // Text, Markdown and HTML go out as given
+    assert_eq!(a.notify_formats(), vec![NotifyFormat::Text, NotifyFormat::Markdown, NotifyFormat::Html]);
+    assert_eq!(a.request_rate_per_sec(), 0.0);
     assert_eq!(m.body, b"Title\r\nBody");
     assert_eq!(m.content_type, "text/plain; charset=utf-8");
     assert_eq!(m.app_id, "Apprise");

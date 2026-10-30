@@ -42,7 +42,7 @@ pub struct Blink1 {
 impl Blink1 {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // An underscore (or nothing) means "the first device found"
-    let serial = url.host.as_deref().map(unquote).map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "_");
+    let serial = url.host.as_deref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "_");
 
     let duration_ms = match url.get("duration").filter(|v| !v.is_empty()) {
       None => DEFAULT_DURATION_MS,
@@ -100,6 +100,8 @@ impl Blink1 {
   /// Fade to the notification colour, hold for fade + duration, then
   /// switch off instantly. False (after logging why) if a write fails.
   async fn flash<D: FeatureReports>(&self, device: D, notify_type: &NotifyType) -> bool {
+    // Always throttle before any device I/O
+    crate::notify::throttle().await;
     let color = notify_type.color();
     let on = self.fade_report(((color >> 16) as u8, (color >> 8) as u8, color as u8), self.fade_ms);
     let off = self.fade_report((0, 0, 0), 0);
@@ -156,10 +158,6 @@ fn parse_ms(value: &str, max: u32) -> Option<u32> {
   value.trim().parse::<i64>().ok().filter(|ms| (0..=i64::from(max)).contains(ms)).map(|ms| ms as u32)
 }
 
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
 #[async_trait]
 impl Notify for Blink1 {
   fn schemas(&self) -> &[&str] {
@@ -174,10 +172,11 @@ impl Notify for Blink1 {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
-  // A light has no use for a title
   fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
     0.0
   }
+  // A light has no use for a title
   fn title_maxlen(&self) -> usize {
     0
   }
