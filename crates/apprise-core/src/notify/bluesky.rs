@@ -1,33 +1,277 @@
-use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
-use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Duration;
+
+use crate::error::NotifyError;
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
+use crate::utils::parse::ParsedUrl;
+use crate::utils::validate::{is_hostname, is_ipaddr};
+
+const DEFAULT_HOST: &str = "bsky.social";
+const PUBLIC_API: &str = "https://public.api.bsky.app";
+const PLC_DIRECTORY: &str = "https://plc.directory";
+
+const XRPC_DID: &str = "/xrpc/com.atproto.identity.resolveHandle";
+const XRPC_SESSION: &str = "/xrpc/com.atproto.server.createSession";
+const XRPC_RECORD: &str = "/xrpc/com.atproto.repo.createRecord";
+const XRPC_BLOB: &str = "/xrpc/com.atproto.repo.uploadBlob";
+
+/// Replies to lookups and logins larger than this are discarded.
+const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// State upstream keeps in its persistent store (session token, resolved
+/// DIDs and PDS endpoints) and in class-level rate limit fields. The Rust
+/// port keeps it in memory for the life of the instance.
+#[derive(Default)]
+struct Session {
+  access_token: Option<String>,
+  /// handle -> (did, pds endpoint)
+  identities: HashMap<String, (String, String)>,
+  ratelimit_remaining: i64,
+  /// Unix timestamp at which the rate limit window resets.
+  ratelimit_reset: i64,
+}
+
+enum Payload<'a> {
+  None,
+  Json(String),
+  Binary(&'a [u8], &'a str),
+}
+
+struct Request<'a> {
+  url: String,
+  method: reqwest::Method,
+  payload: Payload<'a>,
+  params: Option<(&'a str, &'a str)>,
+  /// The payload carries our password: never follow a redirect.
+  credentials: bool,
+  /// Send our session token (false for lookups on other servers).
+  auth: bool,
+  bounded: bool,
+}
 
 pub struct BlueSky {
+  /// Handle without its host part.
   user: String,
+  /// Host part of the handle (bsky.social unless the handle carries one).
+  host: String,
   password: String,
   verify_certificate: bool,
   tags: Vec<String>,
+  session: Mutex<Session>,
 }
+
 impl BlueSky {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // bluesky://user:password or bluesky://user@password
-    let user = url.user.clone()?;
-    let password = url.password.clone().or_else(|| url.host.clone().filter(|h| !h.is_empty()))?;
-    Some(Self { user, password, verify_certificate: url.verify_certificate(), tags: url.tags() })
+    // bluesky://{user}@{password}
+    let Some(user) = url.user.as_deref().map(str::trim).filter(|u| !u.is_empty()) else {
+      tracing::warn!("A BlueSky UserID/Handle must be specified.");
+      return None;
+    };
+    let password = url.password.clone().filter(|p| !p.is_empty()).or_else(|| url.host.as_deref().filter(|h| !h.is_empty()).map(unquote)).unwrap_or_default();
+
+    // A handle such as user.example.ca targets example.ca
+    let (user, host) = match user.split_once('.') {
+      Some((handle, rest)) if !handle.is_empty() && !rest.trim_start_matches('.').is_empty() => {
+        (handle.trim().to_string(), rest.trim_start_matches('.').trim().to_string())
+      }
+      _ => (user.to_string(), DEFAULT_HOST.to_string()),
+    };
+
+    Some(Self {
+      user,
+      host,
+      password,
+      verify_certificate: url.verify_certificate(),
+      tags: url.tags(),
+      session: Mutex::new(Session { ratelimit_remaining: 1, ..Default::default() }),
+    })
   }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "BlueSky",
-      service_url: Some("https://bsky.app"),
-      setup_url: None,
+      service_url: Some("https://bluesky.us/"),
+      setup_url: Some("https://appriseit.com/services/bluesky/"),
       protocols: vec!["bsky", "bluesky"],
       description: "Post to BlueSky.",
       attachment_support: true,
     }
   }
+
+  fn session(&self) -> std::sync::MutexGuard<'_, Session> {
+    self.session.lock().unwrap_or_else(|e| e.into_inner())
+  }
+
+  /// Perform one API request. Returns whether it succeeded (HTTP 200) and
+  /// the decoded JSON reply (`{}` when the reply is not JSON).
+  async fn fetch(&self, client: &reqwest::Client, nofollow: &reqwest::Client, req: Request<'_>) -> (bool, Value) {
+    let content_type = match &req.payload {
+      Payload::Binary(_, mime) => mime.to_string(),
+      _ if req.method == reqwest::Method::GET => "application/x-www-form-urlencoded; charset=utf-8".to_string(),
+      _ => "application/json".to_string(),
+    };
+
+    let (token, wait) = {
+      let s = self.session();
+      let now = chrono::Utc::now().timestamp_millis();
+      let reset = s.ratelimit_reset * 1000;
+      let wait = (s.ratelimit_remaining == 0 && now < reset).then(|| Duration::from_millis((reset - now) as u64 + 300));
+      (s.access_token.clone(), wait)
+    };
+    if let Some(wait) = wait {
+      tracing::debug!("BlueSky rate limit reached; waiting {:.2}s", wait.as_secs_f64());
+      tokio::time::sleep(wait).await;
+    }
+
+    tracing::debug!("BlueSky {} URL: {} (cert_verify={})", req.method, req.url, self.verify_certificate);
+    let c = if req.credentials { nofollow } else { client };
+    let mut builder = c.request(req.method.clone(), &req.url).header("User-Agent", APP_ID).header("Content-Type", content_type);
+    if req.auth
+      && let Some(token) = token
+    {
+      builder = builder.header("Authorization", format!("Bearer {}", token));
+    }
+    if let Some(params) = req.params {
+      builder = builder.query(&[params]);
+    }
+    builder = match req.payload {
+      Payload::None => builder,
+      Payload::Json(s) => builder.body(s),
+      Payload::Binary(data, _) => builder.body(data.to_vec()),
+    };
+
+    let resp = match builder.send().await {
+      Ok(r) => r,
+      Err(e) => {
+        tracing::warn!("Exception received when sending BlueSky {} to {}: ", req.method, req.url);
+        tracing::debug!("Socket Exception: {}", e);
+        return (false, json!({}));
+      }
+    };
+
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = if req.bounded {
+      match read_bounded_response(resp, MAX_RESPONSE_BYTES).await {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+          tracing::warn!("BlueSky reply from {} passed {} bytes; discarding it.", req.url, MAX_RESPONSE_BYTES);
+          return (false, json!({}));
+        }
+        Err(e) => {
+          tracing::warn!("Exception received when sending BlueSky {} to {}: ", req.method, req.url);
+          tracing::debug!("Socket Exception: {}", e);
+          return (false, json!({}));
+        }
+      }
+    } else {
+      resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default()
+    };
+
+    let content = serde_json::from_slice::<Value>(&body).unwrap_or_else(|_| {
+      tracing::debug!("Failed to parse BlueSky JSON response");
+      json!({})
+    });
+
+    // Track the rate limit the server reports
+    let header_int = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<i64>().ok());
+    if let Some(remaining) = header_int("ratelimit-remaining") {
+      let mut s = self.session();
+      s.ratelimit_remaining = remaining;
+      if let Some(reset) = header_int("ratelimit-reset") {
+        s.ratelimit_reset = reset;
+      }
+    }
+
+    if status.as_u16() != 200 {
+      let reason = status.canonical_reason().unwrap_or("");
+      tracing::warn!("Failed to send BlueSky {} to {}: {}{}error={}.", req.method, req.url, reason, if reason.is_empty() { "" } else { ", " }, status.as_u16());
+      if !req.credentials {
+        tracing::debug!("Response Details:\r\n{}", String::from_utf8_lossy(&body[..body.len().min(2000)]));
+      }
+      return (false, content);
+    }
+    (true, content)
+  }
+
+  /// Resolve a handle to its DID and PDS endpoint (cached per instance).
+  async fn get_identifier(&self, client: &reqwest::Client, nofollow: &reqwest::Client) -> Option<(String, String)> {
+    let user = if self.user.contains('.') { self.user.clone() } else { format!("{}.{}", self.user, self.host) };
+    if let Some(found) = self.session().identities.get(&user) {
+      return Some(found.clone());
+    }
+
+    let url = format!("{}{}", service_base(PUBLIC_API), XRPC_DID);
+    let req =
+      Request { url, method: reqwest::Method::GET, payload: Payload::None, params: Some(("handle", &user)), credentials: false, auth: false, bounded: true };
+    let (ok, response) = self.fetch(client, nofollow, req).await;
+    if !ok || !response.is_object() {
+      return None;
+    }
+
+    let Some(did) = response.get("did").and_then(Value::as_str).map(String::from) else {
+      tracing::warn!("An unparseable BlueSky DID was returned");
+      return None;
+    };
+
+    let did_url = if did.starts_with("did:plc:") {
+      format!("{}/{}", service_base(PLC_DIRECTORY), did)
+    } else if let Some(web) = did.strip_prefix("did:web:") {
+      format!("{}/.well-known/did.json", service_base(&format!("https://{}", web)))
+    } else {
+      tracing::warn!("Unknown BlueSky DID scheme detected in {}", did);
+      return None;
+    };
+
+    let req =
+      Request { url: did_url.clone(), method: reqwest::Method::GET, payload: Payload::None, params: None, credentials: false, auth: false, bounded: true };
+    let (ok, document) = self.fetch(client, nofollow, req).await;
+    if !ok || !document.is_object() {
+      tracing::warn!("Could not fetch the DID document for {}; ensure {} is available.", did, did_url);
+      return None;
+    }
+
+    let endpoint = document
+      .get("service")
+      .and_then(Value::as_array)
+      .into_iter()
+      .flatten()
+      .find(|s| s.get("type").and_then(Value::as_str) == Some("AtprotoPersonalDataServer"))
+      .and_then(|s| s.get("serviceEndpoint"))
+      .and_then(Value::as_str)
+      .map(String::from);
+
+    let Some(endpoint) = endpoint.filter(|e| is_secure_http_url(e) && !e.contains('?')) else {
+      tracing::warn!("Failed to resolve a usable BlueSky PDS endpoint");
+      return None;
+    };
+
+    self.session().identities.insert(user, (did.clone(), endpoint.clone()));
+    Some((did, endpoint))
+  }
+
+  async fn login(&self, client: &reqwest::Client, nofollow: &reqwest::Client) -> bool {
+    let Some((did, endpoint)) = self.get_identifier(client, nofollow).await else {
+      return false;
+    };
+
+    let payload = json!({ "identifier": did, "password": self.password }).to_string();
+    let url = format!("{}{}", service_base(&endpoint), XRPC_SESSION);
+    let req = Request { url, method: reqwest::Method::POST, payload: Payload::Json(payload), params: None, credentials: true, auth: true, bounded: true };
+    let (ok, response) = self.fetch(client, nofollow, req).await;
+    if !ok || response.as_object().is_none_or(|o| o.is_empty()) {
+      return false;
+    }
+
+    self.session().access_token = response.get("accessJwt").and_then(Value::as_str).map(String::from);
+    tracing::info!("Authenticated to BlueSky as {}.{}", self.user, self.host);
+    true
+  }
 }
+
 #[async_trait]
 impl Notify for BlueSky {
   fn schemas(&self) -> &[&str] {
@@ -42,78 +286,197 @@ impl Notify for BlueSky {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn attachment_support(&self) -> bool {
+    true
+  }
+  fn body_maxlen(&self) -> usize {
+    280
+  }
+  fn title_maxlen(&self) -> usize {
+    0
+  }
+
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let client = build_client(self.verify_certificate)?;
-    // Login
-    let login_payload = json!({ "identifier": self.user, "password": self.password });
-    let session: Value = client
-      .post("https://bsky.social/xrpc/com.atproto.server.createSession")
-      .header("User-Agent", APP_ID)
-      .json(&login_payload)
-      .send()
-      .await?
-      .json()
-      .await
-      .map_err(|e| NotifyError::Auth(e.to_string()))?;
-    let access_jwt = session["accessJwt"].as_str().ok_or_else(|| NotifyError::Auth("No access JWT".into()))?;
-    let did = session["did"].as_str().ok_or_else(|| NotifyError::Auth("No DID".into()))?;
+    crate::ensure_crypto_provider();
+    let nofollow = reqwest::Client::builder()
+      .timeout(Duration::from_secs(15))
+      .danger_accept_invalid_certs(!self.verify_certificate)
+      .redirect(reqwest::redirect::Policy::none())
+      .build()
+      .map_err(NotifyError::Http)?;
 
-    // Upload image attachments as blobs
-    let image_attachments: Vec<_> = ctx.attachments.iter().filter(|att| att.mime_type.starts_with("image/")).collect();
-    let mut blob_refs: Vec<Value> = Vec::new();
-    for att in &image_attachments {
-      let upload_resp: Value = client
-        .post("https://bsky.social/xrpc/com.atproto.repo.uploadBlob")
-        .header("User-Agent", APP_ID)
-        .header("Authorization", format!("Bearer {}", access_jwt))
-        .header("Content-Type", &att.mime_type)
-        .body(att.data.clone())
-        .send()
-        .await?
-        .json()
-        .await
-        .map_err(|e| NotifyError::Other(format!("Failed to upload blob: {}", e)))?;
-      if let Some(blob) = upload_resp.get("blob") {
-        blob_refs.push(json!({
-            "image": blob,
-            "alt": att.name.clone(),
-        }));
+    if self.session().access_token.is_none() && !self.login(&client, &nofollow).await {
+      return Ok(false);
+    }
+
+    let Some((did, endpoint)) = self.get_identifier(&client, &nofollow).await else {
+      return Ok(false);
+    };
+    let base = service_base(&endpoint);
+
+    // Upload each image attachment as a blob
+    let mut blobs: Vec<(Value, String)> = Vec::new();
+    for (no, attachment) in ctx.attachments.iter().enumerate() {
+      if !attachment.mime_type.to_lowercase().starts_with("image/") {
+        tracing::warn!("Ignoring unsupported BlueSky attachment {}.", attachment.name);
+        continue;
+      }
+      tracing::debug!("Preparing BlueSky attachment {}", attachment.name);
+      let req = Request {
+        url: format!("{}{}", base, XRPC_BLOB),
+        method: reqwest::Method::POST,
+        payload: Payload::Binary(&attachment.data, &attachment.mime_type),
+        params: None,
+        credentials: false,
+        auth: true,
+        bounded: false,
+      };
+      let (ok, response) = self.fetch(&client, &nofollow, req).await;
+      if !ok {
+        return Ok(false);
+      }
+      let filename = if attachment.name.is_empty() { format!("file{:03}.dat", no + 1) } else { attachment.name.clone() };
+      match response.get("blob").filter(|b| is_truthy(b)) {
+        Some(blob) => blobs.push((blob.clone(), filename)),
+        None => tracing::debug!("Could not attach the file to BlueSky: {} (mime={})", filename, attachment.mime_type),
       }
     }
 
-    // Post
-    let text = if ctx.title.is_empty() { ctx.body.clone() } else { format!("{}\n\n{}", ctx.title, ctx.body) };
-    let mut record_inner = json!({
-        "$type": "app.bsky.feed.post",
-        "text": text,
-        "createdAt": chrono::Utc::now().to_rfc3339(),
-    });
-    if !blob_refs.is_empty() {
-      record_inner["embed"] = json!({
-          "$type": "app.bsky.embed.images",
-          "images": blob_refs,
-      });
-    }
-    let record = json!({ "repo": did, "collection": "app.bsky.feed.post", "record": record_inner });
-    let resp = client
-      .post("https://bsky.social/xrpc/com.atproto.repo.createRecord")
-      .header("User-Agent", APP_ID)
-      .header("Authorization", format!("Bearer {}", access_jwt))
-      .json(&record)
-      .send()
-      .await?;
-    if resp.status().is_success() {
-      Ok(true)
+    let created_at = || chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let post = |text: &str, embed: Option<Value>| {
+      let mut record = json!({ "text": text, "createdAt": created_at(), "$type": "app.bsky.feed.post" });
+      if let Some(embed) = embed {
+        record["embed"] = embed;
+      }
+      json!({ "collection": "app.bsky.feed.post", "repo": did, "record": record })
+    };
+
+    // One post per image; posts after the first are numbered 02/NN, ...
+    let payloads: Vec<Value> = if blobs.is_empty() {
+      vec![post(&ctx.body, None)]
     } else {
-      Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() })
+      let total = blobs.len();
+      blobs
+        .into_iter()
+        .enumerate()
+        .map(|(i, (blob, alt))| {
+          let text = if i == 0 { ctx.body.clone() } else { format!("{:02}/{:02}", i + 1, total) };
+          post(&text, Some(json!({ "images": [{ "image": blob, "alt": alt }], "$type": "app.bsky.embed.images" })))
+        })
+        .collect()
+    };
+
+    for payload in payloads {
+      let req = Request {
+        url: format!("{}{}", base, XRPC_RECORD),
+        method: reqwest::Method::POST,
+        payload: Payload::Json(payload.to_string()),
+        params: None,
+        credentials: false,
+        auth: true,
+        bounded: false,
+      };
+      if !self.fetch(&client, &nofollow, req).await.0 {
+        return Ok(false);
+      }
     }
+    Ok(true)
   }
+}
+
+fn is_truthy(v: &Value) -> bool {
+  match v {
+    Value::Null => false,
+    Value::Bool(b) => *b,
+    Value::String(s) => !s.is_empty(),
+    Value::Array(a) => !a.is_empty(),
+    Value::Object(o) => !o.is_empty(),
+    Value::Number(n) => n.as_f64() != Some(0.0),
+  }
+}
+
+fn unquote(s: &str) -> String {
+  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
+}
+
+// The two helpers below mirror upstream `apprise/utils/http.py`. They are
+// kept private here until the shared versions land in the core.
+
+/// Upstream `is_secure_http_url()`: an HTTPS URL with a valid host, no
+/// credentials (even empty ones), a usable port and no fragment.
+fn is_secure_http_url(s: &str) -> bool {
+  if s.contains('#') {
+    return false;
+  }
+  let Ok(u) = url::Url::parse(s) else { return false };
+  if !u.scheme().eq_ignore_ascii_case("https") || u.port() == Some(0) {
+    return false;
+  }
+  // Reject credentials embedded in the URL, including an empty "@"
+  let authority = s.split_once("://").map(|(_, rest)| rest).unwrap_or_default();
+  let authority = authority.split(['/', '?']).next().unwrap_or_default();
+  if authority.contains('@') {
+    return false;
+  }
+  match u.host_str() {
+    Some(h) if !h.is_empty() => {
+      let h = h.trim_start_matches('[').trim_end_matches(']');
+      is_ipaddr(h) || is_hostname(&h.replace('_', "a"))
+    }
+    _ => false,
+  }
+}
+
+/// Upstream `read_bounded_response()`: read the reply body, or `None` once
+/// it grows past `max_bytes`.
+async fn read_bounded_response(mut resp: reqwest::Response, max_bytes: usize) -> Result<Option<Vec<u8>>, reqwest::Error> {
+  let mut body = Vec::new();
+  while let Some(chunk) = resp.chunk().await? {
+    if body.len() + chunk.len() > max_bytes {
+      return Ok(None);
+    }
+    body.extend_from_slice(&chunk);
+  }
+  Ok(Some(body))
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::notify::Attachment;
   use crate::notify::registry::from_url;
+  use wiremock::matchers::{header, method, path, query_param};
+  use wiremock::{Mock, MockServer, Request as MockRequest, ResponseTemplate};
+
+  fn parse_bsky(url: &str) -> BlueSky {
+    BlueSky::from_url(&ParsedUrl::parse(url).unwrap()).unwrap()
+  }
+
+  /// Mount the handle lookup, PLC document and session responses.
+  async fn mount_login(server: &MockServer, endpoint: &str) {
+    Mock::given(method("GET"))
+      .and(path(XRPC_DID))
+      .and(query_param("handle", "handle.bsky.social"))
+      .and(header("Content-Type", "application/x-www-form-urlencoded; charset=utf-8"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"did": "did:plc:123"})))
+      .mount(server)
+      .await;
+    Mock::given(method("GET"))
+      .and(path("/did:plc:123"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"service": [{"type": "AtprotoPersonalDataServer", "serviceEndpoint": endpoint}]})))
+      .mount(server)
+      .await;
+    Mock::given(method("POST"))
+      .and(path(XRPC_SESSION))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"accessJwt": "jwt-token", "refreshJwt": "refresh"})))
+      .mount(server)
+      .await;
+  }
+
+  fn requests_to<'a>(reqs: &'a [MockRequest], p: &str) -> Vec<&'a MockRequest> {
+    reqs.iter().filter(|r| r.url.path() == p).collect()
+  }
 
   #[test]
   fn test_valid_urls() {
@@ -123,6 +486,7 @@ mod tests {
       "bluesky://user@app-pw2?cache=no",
       "bluesky://user@app-pw3",
       "bluesky://user.example.ca@app-pw3",
+      "bsky://user@pass",
     ];
     for url in &urls {
       assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -131,26 +495,261 @@ mod tests {
 
   #[test]
   fn test_invalid_urls() {
-    let urls = vec!["bluesky://", "bluesky://:@/", "bluesky://app-pw"];
-    for url in &urls {
+    for url in ["bluesky://", "bluesky://:@/", "bluesky://app-pw"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
   }
 
   #[test]
-  fn test_from_url_struct_fields() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("bluesky://myhandle@my-app-password").unwrap();
-    let obj = BlueSky::from_url(&parsed).unwrap();
+  fn test_from_url_fields() {
+    let obj = parse_bsky("bluesky://myhandle@my-app-password");
     assert_eq!(obj.user, "myhandle");
+    assert_eq!(obj.host, "bsky.social");
     assert_eq!(obj.password, "my-app-password");
+
+    // The handle carries its own host
+    let obj = parse_bsky("bluesky://user.example.ca@app-pw3");
+    assert_eq!(obj.user, "user");
+    assert_eq!(obj.host, "example.ca");
+    assert_eq!(obj.password, "app-pw3");
+
+    let obj = parse_bsky("bluesky://user:secret@");
+    assert_eq!(obj.password, "secret");
   }
 
   #[test]
-  fn test_from_url_dotted_user() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("bluesky://user.example.ca@app-pw3").unwrap();
-    let obj = BlueSky::from_url(&parsed).unwrap();
-    assert_eq!(obj.user, "user.example.ca");
-    assert_eq!(obj.password, "app-pw3");
+  fn test_is_secure_http_url() {
+    assert!(is_secure_http_url("https://example.pds.io"));
+    assert!(is_secure_http_url("https://example.pds.io:8443/"));
+    assert!(is_secure_http_url("https://10.0.0.1"));
+    assert!(is_secure_http_url("https://my_pds.example.com"));
+    assert!(!is_secure_http_url("http://evil.example.com"));
+    assert!(!is_secure_http_url("https://attacker:secret@evil.example.com"));
+    assert!(!is_secure_http_url("https://@evil.example.com"));
+    assert!(!is_secure_http_url("https://-nope-.example.com"));
+    assert!(!is_secure_http_url("https://example.com/#frag"));
+    assert!(!is_secure_http_url("https://example.com:0"));
+    assert!(!is_secure_http_url("not a url"));
+  }
+
+  #[tokio::test]
+  async fn test_send_full_flow() {
+    let server = MockServer::start().await;
+    mount_login(&server, "https://example.pds.io").await;
+    Mock::given(method("POST"))
+      .and(path(XRPC_RECORD))
+      .and(header("Authorization", "Bearer jwt-token"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"uri": "at://x"})))
+      .expect(2)
+      .mount(&server)
+      .await;
+
+    let svc = from_url("bsky://handle@token").unwrap();
+    let ctx = NotifyContext { body: "hello from python".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+    // A second notification reuses the session and resolved identity
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(requests_to(&reqs, XRPC_DID).len(), 1);
+    assert_eq!(requests_to(&reqs, "/did:plc:123").len(), 1);
+
+    // Lookups never carry a session token; the login carries the password
+    for r in requests_to(&reqs, XRPC_DID).into_iter().chain(requests_to(&reqs, "/did:plc:123")) {
+      assert!(!r.headers.contains_key("authorization"));
+    }
+    let login = requests_to(&reqs, XRPC_SESSION);
+    assert_eq!(login.len(), 1);
+    assert_eq!(serde_json::from_slice::<Value>(&login[0].body).unwrap(), json!({"identifier": "did:plc:123", "password": "token"}));
+    assert_eq!(login[0].headers.get("content-type").unwrap(), "application/json");
+
+    let record: Value = serde_json::from_slice(&requests_to(&reqs, XRPC_RECORD)[0].body).unwrap();
+    assert_eq!(record["collection"], "app.bsky.feed.post");
+    assert_eq!(record["repo"], "did:plc:123");
+    assert_eq!(record["record"]["text"], "hello from python");
+    assert_eq!(record["record"]["$type"], "app.bsky.feed.post");
+    let created = record["record"]["createdAt"].as_str().unwrap();
+    assert!(chrono::NaiveDateTime::parse_from_str(created, "%Y-%m-%dT%H:%M:%SZ").is_ok(), "{}", created);
+  }
+
+  #[tokio::test]
+  async fn test_send_did_web() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+      .and(path(XRPC_DID))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"did": "did:web:example.com"})))
+      .mount(&server)
+      .await;
+    Mock::given(method("GET"))
+      .and(path("/.well-known/did.json"))
+      .respond_with(
+        ResponseTemplate::new(200).set_body_json(json!({"service": [{"type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://example.com"}]})),
+      )
+      .expect(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path(XRPC_SESSION)).respond_with(ResponseTemplate::new(200).set_body_json(json!({"accessJwt": "a"}))).mount(&server).await;
+    Mock::given(method("POST")).and(path(XRPC_RECORD)).respond_with(ResponseTemplate::new(200).set_body_json(json!({}))).expect(1).mount(&server).await;
+
+    let svc = from_url("bsky://handle@token").unwrap();
+    let ctx = NotifyContext { body: "Resolved WEB Flow".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_send_attachments() {
+    let server = MockServer::start().await;
+    mount_login(&server, "https://example.pds.io").await;
+    Mock::given(method("POST"))
+      .and(path(XRPC_BLOB))
+      .and(header("Content-Type", "image/png"))
+      .and(header("Authorization", "Bearer jwt-token"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"blob": {"$type": "blob", "ref": {"$link": "bafy"}, "mimeType": "image/png", "size": 3}})))
+      .expect(2)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path(XRPC_RECORD)).respond_with(ResponseTemplate::new(200).set_body_json(json!({}))).expect(2).mount(&server).await;
+
+    let svc = from_url("bsky://handle@token").unwrap();
+    let mut ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    ctx.attachments.push(Attachment { name: "a.png".into(), data: b"PNG".to_vec(), mime_type: "image/png".into() });
+    // Unsupported attachments are skipped
+    ctx.attachments.push(Attachment { name: "v.mp4".into(), data: b"MP4".to_vec(), mime_type: "video/mp4".into() });
+    ctx.attachments.push(Attachment { name: String::new(), data: b"PNG".to_vec(), mime_type: "image/png".into() });
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+
+    let reqs = server.received_requests().await.unwrap();
+    let records: Vec<Value> = requests_to(&reqs, XRPC_RECORD).iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect();
+    assert_eq!(records[0]["record"]["text"], "body");
+    assert_eq!(
+      records[0]["record"]["embed"],
+      json!({"images": [{"image": {"$type": "blob", "ref": {"$link": "bafy"}, "mimeType": "image/png", "size": 3}, "alt": "a.png"}], "$type": "app.bsky.embed.images"})
+    );
+    assert_eq!(records[1]["record"]["text"], "02/02");
+    assert_eq!(records[1]["record"]["embed"]["images"][0]["alt"], "file003.dat");
+  }
+
+  #[tokio::test]
+  async fn test_send_upload_failure_stops() {
+    let server = MockServer::start().await;
+    mount_login(&server, "https://example.pds.io").await;
+    Mock::given(method("POST")).and(path(XRPC_BLOB)).respond_with(ResponseTemplate::new(500)).mount(&server).await;
+    Mock::given(method("POST")).and(path(XRPC_RECORD)).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
+
+    let svc = from_url("bsky://handle@token").unwrap();
+    let mut ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    ctx.attachments.push(Attachment { name: "a.png".into(), data: b"PNG".to_vec(), mime_type: "image/png".into() });
+    assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_send_auth_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET")).and(path(XRPC_DID)).respond_with(ResponseTemplate::new(200).set_body_json(json!({"did": "did:plc:123"}))).mount(&server).await;
+    Mock::given(method("GET"))
+      .and(path("/did:plc:123"))
+      .respond_with(
+        ResponseTemplate::new(200).set_body_json(json!({"service": [{"type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://example.pds.io"}]})),
+      )
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path(XRPC_SESSION)).respond_with(ResponseTemplate::new(401)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path(XRPC_RECORD)).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
+
+    let svc = from_url("bsky://handle@token").unwrap();
+    let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_login_does_not_follow_redirects() {
+    let server = MockServer::start().await;
+    mount_login(&server, "https://example.pds.io").await;
+    // Replace the session reply with a redirect
+    server.reset().await;
+    Mock::given(method("GET")).and(path(XRPC_DID)).respond_with(ResponseTemplate::new(200).set_body_json(json!({"did": "did:plc:123"}))).mount(&server).await;
+    Mock::given(method("GET"))
+      .and(path("/did:plc:123"))
+      .respond_with(
+        ResponseTemplate::new(200).set_body_json(json!({"service": [{"type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://example.pds.io"}]})),
+      )
+      .mount(&server)
+      .await;
+    Mock::given(method("POST"))
+      .and(path(XRPC_SESSION))
+      .respond_with(ResponseTemplate::new(307).insert_header("Location", format!("{}/elsewhere", server.uri())))
+      .mount(&server)
+      .await;
+    Mock::given(method("POST"))
+      .and(path("/elsewhere"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"accessJwt": "a"})))
+      .expect(0)
+      .mount(&server)
+      .await;
+
+    let svc = from_url("bsky://handle@token").unwrap();
+    let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_resolution_failures() {
+    let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    let cases: Vec<(Value, Option<Value>)> = vec![
+      // Not an object / DID not a string / unknown DID scheme
+      (json!(["not", "an", "object"]), None),
+      (json!({"did": {"nested": "object"}}), None),
+      (json!({"did": "did:unsupported:scheme"}), None),
+      // Malformed or unsafe service entries
+      (json!({"did": "did:plc:123"}), Some(json!({"service": "AtprotoPersonalDataServer"}))),
+      (json!({"did": "did:plc:123"}), Some(json!({"service": ["string", 42, null]}))),
+      (json!({"did": "did:plc:123"}), Some(json!({"service": [{"serviceEndpoint": "https://example.pds.io"}]}))),
+      (json!({"did": "did:plc:123"}), Some(json!({"service": [{"type": "AtprotoPersonalDataServer"}]}))),
+      (json!({"did": "did:plc:123"}), Some(json!({"service": [{"type": "AtprotoPersonalDataServer", "serviceEndpoint": "http://evil.example.com"}]}))),
+      (json!({"did": "did:plc:123"}), Some(json!({"service": [{"type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://a:b@evil.example.com"}]}))),
+      (json!({"did": "did:plc:123"}), Some(json!({"service": [{"type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://example.pds.io/?x=1"}]}))),
+    ];
+    for (identity, document) in cases {
+      let server = MockServer::start().await;
+      Mock::given(method("GET")).and(path(XRPC_DID)).respond_with(ResponseTemplate::new(200).set_body_json(identity.clone())).mount(&server).await;
+      if let Some(document) = document {
+        Mock::given(method("GET")).and(path("/did:plc:123")).respond_with(ResponseTemplate::new(200).set_body_json(document)).mount(&server).await;
+      }
+      // Our login details are never sent anywhere
+      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
+      let svc = from_url("bsky://handle@token").unwrap();
+      assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "{:?}", identity);
+    }
+  }
+
+  #[tokio::test]
+  async fn test_oversized_lookup_is_discarded() {
+    let server = MockServer::start().await;
+    let huge = format!("{{\"did\": \"did:plc:123\", \"pad\": \"{}\"}}", "x".repeat(MAX_RESPONSE_BYTES));
+    Mock::given(method("GET")).and(path(XRPC_DID)).respond_with(ResponseTemplate::new(200).set_body_string(huge)).mount(&server).await;
+    Mock::given(method("GET")).and(path("/did:plc:123")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
+    let svc = from_url("bsky://handle@token").unwrap();
+    let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_ratelimit_headers_tracked() {
+    let server = MockServer::start().await;
+    mount_login(&server, "https://example.pds.io").await;
+    let reset = chrono::Utc::now().timestamp() - 1;
+    Mock::given(method("POST"))
+      .and(path(XRPC_RECORD))
+      .respond_with(ResponseTemplate::new(200).insert_header("ratelimit-remaining", "0").insert_header("ratelimit-reset", reset.to_string().as_str()))
+      .mount(&server)
+      .await;
+    let svc = parse_bsky("bsky://handle@token");
+    let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+    assert_eq!(svc.session().ratelimit_remaining, 0);
+    assert_eq!(svc.session().ratelimit_reset, reset);
+    // A reset time in the past does not block the next post
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
   }
 
   #[test]
@@ -159,10 +758,5 @@ mod tests {
     assert_eq!(details.service_name, "BlueSky");
     assert_eq!(details.protocols, vec!["bsky", "bluesky"]);
     assert!(details.attachment_support);
-  }
-
-  #[test]
-  fn test_bsky_schema_alias() {
-    assert!(from_url("bsky://user@pass").is_some());
   }
 }

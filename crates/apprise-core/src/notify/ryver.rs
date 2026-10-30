@@ -1,55 +1,113 @@
-use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
-use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
-use serde_json::json;
+use serde_json::{Value, json};
+
+use crate::asset::AppriseAsset;
+use crate::error::NotifyError;
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
+use crate::types::NotifyType;
+use crate::utils::parse::{ParsedUrl, parse_bool};
+
+/// Upstream `AppriseAsset.image_url_mask` default.
+const DEFAULT_IMAGE_URL_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+  Slack,
+  Ryver,
+}
+
 pub struct Ryver {
   organization: String,
   token: String,
+  botname: Option<String>,
+  mode: Mode,
+  include_image: bool,
   verify_certificate: bool,
   tags: Vec<String>,
 }
+
 impl Ryver {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // Handle https://ORG.ryver.com/application/webhook/TOKEN
-    let (organization, token) = if let Some(ref host) = url.host {
-      if host.ends_with(".ryver.com") {
-        let org = host.trim_end_matches(".ryver.com").to_string();
-        // Find the token — it's the last path part after "application/webhook"
-        let token = url.path_parts.last()?.clone();
-        (org, token)
-      } else {
-        let org = host.clone();
-        let token = url.path_parts.first()?.clone();
-        (org, token)
+    let (organization, token) = if url.schema == "https" || url.schema == "http" {
+      // Native URL: https://{org}.ryver.com/application/webhook/{token}
+      let host = url.host.as_deref()?.to_lowercase();
+      let org = host.strip_suffix(".ryver.com")?;
+      if org.is_empty() || !org.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return None;
       }
-    } else {
-      return None;
-    };
-    // Organization must be 3-32 alphanumeric/dash/underscore chars
-    if organization.len() < 3 || organization.len() > 32 || !organization.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-      return None;
-    }
-    // Validate mode if provided
-    if let Some(mode) = url.get("mode") {
-      match mode.to_lowercase().as_str() {
-        "slack" | "ryver" | "" => {}
+      match url.path_parts.as_slice() {
+        [app, hook, token]
+          if app.eq_ignore_ascii_case("application") && hook.eq_ignore_ascii_case("webhook") && token.chars().all(|c| c.is_ascii_alphanumeric()) =>
+        {
+          (org.to_string(), token.clone())
+        }
         _ => return None,
       }
+    } else {
+      // ryver://{botname}@{organization}/{token}
+      (url.host.as_deref().map(unquote).unwrap_or_default(), url.path_parts.first().cloned().unwrap_or_default())
+    };
+
+    let token = token.trim().to_string();
+    if token.len() != 15 || !token.chars().all(|c| c.is_ascii_alphanumeric()) {
+      tracing::warn!("An invalid Ryver API Token was specified.");
+      return None;
     }
-    Some(Self { organization, token, verify_certificate: url.verify_certificate(), tags: url.tags() })
+    let organization = organization.trim().to_string();
+    if !(3..=32).contains(&organization.len()) || !organization.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+      tracing::warn!("An invalid Ryver Organization ({}) was specified.", organization);
+      return None;
+    }
+
+    let mode = match url.get("mode").map(|m| m.to_lowercase()) {
+      None => Mode::Ryver,
+      Some(m) if m == "ryver" => Mode::Ryver,
+      Some(m) if m == "slack" => Mode::Slack,
+      Some(m) => {
+        tracing::warn!("The Ryver webhook mode specified ({}) is invalid.", m);
+        return None;
+      }
+    };
+
+    Some(Self {
+      organization,
+      token,
+      botname: url.user.clone().filter(|u| !u.is_empty()),
+      mode,
+      include_image: url.get("image").map(parse_bool).unwrap_or(true),
+      verify_certificate: url.verify_certificate(),
+      tags: url.tags(),
+    })
   }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "Ryver",
-      service_url: Some("https://ryver.com"),
-      setup_url: None,
+      service_url: Some("https://ryver.com/"),
+      setup_url: Some("https://appriseit.com/services/ryver/"),
       protocols: vec!["ryver"],
       description: "Send via Ryver webhooks.",
       attachment_support: false,
     }
   }
+
+  fn payload(&self, ctx: &NotifyContext) -> Value {
+    // Slack-mode webhooks need the markup characters escaped
+    let (title, body) = match self.mode {
+      Mode::Slack => (slack_escape(&ctx.title), slack_escape(&ctx.body)),
+      Mode::Ryver => (ctx.title.clone(), ctx.body.clone()),
+    };
+    let avatar = if self.include_image { image_url(&ctx.asset, &ctx.notify_type) } else { None };
+    json!({
+      "body": if title.is_empty() { body } else { format!("**{}**\r\n{}", title, body) },
+      "createSource": {
+        "displayName": self.botname,
+        "avatar": avatar,
+      },
+    })
+  }
 }
+
 #[async_trait]
 impl Notify for Ryver {
   fn schemas(&self) -> &[&str] {
@@ -64,18 +122,44 @@ impl Notify for Ryver {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn body_maxlen(&self) -> usize {
+    1000
+  }
+
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
-    let url = format!("https://{}.ryver.com/application/webhook/{}", self.organization, self.token);
-    let text = if ctx.title.is_empty() { ctx.body.clone() } else { format!("**{}**\n{}", ctx.title, ctx.body) };
-    let payload = json!({ "body": text });
+    let base = service_base(&format!("https://{}.ryver.com", self.organization));
+    let url = format!("{}/application/webhook/{}", base, self.token);
+    tracing::debug!("Ryver POST URL for organization {} (cert_verify={})", self.organization, self.verify_certificate);
+
     let client = build_client(self.verify_certificate)?;
-    let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
-    if resp.status().is_success() {
+    let resp = client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/json").body(self.payload(ctx).to_string()).send().await?;
+    let status = resp.status();
+    if status.as_u16() == 200 {
+      tracing::info!("Sent Ryver notification.");
       Ok(true)
     } else {
-      Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() })
+      let reason = status.canonical_reason().unwrap_or("");
+      tracing::warn!("Failed to send Ryver notification: {}{}error={}.", reason, if reason.is_empty() { "" } else { ", " }, status.as_u16());
+      Err(NotifyError::ServiceError { status: status.as_u16(), body: resp.text().await.unwrap_or_default() })
     }
   }
+}
+
+fn slack_escape(s: &str) -> String {
+  s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Upstream `AppriseAsset.image_url()` at the 72x72 size Ryver uses.
+fn image_url(asset: &AppriseAsset, notify_type: &NotifyType) -> Option<String> {
+  let mask = asset.image_url_mask.as_deref().unwrap_or(DEFAULT_IMAGE_URL_MASK);
+  if mask.is_empty() {
+    return None;
+  }
+  Some(mask.replace("{THEME}", &asset.theme).replace("{TYPE}", notify_type.as_str()).replace("{XY}", "72x72").replace("{EXTENSION}", ".png"))
+}
+
+fn unquote(s: &str) -> String {
+  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
 }
 
 #[cfg(test)]
@@ -122,6 +206,62 @@ mod tests {
     let r = Ryver::from_url(&parsed).unwrap();
     assert_eq!(r.organization, "apprise");
     assert_eq!(r.token, "ckhrjW8w672m6HG");
+  }
+
+  #[test]
+  fn test_from_url_options() {
+    let parse = |u: &str| Ryver::from_url(&crate::utils::parse::ParsedUrl::parse(u).unwrap());
+    let r = parse("ryver://caronc@apprise/ckhrjW8w672m6HG?image=no&mode=SLACK").unwrap();
+    assert_eq!(r.botname.as_deref(), Some("caronc"));
+    assert!(!r.include_image);
+    assert_eq!(r.mode, Mode::Slack);
+    assert_eq!(parse("ryver://apprise/ckhrjW8w672m6HG").unwrap().mode, Mode::Ryver);
+    // Tokens must be 15 alphanumeric characters; an empty mode is invalid
+    assert!(parse("ryver://apprise/short").is_none());
+    assert!(parse("ryver://apprise/ckhrjW8w672m6HG?mode=").is_none());
+    assert!(parse("https://apprise.ryver.com/application/webhook/bad-token-12345").is_none());
+  }
+
+  #[test]
+  fn test_payloads() {
+    let parse = |u: &str| Ryver::from_url(&crate::utils::parse::ParsedUrl::parse(u).unwrap()).unwrap();
+    let ctx = NotifyContext { title: "T<1>".into(), body: "a & b".into(), ..Default::default() };
+    assert_eq!(
+      parse("ryver://caronc@apprise/ckhrjW8w672m6HG").payload(&ctx),
+      json!({
+        "body": "**T<1>**\r\na & b",
+        "createSource": {
+          "displayName": "caronc",
+          "avatar": "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/default/apprise-info-72x72.png",
+        },
+      })
+    );
+    let ctx = NotifyContext { body: "a & <b>".into(), ..Default::default() };
+    assert_eq!(
+      parse("ryver://apprise/ckhrjW8w672m6HG?mode=slack&image=no").payload(&ctx),
+      json!({"body": "a &amp; &lt;b&gt;", "createSource": {"displayName": null, "avatar": null}})
+    );
+  }
+
+  #[tokio::test]
+  async fn test_send() {
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/application/webhook/ckhrjW8w672m6HG"))
+      .and(header("Content-Type", "application/json"))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let svc = from_url("ryver://apprise/ckhrjW8w672m6HG").unwrap();
+    let ctx = NotifyContext { body: "b".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500)).mount(&server).await;
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.is_err());
   }
 
   #[test]

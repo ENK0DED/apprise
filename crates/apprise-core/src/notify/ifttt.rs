@@ -1,63 +1,111 @@
-use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
-use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
-use serde_json::json;
+use serde_json::{Map, Value, json};
+
+use crate::error::NotifyError;
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
+use crate::utils::parse::ParsedUrl;
+
+const IFTTT_API: &str = "https://maker.ifttt.com";
+
 pub struct Ifttt {
   webhook_id: String,
   events: Vec<String>,
+  /// `+Key=Value` entries added to (or overriding) the payload.
+  add_tokens: Vec<(String, String)>,
+  /// `-Key` entries removed from the payload (matched without case).
+  del_tokens: Vec<String>,
   verify_certificate: bool,
   tags: Vec<String>,
 }
+
 impl Ifttt {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // ifttt://webhook_id/event1/event2
-    // or ifttt://webhook_id@event/?+Key=Value
-    // or https://maker.ifttt.com/use/WebHookID/EventID/
-    let (webhook_id, mut events) = if let Some(ref host) = url.host {
-      if host == "maker.ifttt.com" {
-        // https://maker.ifttt.com/use/WebHookID/EventID/
-        let parts = &url.path_parts;
-        if parts.len() >= 2 && parts[0] == "use" {
-          let wid = parts[1].clone();
-          let evts = parts[2..].to_vec();
-          (wid, evts)
-        } else {
-          return None;
-        }
-      } else if let Some(ref user) = url.user {
-        // user is webhook_id, host is the first event
-        let mut events = vec![host.clone()];
-        events.extend(url.path_parts.clone());
-        (user.clone(), events)
-      } else {
-        let webhook_id = host.clone();
-        let events = url.path_parts.clone();
-        (webhook_id, events)
+    let (webhook_id, raw_events) = if url.schema == "https" || url.schema == "http" {
+      // Native URL: https://maker.ifttt.com/use/{webhook_id}/{events}
+      if !url.host.as_deref().is_some_and(|h| h.eq_ignore_ascii_case("maker.ifttt.com")) {
+        return None;
+      }
+      let valid = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+      match url.path_parts.split_first() {
+        Some((use_, rest)) if use_ == "use" && !rest.is_empty() && rest.iter().all(|p| valid(p)) => (rest[0].clone(), rest[1..].to_vec()),
+        _ => return None,
       }
     } else {
-      return None;
+      let host = url.host.as_deref().map(unquote).unwrap_or_default();
+      match url.user.as_deref().filter(|u| !u.is_empty()) {
+        // ifttt://{webhook_id}@{event}/{events}
+        Some(user) => {
+          let mut events = vec![host];
+          events.extend(url.path_parts.iter().cloned());
+          (unquote(user), events)
+        }
+        // ifttt://{webhook_id}/{events}
+        None => (host, url.path_parts.clone()),
+      }
     };
-    // Support ?to= param for events
-    if let Some(to) = url.get("to") {
-      events.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
-    }
-    if events.is_empty() {
+
+    let webhook_id = webhook_id.trim().to_string();
+    if webhook_id.is_empty() {
+      tracing::warn!("An invalid IFTTT Webhook ID was specified.");
       return None;
     }
-    Some(Self { webhook_id, events, verify_certificate: url.verify_certificate(), tags: url.tags() })
+
+    let mut raw_events = raw_events;
+    if let Some(to) = url.get("to") {
+      raw_events.push(to.to_string());
+    }
+    let events = parse_list(&raw_events);
+    if events.is_empty() {
+      tracing::warn!("You must specify at least one event you wish to trigger on.");
+      return None;
+    }
+
+    // Upstream `qsd+` / `qsd-`. A literal `+` in a query key may arrive
+    // decoded as a space, which upstream treats the same way.
+    let mut add_tokens: Vec<(String, String)> = Vec::new();
+    let mut del_tokens: Vec<String> = Vec::new();
+    for (key, value) in &url.qsd {
+      if let Some(k) = key.strip_prefix('+').or_else(|| key.strip_prefix(' ')) {
+        add_tokens.push((k.to_string(), value.trim().to_string()));
+      } else if let Some(k) = key.strip_prefix('-') {
+        del_tokens.push(k.to_string());
+      }
+    }
+    add_tokens.sort();
+    del_tokens.sort();
+
+    Some(Self { webhook_id, events, add_tokens, del_tokens, verify_certificate: url.verify_certificate(), tags: url.tags() })
   }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "IFTTT",
-      service_url: Some("https://ifttt.com"),
-      setup_url: None,
+      service_url: Some("https://ifttt.com/"),
+      setup_url: Some("https://appriseit.com/services/ifttt/"),
       protocols: vec!["ifttt"],
       description: "Trigger IFTTT webhooks.",
       attachment_support: false,
     }
   }
+
+  fn payload(&self, ctx: &NotifyContext) -> Value {
+    // value1/value2/value3, then the +tokens; all keys are sent lowercase,
+    // so a +Value1 overrides value1. -tokens are removed without case.
+    let mut entries: Vec<(String, Value)> =
+      vec![("value1".into(), json!(ctx.title)), ("value2".into(), json!(ctx.body)), ("value3".into(), json!(ctx.notify_type.as_str()))];
+    entries.extend(self.add_tokens.iter().map(|(k, v)| (k.clone(), json!(v))));
+
+    let mut payload = Map::new();
+    for (k, v) in entries {
+      let k = k.to_lowercase();
+      if !self.del_tokens.iter().any(|d| d.to_lowercase() == k) {
+        payload.insert(k, v);
+      }
+    }
+    Value::Object(payload)
+  }
 }
+
 #[async_trait]
 impl Notify for Ifttt {
   fn schemas(&self) -> &[&str] {
@@ -72,29 +120,62 @@ impl Notify for Ifttt {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let client = build_client(self.verify_certificate)?;
-    let mut all_ok = true;
+    let payload = self.payload(ctx).to_string();
+    let mut has_error = false;
     for event in &self.events {
-      let url = format!("https://maker.ifttt.com/trigger/{}/with/key/{}", event, self.webhook_id);
-      let payload = json!({ "value1": ctx.title, "value2": ctx.body, "value3": ctx.notify_type.as_str() });
-      let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
-      if !resp.status().is_success() {
-        all_ok = false;
+      let url = format!("{}/trigger/{}/with/key/{}", service_base(IFTTT_API), event, self.webhook_id);
+      tracing::debug!("IFTTT POST URL to event {} (cert_verify={})", event, self.verify_certificate);
+      let resp = client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/json").body(payload.clone()).send().await;
+      match resp {
+        Ok(r) if r.status().as_u16() == 200 => tracing::info!("Sent IFTTT notification to {}.", event),
+        Ok(r) => {
+          let status = r.status();
+          let reason = status.canonical_reason().unwrap_or("");
+          tracing::warn!("Failed to send IFTTT notification to {}: {}{}error={}.", event, reason, if reason.is_empty() { "" } else { ", " }, status.as_u16());
+          has_error = true;
+        }
+        Err(e) => {
+          tracing::warn!("A Connection error occurred sending IFTTT:{} notification.", event);
+          tracing::debug!("Socket Exception: {}", e);
+          has_error = true;
+        }
       }
     }
-    Ok(all_ok)
+    Ok(!has_error)
   }
+}
+
+fn unquote(s: &str) -> String {
+  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
+}
+
+/// Upstream `parse_list()`: split on `[]`, `;`, `,` and whitespace, then
+/// de-duplicate and sort.
+fn parse_list(items: &[String]) -> Vec<String> {
+  let mut out: Vec<String> = items
+    .iter()
+    .flat_map(|i| i.split(|c: char| c == '[' || c == ']' || c == ';' || c == ',' || c.is_whitespace()))
+    .filter(|t| !t.is_empty())
+    .map(String::from)
+    .collect();
+  out.sort();
+  out.dedup();
+  out
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use crate::utils::parse::ParsedUrl;
+  use crate::types::NotifyType;
+  use wiremock::matchers::{header, method, path};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
 
-  fn parse_ifttt(url: &str) -> Option<Ifttt> {
-    ParsedUrl::parse(url).and_then(|p| Ifttt::from_url(&p))
+  fn parse_ifttt(url: &str) -> Ifttt {
+    Ifttt::from_url(&ParsedUrl::parse(url).unwrap()).unwrap()
   }
 
   #[test]
@@ -104,9 +185,9 @@ mod tests {
       "ifttt://WebHookID?to=EventID,EventID2",
       "ifttt://WebHookID@EventID/?-Value1=&-Value2",
       "ifttt://WebHookID@EventID/EventID2/",
+      "ifttt://webhook123/event1",
       "https://maker.ifttt.com/use/WebHookID/EventID/",
       "https://maker.ifttt.com/use/WebHookID/EventID/?-Value1=",
-      "ifttt://WebHookID@EventID",
     ];
     for url in &urls {
       assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -115,41 +196,77 @@ mod tests {
 
   #[test]
   fn test_invalid_urls() {
-    let urls = vec!["ifttt://", "ifttt://:@/", "ifttt://EventID/", "https://maker.ifttt.com/use/WebHookID/"];
-    for url in &urls {
+    for url in ["ifttt://", "ifttt://:@/", "ifttt://EventID/", "https://maker.ifttt.com/use/WebHookID/"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
   }
 
   #[test]
-  fn test_from_url_webhook_and_events() {
-    let obj = parse_ifttt("ifttt://WebHookID@EventID").unwrap();
-    assert_eq!(obj.webhook_id, "WebHookID");
-    assert!(obj.events.contains(&"EventID".to_string()));
+  fn test_from_url_fields() {
+    let i = parse_ifttt("ifttt://WebHookID@EventB/EventA/EventB?to=EventC");
+    assert_eq!(i.webhook_id, "WebHookID");
+    assert_eq!(i.events, vec!["EventA", "EventB", "EventC"]);
+
+    let i = parse_ifttt("ifttt://WebHookID?to=EventID,EventID2");
+    assert_eq!(i.webhook_id, "WebHookID");
+    assert_eq!(i.events, vec!["EventID", "EventID2"]);
+
+    let i = parse_ifttt("https://maker.ifttt.com/use/WebHookID/EventID/Second");
+    assert_eq!(i.webhook_id, "WebHookID");
+    assert_eq!(i.events, vec!["EventID", "Second"]);
+
+    let i = parse_ifttt("ifttt://WebHookID@EventID/?%2Bswitch=on&-value1&-value2");
+    assert_eq!(i.add_tokens, vec![("switch".to_string(), "on".to_string())]);
+    assert_eq!(i.del_tokens, vec!["value1", "value2"]);
   }
 
   #[test]
-  fn test_from_url_multiple_events() {
-    let obj = parse_ifttt("ifttt://WebHookID@EventID/EventID2/").unwrap();
-    assert_eq!(obj.webhook_id, "WebHookID");
-    assert_eq!(obj.events.len(), 2);
-    assert!(obj.events.contains(&"EventID".to_string()));
-    assert!(obj.events.contains(&"EventID2".to_string()));
+  fn test_payload_tokens() {
+    let ctx = NotifyContext { title: "title".into(), body: "body".into(), ..Default::default() };
+    let i = parse_ifttt("ifttt://WebHookID@EventID/?%2Bswitch=on&-value1&-value2");
+    assert_eq!(i.payload(&ctx), json!({"value3": "info", "switch": "on"}));
+
+    // Removal ignores case
+    let i = parse_ifttt("ifttt://WebHookID@EventID/?-Value1&-VALUE2");
+    assert_eq!(i.payload(&ctx), json!({"value3": "info"}));
+
+    // An added token overrides a default one, and keys go out lowercase
+    let i = parse_ifttt("ifttt://WebHookID@EventID/?%2BValue1=over&-VALUE2&%2BExtra=x");
+    assert_eq!(i.payload(&ctx), json!({"value1": "over", "value3": "info", "extra": "x"}));
   }
 
-  #[test]
-  fn test_from_url_to_query_param() {
-    let obj = parse_ifttt("ifttt://WebHookID?to=EventID,EventID2").unwrap();
-    assert_eq!(obj.webhook_id, "WebHookID");
-    assert!(obj.events.contains(&"EventID".to_string()));
-    assert!(obj.events.contains(&"EventID2".to_string()));
+  #[tokio::test]
+  async fn test_send_each_event() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/trigger/event1/with/key/webhook123"))
+      .and(header("Content-Type", "application/json"))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/trigger/event2/with/key/webhook123")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+
+    let svc = from_url("ifttt://webhook123@event2/event1").unwrap();
+    let ctx = NotifyContext { title: "title".into(), body: "hello".into(), notify_type: NotifyType::Success, ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+
+    let reqs = server.received_requests().await.unwrap();
+    // Events are sorted, as upstream's parse_list() does
+    assert_eq!(reqs[0].url.path(), "/trigger/event1/with/key/webhook123");
+    let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body, json!({"value1": "title", "value2": "hello", "value3": "success"}));
   }
 
-  #[test]
-  fn test_native_url_parsing() {
-    let obj = parse_ifttt("https://maker.ifttt.com/use/WebHookID/EventID/").unwrap();
-    assert_eq!(obj.webhook_id, "WebHookID");
-    assert!(obj.events.contains(&"EventID".to_string()));
+  #[tokio::test]
+  async fn test_send_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/trigger/a/with/key/k")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/trigger/b/with/key/k")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let svc = from_url("ifttt://k@a/b").unwrap();
+    let ctx = NotifyContext { body: "b".into(), ..Default::default() };
+    // A failed event does not stop the remaining ones
+    assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
   }
 
   #[test]
@@ -157,6 +274,5 @@ mod tests {
     let details = Ifttt::static_details();
     assert_eq!(details.service_name, "IFTTT");
     assert_eq!(details.protocols, vec!["ifttt"]);
-    assert!(!details.attachment_support);
   }
 }
