@@ -53,6 +53,7 @@ pub mod gupshup;
 pub mod home_assistant;
 pub mod httpsms;
 pub mod ifttt;
+pub mod infobip;
 pub mod irc;
 pub mod jellyfin;
 pub mod join;

@@ -63,6 +63,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(home_assistant::HomeAssistant::static_details());
   collect!(httpsms::HttpSms::static_details());
   collect!(ifttt::Ifttt::static_details());
+  collect!(infobip::Infobip::static_details());
   collect!(irc::Irc::static_details());
   collect!(jellyfin::Jellyfin::static_details());
   collect!(join::Join::static_details());
@@ -211,6 +212,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(home_assistant::HomeAssistant::from_url, "hassio", "hassios");
   reg!(httpsms::HttpSms::from_url, "httpsms");
   reg!(ifttt::Ifttt::from_url, "ifttt");
+  reg!(infobip::Infobip::from_url, "infobip");
   reg!(irc::Irc::from_url, "irc", "ircs");
   reg!(jellyfin::Jellyfin::from_url, "jellyfin", "jellyfins");
   reg!(join::Join::from_url, "join");
