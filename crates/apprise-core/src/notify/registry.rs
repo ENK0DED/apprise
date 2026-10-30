@@ -114,7 +114,6 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(nextcloudtalk::NextcloudTalk::static_details());
   collect!(notica::Notica::static_details());
   collect!(notifiarr::Notifiarr::static_details());
-  collect!(notificationapi::NotificationApi::static_details());
   collect!(notifico::Notifico::static_details());
   collect!(notifyre::Notifyre::static_details());
   collect!(ntfy::Ntfy::static_details());
@@ -127,6 +126,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(pagertree::PagerTree::static_details());
   collect!(parseplatform::ParsePlatform::static_details());
   collect!(pinglet::Pinglet::static_details());
+  collect!(pingram::Pingram::static_details());
   collect!(plivo::Plivo::static_details());
   collect!(postmark::Postmark::static_details());
   collect!(prowl::Prowl::static_details());
@@ -305,7 +305,6 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(nextcloudtalk::NextcloudTalk::from_url, "nctalk", "nctalks");
   reg!(notica::Notica::from_url, "notica", "noticas");
   reg!(notifiarr::Notifiarr::from_url, "notifiarr");
-  reg!(notificationapi::NotificationApi::from_url, "napi", "notificationapi");
   reg!(notifico::Notifico::from_url, "notifico");
   reg!(notifyre::Notifyre::from_url, "notifyre");
   reg!(notifico::Notifico::from_url, "notifico", "notificos");
@@ -319,6 +318,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(pagertree::PagerTree::from_url, "pagertree");
   reg!(parseplatform::ParsePlatform::from_url, "parsep", "parseps");
   reg!(pinglet::Pinglet::from_url, "pinglet", "pinglets");
+  reg!(pingram::Pingram::from_url, "pingram");
   reg!(plivo::Plivo::from_url, "plivo");
   reg!(postmark::Postmark::from_url, "postmark");
   reg!(prowl::Prowl::from_url, "prowl");
