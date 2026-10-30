@@ -128,6 +128,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(smsmanager::SmsManager::static_details());
   collect!(smtp2go::Smtp2Go::static_details());
   collect!(sns::Sns::static_details());
+  collect!(sogs::SessionOgs::static_details());
   collect!(sparkpost::SparkPost::static_details());
   collect!(spike::Spike::static_details());
   collect!(splunk::Splunk::static_details());
@@ -278,6 +279,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(smsmanager::SmsManager::from_url, "smsmanager", "smsmgr");
   reg!(smtp2go::Smtp2Go::from_url, "smtp2go");
   reg!(sns::Sns::from_url, "sns");
+  reg!(sogs::SessionOgs::from_url, "session", "sessions", "sogs");
   reg!(sparkpost::SparkPost::from_url, "sparkpost");
   reg!(spike::Spike::from_url, "spike");
   reg!(splunk::Splunk::from_url, "splunk", "victorops");

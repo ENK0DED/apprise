@@ -57,6 +57,10 @@ sha2 = "0.11"
 sha1 = "0.11"
 hex = "0.4"
 
+# Ed25519 signing and BLAKE2b hashing (Session Open Group Server)
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
+blake2 = "0.10"
+
 # Platform socket options
 socket2 = { version = "0.6", features = ["all"] }
 

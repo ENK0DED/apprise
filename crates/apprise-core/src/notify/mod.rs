@@ -115,6 +115,7 @@ pub mod smseagle;
 pub mod smsmanager;
 pub mod smtp2go;
 pub mod sns;
+pub mod sogs;
 pub mod sparkpost;
 pub mod spike;
 pub mod splunk;
