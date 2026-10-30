@@ -95,6 +95,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(notifico::Notifico::static_details());
   collect!(notifyre::Notifyre::static_details());
   collect!(ntfy::Ntfy::static_details());
+  collect!(octopush::Octopush::static_details());
   collect!(office365::Office365::static_details());
   collect!(one_signal::OneSignal::static_details());
   collect!(opsgenie::OpsGenie::static_details());
@@ -117,21 +118,25 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(reddit::Reddit::static_details());
   collect!(resend::Resend::static_details());
   collect!(revolt::Revolt::static_details());
+  collect!(ringcentral::RingCentral::static_details());
   collect!(rocketchat::RocketChat::static_details());
   collect!(rsyslog::RSyslog::static_details());
   collect!(ryver::Ryver::static_details());
   collect!(sendgrid::SendGrid::static_details());
   collect!(sendpulse::SendPulse::static_details());
   collect!(serverchan::ServerChan::static_details());
+  collect!(serwersms::SerwerSms::static_details());
   collect!(ses::Ses::static_details());
   collect!(seven::Seven::static_details());
   collect!(sfr::Sfr::static_details());
   collect!(signal_api::SignalApi::static_details());
+  collect!(signalgrid::Signalgrid::static_details());
   collect!(signl4::Signl4::static_details());
   collect!(simplepush::SimplePush::static_details());
   collect!(sinch::Sinch::static_details());
   collect!(slack::Slack::static_details());
   collect!(smpp::Smpp::static_details());
+  collect!(smsc::Smsc::static_details());
   collect!(smseagle::SmsEagle::static_details());
   collect!(smsmanager::SmsManager::static_details());
   collect!(smtp2go::Smtp2Go::static_details());
@@ -145,6 +150,8 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(syslog::Syslog::static_details());
   collect!(techuluspush::TechulusPush::static_details());
   collect!(telegram::Telegram::static_details());
+  collect!(telesign::Telesign::static_details());
+  collect!(telnyx::Telnyx::static_details());
   collect!(threema::Threema::static_details());
   collect!(twilio::Twilio::static_details());
   collect!(twist::Twist::static_details());
@@ -160,6 +167,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(wxpusher::WxPusher::static_details());
   collect!(xbmc::Xbmc::static_details());
   collect!(xmpp::Xmpp::static_details());
+  collect!(zalo::Zalo::static_details());
   collect!(zulip::Zulip::static_details());
   #[cfg(feature = "email")]
   collect!(email::Email::static_details());
@@ -247,6 +255,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(notifico::Notifico::from_url, "notifico");
   reg!(notifyre::Notifyre::from_url, "notifyre");
   reg!(ntfy::Ntfy::from_url, "ntfy", "ntfys");
+  reg!(octopush::Octopush::from_url, "octopush");
   reg!(office365::Office365::from_url, "o365", "azure");
   reg!(one_signal::OneSignal::from_url, "onesignal");
   reg!(opsgenie::OpsGenie::from_url, "opsgenie");
@@ -269,21 +278,25 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(reddit::Reddit::from_url, "reddit");
   reg!(resend::Resend::from_url, "resend");
   reg!(revolt::Revolt::from_url, "revolt");
+  reg!(ringcentral::RingCentral::from_url, "ringc");
   reg!(rocketchat::RocketChat::from_url, "rocket", "rockets");
   reg!(rsyslog::RSyslog::from_url, "rsyslog");
   reg!(ryver::Ryver::from_url, "ryver");
   reg!(sendgrid::SendGrid::from_url, "sendgrid");
   reg!(sendpulse::SendPulse::from_url, "sendpulse");
   reg!(serverchan::ServerChan::from_url, "schan");
+  reg!(serwersms::SerwerSms::from_url, "serwersms");
   reg!(ses::Ses::from_url, "ses");
   reg!(seven::Seven::from_url, "seven");
   reg!(sfr::Sfr::from_url, "sfr");
   reg!(signal_api::SignalApi::from_url, "signal", "signals");
+  reg!(signalgrid::Signalgrid::from_url, "signalgrid");
   reg!(signl4::Signl4::from_url, "signl4");
   reg!(simplepush::SimplePush::from_url, "spush");
   reg!(sinch::Sinch::from_url, "sinch");
   reg!(slack::Slack::from_url, "slack");
   reg!(smpp::Smpp::from_url, "smpp", "smpps");
+  reg!(smsc::Smsc::from_url, "smsc");
   reg!(smseagle::SmsEagle::from_url, "smseagle", "smseagles");
   reg!(smsmanager::SmsManager::from_url, "smsmanager", "smsmgr");
   reg!(smtp2go::Smtp2Go::from_url, "smtp2go");
@@ -297,6 +310,8 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(syslog::Syslog::from_url, "syslog");
   reg!(techuluspush::TechulusPush::from_url, "techulus");
   reg!(telegram::Telegram::from_url, "tgram");
+  reg!(telesign::Telesign::from_url, "telesign");
+  reg!(telnyx::Telnyx::from_url, "telnyx");
   reg!(threema::Threema::from_url, "threema");
   reg!(twilio::Twilio::from_url, "twilio");
   reg!(twist::Twist::from_url, "twist");
@@ -312,6 +327,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(wxpusher::WxPusher::from_url, "wxpusher");
   reg!(xbmc::Xbmc::from_url, "xbmc", "xbmcs", "kodi", "kodis");
   reg!(xmpp::Xmpp::from_url, "xmpp", "xmpps");
+  reg!(zalo::Zalo::from_url, "zalo");
   reg!(zulip::Zulip::from_url, "zulip");
   #[cfg(feature = "email")]
   reg!(email::Email::from_url, "mailto", "mailtos");
