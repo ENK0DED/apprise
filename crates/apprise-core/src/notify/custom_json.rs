@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Attachment, Notify, NotifyContext, ServiceDetails, build_client};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd;
+use crate::types::NotifyFormat;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 use base64::Engine;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -14,7 +14,7 @@ pub(crate) const METHODS: &[&str] = &["POST", "GET", "DELETE", "PUT", "HEAD", "P
 /// outside [`METHODS`] rejects the URL.
 pub(crate) fn parse_method(url: &ParsedUrl) -> Option<String> {
   let method = match url.get("method").filter(|m| !m.is_empty()) {
-    Some(m) => qsd::unquote(m).to_uppercase(),
+    Some(m) => unquote(m).to_uppercase(),
     None => return Some(METHODS[0].to_string()),
   };
   if METHODS.contains(&method.as_str()) {
@@ -25,11 +25,20 @@ pub(crate) fn parse_method(url: &ParsedUrl) -> Option<String> {
   }
 }
 
-/// The `+`, `-` or `:` arguments of a custom plugin URL. These plugins
-/// unquote what `parse_qsd` already decoded a second time.
+/// The `+`, `-` or `:` arguments of a custom plugin URL, in URL order.
+/// These plugins unquote what `parse_qsd` already decoded a second time.
 pub(crate) fn custom_args(url: &ParsedUrl, prefix: char) -> Vec<(String, String)> {
-  qsd::prefixed(url, prefix).into_iter().map(|(k, v)| (qsd::unquote(&k), qsd::unquote(&v))).collect()
+  let args = match prefix {
+    '+' => &url.qsd_add,
+    '-' => &url.qsd_del,
+    _ => &url.qsd_colon,
+  };
+  args.iter().map(|(k, v)| (unquote(k), unquote(v))).collect()
 }
+
+/// The formats the custom JSON, XML and form plugins send as given
+/// (upstream's `notify_format` tuple).
+pub(crate) const CUSTOM_FORMATS: [NotifyFormat; 3] = [NotifyFormat::Text, NotifyFormat::Html, NotifyFormat::Markdown];
 
 /// The URL path as upstream's `fullpath`: still percent-encoded, with a
 /// leading slash, or empty when the URL has no path.
@@ -175,6 +184,9 @@ impl Notify for Json {
     // Upstream disables throttling for this service
     0.0
   }
+  fn notify_formats(&self) -> Vec<NotifyFormat> {
+    CUSTOM_FORMATS.to_vec()
+  }
   fn attachment_support(&self) -> bool {
     true
   }
@@ -196,6 +208,7 @@ impl Notify for Json {
       req = req.basic_auth(user, Some(password));
     }
 
+    crate::notify::throttle().await;
     let resp = req.send().await?;
     let status = resp.status();
     if status.is_success() {
@@ -303,7 +316,33 @@ mod tests {
     assert!(j.attachment_support());
     assert_eq!(j.title_maxlen(), 250);
     assert_eq!(j.body_maxlen(), 32768);
+    assert_eq!(j.request_rate_per_sec(), 0.0);
+    assert_eq!(j.notify_formats(), vec![NotifyFormat::Text, NotifyFormat::Html, NotifyFormat::Markdown]);
     assert_eq!(Json::static_details().setup_url, Some("https://appriseit.com/services/json/"));
+  }
+
+  #[tokio::test]
+  async fn test_input_format_is_kept() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/notify")).respond_with(ResponseTemplate::new(200)).expect(3).mount(&server).await;
+    let base = format!("json://localhost:{}/notify", server.address().port());
+    let markdown = NotifyContext { body: "**bold**".into(), body_format: NotifyFormat::Markdown, ..Default::default() };
+    // Verified against upstream with pycapture.py
+    for (url, expected) in [
+      // Markdown is one of its formats, so it goes out unconverted
+      (base.clone(), "**bold**"),
+      // ?format= picks another of its formats
+      (format!("{base}?format=html"), "<p><strong>bold</strong></p>"),
+      // Upstream leaves Markdown alone when asked for text
+      (format!("{base}?format=text"), "**bold**"),
+    ] {
+      let mut apprise = crate::Apprise::new();
+      assert!(apprise.add(&url));
+      assert!(apprise.notify(&markdown).await.is_success(), "{}", url);
+      let requests = requests_to(&server, "POST", "/notify").await;
+      let body: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+      assert_eq!(body["message"], expected, "{}", url);
+    }
   }
 
   fn ctx(title: &str, body: &str) -> NotifyContext {

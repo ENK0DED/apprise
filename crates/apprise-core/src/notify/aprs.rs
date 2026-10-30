@@ -1,9 +1,8 @@
 use crate::error::NotifyError;
 use crate::notify::{Notify, NotifyContext, ServiceDetails, service_base};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::url_args::{parse_list, split_path, url_credentials};
+use crate::utils::parse::{ParsedUrl, parse_list};
 use async_trait::async_trait;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -46,15 +45,12 @@ pub struct Aprs {
   locale: &'static str,
   delay: f64,
   timeout: Duration,
-  /// Time of the last write, for the throttle between writes.
-  last_io: std::sync::Mutex<Option<Instant>>,
   tags: Vec<String>,
 }
 
 impl Aprs {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (user, password) = url_credentials(url);
-    let (user, password) = (user.unwrap_or_default(), password.unwrap_or_default());
+    let (user, password) = (url.user.clone().unwrap_or_default(), url.password.clone().unwrap_or_default());
     if user.is_empty() || password.is_empty() {
       tracing::warn!("An APRS user/pass was not provided.");
       return None;
@@ -93,9 +89,9 @@ impl Aprs {
 
     // The host and every path entry are call signs, as is ?to=.
     let mut raw = vec![url.host.clone().unwrap_or_default()];
-    raw.extend(split_path(url));
+    raw.extend(url.path_parts.iter().cloned());
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      raw.extend(parse_list(&[to]));
+      raw.extend(parse_list(to));
     }
     let mut targets = Vec::new();
     for target in parse_call_signs(&raw) {
@@ -113,7 +109,6 @@ impl Aprs {
       locale,
       delay,
       timeout: crate::utils::socket::url_timeouts(url).connect_timeout().unwrap_or(Duration::from_secs(4)),
-      last_io: std::sync::Mutex::new(None),
       tags: url.tags(),
     })
   }
@@ -134,22 +129,8 @@ impl Aprs {
     service_base(&format!("{}:{}", host, NOTIFY_PORT))
   }
 
-  /// Wait until `request_rate + delay` seconds have passed since the last
-  /// write (upstream `throttle()`). The first write never waits.
-  async fn throttle(&self) {
-    let rate = Duration::from_secs_f64(REQUEST_RATE + self.delay);
-    let wait = {
-      let last = self.last_io.lock().unwrap();
-      last.map(|t| rate.saturating_sub(t.elapsed())).unwrap_or_default()
-    };
-    if !wait.is_zero() {
-      tokio::time::sleep(wait).await;
-    }
-    *self.last_io.lock().unwrap() = Some(Instant::now());
-  }
-
   async fn write(&self, stream: &mut TcpStream, data: &str) -> Result<(), String> {
-    self.throttle().await;
+    crate::notify::throttle().await;
     tokio::time::timeout(self.timeout, stream.write_all(data.as_bytes())).await.map_err(|_| "timed out".to_string())?.map_err(|e| e.to_string())
   }
 
@@ -329,6 +310,11 @@ impl Notify for Aprs {
   fn title_maxlen(&self) -> usize {
     0
   }
+  /// Servers that are not ready yet otherwise send incomplete responses;
+  /// `?delay=` adds to it
+  fn request_rate_per_sec(&self) -> f64 {
+    REQUEST_RATE + self.delay
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     if self.targets.is_empty() {
@@ -360,20 +346,29 @@ impl Notify for Aprs {
     }
 
     let mut sent = 0;
+    let mut has_error = false;
     for target in &self.targets {
+      // Skip a call sign that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        sent += 1;
+        continue;
+      }
       // Format: our call sign > device ID :: target (padded to 9) : body
       let buffer = format!("{}>{}::{:<9}:{}", self.user, DEVICE_ID, target, payload);
       tracing::debug!("Sending APRS message: {}", buffer.trim_end());
       if let Err(e) = self.write(&mut stream, &buffer).await {
         tracing::warn!("Socket Exception socket_send: {}", e);
+        has_error = true;
         break;
       }
+      crate::delivery::mark_delivered(target, false);
       sent += 1;
     }
     let _ = stream.shutdown().await;
 
     tracing::info!("Sent {}/{} APRS-IS notification(s)", sent, self.targets.len());
-    Ok(sent == self.targets.len())
+    Ok(!has_error)
   }
 }
 
@@ -475,18 +470,28 @@ mod tests {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let handle = tokio::spawn(async move {
-      let (stream, _) = listener.accept().await.unwrap();
-      let (reader, mut writer) = stream.into_split();
-      writer.write_all(b"# aprsc 2.1.4\r\n").await.unwrap();
-      let mut reader = BufReader::new(reader);
+      // Other local processes sometimes probe random ports; skip any
+      // connection that does not log in first
+      let (mut reader, mut writer, mut line) = loop {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let _ = writer.write_all(b"# aprsc 2.1.4\r\n").await;
+        let mut reader = BufReader::new(reader);
+        let mut line = String::new();
+        if reader.read_line(&mut line).await.unwrap_or(0) > 0 && line.starts_with("user ") {
+          break (reader, writer, line);
+        }
+      };
       let mut lines = Vec::new();
-      let mut line = String::new();
-      while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+      loop {
         if line.starts_with("user ") {
           let call = line.split(' ').nth(1).unwrap_or("").to_string();
           writer.write_all(format!("# logresp {} {}, server T2TEST\r\n", call, verified).as_bytes()).await.unwrap();
         }
         lines.push(std::mem::take(&mut line));
+        if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+          break;
+        }
       }
       lines
     });
@@ -526,11 +531,18 @@ mod tests {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     tokio::spawn(async move {
-      let (mut stream, _) = listener.accept().await.unwrap();
-      let mut buf = [0u8; 256];
-      let _ = stream.read(&mut buf).await;
-      let _ = stream.write_all(b"# aprsc 2.1.4\r\n# logresp OTHER verified, server T2TEST\r\n").await;
-      let _ = stream.read(&mut buf).await;
+      // Skip connections that do not log in (stray local probes)
+      loop {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 256];
+        let n = stream.read(&mut buf).await.unwrap_or(0);
+        if !buf[..n].starts_with(b"user ") {
+          continue;
+        }
+        let _ = stream.write_all(b"# aprsc 2.1.4\r\n# logresp OTHER verified, server T2TEST\r\n").await;
+        let _ = stream.read(&mut buf).await;
+        break;
+      }
     });
     let svc = from_url("aprs://DF1JSL-15:12345@DF1ABC").unwrap();
     let ctx = NotifyContext { body: "test".into(), ..Default::default() };
@@ -548,6 +560,20 @@ mod tests {
     let addr = "127.0.0.1:1".to_string();
     let svc = from_url("aprs://DF1JSL-15:12345@DF1ABC").unwrap();
     assert!(!crate::notify::with_test_base(addr, svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_writes_are_spaced_out() {
+    let (addr, server) = aprs_server("verified").await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("aprs://DF1JSL-15:12345@DF1ABC?delay=0.2"));
+    let ctx = NotifyContext { body: "test".into(), ..Default::default() };
+    let started = std::time::Instant::now();
+    assert!(crate::notify::with_throttling_in_tests(crate::notify::with_test_base(addr, apprise.notify(&ctx))).await.is_success());
+    // The message waits upstream's 0.8s plus the 0.2s delay after the login
+    assert!(started.elapsed() >= Duration::from_millis(1000), "{:?}", started.elapsed());
+    assert_eq!(server.await.unwrap().len(), 2);
+    assert_eq!(parse("aprs://DF1JSL-15:12345@DF1ABC?delay=0.2").unwrap().request_rate_per_sec(), 1.0);
   }
 
   #[test]

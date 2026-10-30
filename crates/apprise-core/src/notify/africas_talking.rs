@@ -2,7 +2,6 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use crate::utils::phone::{is_phone_no, parse_phone_no};
-use crate::utils::urlbase::{url_credentials, url_host};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -38,7 +37,7 @@ fn is_token(s: &str) -> bool {
 
 impl AfricasTalking {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let appuser = url_credentials(url).0.unwrap_or_default();
+    let appuser = url.user.clone().unwrap_or_default();
     if !is_token(&appuser) {
       tracing::warn!("The Africas Talking appuser specified ({}) is invalid.", appuser);
       return None;
@@ -48,10 +47,10 @@ impl AfricasTalking {
     let apikey = match url.get("apikey").filter(|k| !k.is_empty()) {
       Some(key) => {
         // The host is a phone number (target) in this case
-        raw_targets.push(url_host(url));
+        raw_targets.push(url.host.clone().unwrap_or_default());
         key.to_string()
       }
-      None => url_host(url),
+      None => url.host.clone().unwrap_or_default(),
     };
     if !is_token(&apikey) {
       tracing::warn!("The Africas Talking apikey specified is invalid.");
@@ -242,11 +241,15 @@ impl Notify for AfricasTalking {
     let batch_size = if self.batch { DEFAULT_BATCH_SIZE } else { 1 };
     let mut has_error = false;
 
-    for batch in self.targets.chunks(batch_size) {
+    // Retry only recipients that have not accepted the message
+    let pending: Vec<String> = self.targets.iter().filter(|t| !crate::delivery::is_delivered(t, false)).cloned().collect();
+
+    for batch in pending.chunks(batch_size) {
       let to = batch.join(",");
       let payload = [("username", self.appuser.as_str()), ("to", to.as_str()), ("from", self.sender.as_str()), ("message", ctx.body.as_str())];
       let p_target = if batch_size == 1 { batch[0].clone() } else { format!("{} target(s)", batch.len()) };
 
+      crate::notify::throttle().await;
       let resp = match client
         .post(&notify_url)
         .header("User-Agent", APP_ID)
@@ -259,7 +262,7 @@ impl Notify for AfricasTalking {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Africas Talking notification to {}.", p_target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -277,7 +280,11 @@ impl Notify for AfricasTalking {
 
       let delivered = accepted(&content, batch);
       if delivered.len() != batch.len() {
+        // A retry sends to the rest again
         has_error = true;
+      }
+      for target in &delivered {
+        crate::delivery::mark_delivered(target, false);
       }
       if !delivered.is_empty() {
         tracing::info!("Sent Africas Talking notification to {}/{} recipient(s).", delivered.len(), batch.len());
@@ -292,7 +299,7 @@ impl Notify for AfricasTalking {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::matchers::{body_string, body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> AfricasTalking {
@@ -428,14 +435,27 @@ mod tests {
   #[tokio::test]
   async fn test_send_http_failure() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/version1/messaging")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
     let svc = from_url("atalk://user@apikey/11111111111/").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
   }
 
+  #[tokio::test]
+  async fn test_retry_skips_accepted_recipients() {
+    let server = MockServer::start().await;
+    let messaging = || Mock::given(method("POST")).and(path("/version1/messaging"));
+    messaging().and(body_string_contains("to=%2B15551231234")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    messaging().and(body_string_contains("to=%2B15555555555")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    messaging().and(body_string_contains("to=%2B15555555555")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("atalk://user@apikey/+15551231234/+15555555555?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("body"))).await.is_success());
+  }
+
   async fn send_with_reply(url: &str, reply: &str) -> bool {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(201).set_body_string(reply)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/version1/messaging")).respond_with(ResponseTemplate::new(201).set_body_string(reply)).mount(&server).await;
     let svc = from_url(url).unwrap();
     crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap()
   }

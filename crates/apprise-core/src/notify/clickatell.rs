@@ -2,7 +2,6 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use crate::utils::phone::{is_phone_no, parse_phone_no, parse_phone_no_with_prefix};
-use crate::utils::urlbase::{url_credentials, url_host};
 use async_trait::async_trait;
 
 pub struct Clickatell {
@@ -15,7 +14,7 @@ pub struct Clickatell {
 
 impl Clickatell {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let apikey = url_host(url);
+    let apikey = url.host.clone().unwrap_or_default();
     // validate_regex(): must start with a non-whitespace character
     if apikey.is_empty() || apikey.starts_with(char::is_whitespace) {
       tracing::warn!("An invalid Clickatell API Token was specified.");
@@ -23,7 +22,7 @@ impl Clickatell {
     }
     let apikey = apikey.trim().to_string();
 
-    let source = url.get("from").filter(|f| !f.is_empty()).map(str::to_string).or_else(|| url_credentials(url).0.filter(|u| !u.is_empty()));
+    let source = url.get("from").filter(|f| !f.is_empty()).map(str::to_string).or_else(|| url.user.clone());
     let source = match source {
       Some(s) => match is_phone_no(&s, 10) {
         Some(p) => Some(p.full),
@@ -94,6 +93,12 @@ impl Notify for Clickatell {
     let mut has_error = false;
 
     for target in &self.targets {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
+
       let mut params = vec![("apiKey", self.apikey.as_str())];
       if let Some(source) = &self.source {
         params.push(("from", source.as_str()));
@@ -101,6 +106,7 @@ impl Notify for Clickatell {
       params.push(("content", ctx.body.as_str()));
       params.push(("to", target.as_str()));
 
+      crate::notify::throttle().await;
       let resp = match client
         .get(&notify_url)
         .header("User-Agent", APP_ID)
@@ -113,7 +119,7 @@ impl Notify for Clickatell {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Clickatell: to {}", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -127,6 +133,7 @@ impl Notify for Clickatell {
         continue;
       }
       tracing::info!("Sent Clickatell notification to {}", target);
+      crate::delivery::mark_delivered(target, false);
     }
 
     Ok(!has_error)
@@ -137,7 +144,7 @@ impl Notify for Clickatell {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{header, method, path};
+  use wiremock::matchers::{header, method, path, query_param};
   use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
   fn parse(url: &str) -> Clickatell {
@@ -256,6 +263,19 @@ mod tests {
     Mock::given(method("GET")).and(path("/messages/http/send")).respond_with(ResponseTemplate::new(400).set_body_string(reply)).expect(2).mount(&server).await;
     let svc = from_url("clickatell://apikey123/15551231234/15557654321").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("GET")).and(path("/messages/http/send"));
+    send().and(query_param("to", "15551231234")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    send().and(query_param("to", "15557654321")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(query_param("to", "15557654321")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("clickatell://apikey123/15551231234/15557654321?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("body"))).await.is_success());
   }
 
   #[tokio::test]

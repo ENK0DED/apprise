@@ -2,7 +2,6 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use crate::utils::phone::{is_phone_no, parse_phone_no};
-use crate::utils::urlbase::{url_credentials, url_host};
 use async_trait::async_trait;
 
 /// Country codes (`?country=`).
@@ -32,11 +31,15 @@ fn is_alnum(s: &str) -> bool {
 
 impl BurstSms {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (user, password) = url_credentials(url);
+    let (user, password) = (url.user.clone(), url.password.clone());
     let apikey = url.get("key").filter(|k| !k.is_empty()).map(str::to_string).or(user).unwrap_or_default();
     let secret = url.get("secret").filter(|s| !s.is_empty()).map(str::to_string).or(password).unwrap_or_default();
-    let source =
-      url.get("source").filter(|s| !s.is_empty()).or_else(|| url.get("from").filter(|s| !s.is_empty())).map(str::to_string).unwrap_or_else(|| url_host(url));
+    let source = url
+      .get("source")
+      .filter(|s| !s.is_empty())
+      .or_else(|| url.get("from").filter(|s| !s.is_empty()))
+      .map(str::to_string)
+      .unwrap_or_else(|| url.host.clone().unwrap_or_default());
 
     if !is_alnum(&apikey) {
       tracing::warn!("An invalid Burst SMS API Key was specified.");
@@ -144,9 +147,17 @@ impl Notify for BurstSms {
     let batch_size = if self.batch { DEFAULT_BATCH_SIZE } else { 1 };
     let mut has_error = false;
 
-    for batch in self.targets.chunks(batch_size) {
+    for (index, batch) in self.targets.chunks(batch_size).enumerate() {
+      // Skip a batch that already went out so a retry does not deliver it
+      // to those recipients twice
+      let key = (index * batch_size).to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
+
       let to = batch.join(",");
       let payload = [("countrycode", self.country.as_str()), ("message", ctx.body.as_str()), ("from", self.source.as_str()), ("to", to.as_str())];
+      crate::notify::throttle().await;
       let resp = match client
         .post(&notify_url)
         .header("User-Agent", APP_ID)
@@ -159,7 +170,7 @@ impl Notify for BurstSms {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Burst SMS notification to {} target(s).", batch.len());
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -173,6 +184,7 @@ impl Notify for BurstSms {
         continue;
       }
       tracing::info!("Sent Burst SMS notification to {} target(s).", batch.len());
+      crate::delivery::mark_delivered(&key, false);
     }
 
     Ok(!has_error)
@@ -183,7 +195,7 @@ impl Notify for BurstSms {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::matchers::{body_string, body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> BurstSms {
@@ -312,15 +324,28 @@ mod tests {
   async fn test_send_error_response() {
     let server = MockServer::start().await;
     let reply = r#"{"error": {"code": "FIELD_INVALID", "description": "Sender ID must be one of the numbers that are currently leased."}}"#;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(400).set_body_string(reply)).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path("/send-sms.json")).respond_with(ResponseTemplate::new(400).set_body_string(reply)).expect(2).mount(&server).await;
     let svc = from_url("burstsms://apikey123:secret456@Acme/15551231234/15557654321").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
   }
 
   #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/send-sms.json"));
+    send().and(body_string_contains("to=15551231234")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    send().and(body_string_contains("to=15557654321")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(body_string_contains("to=15557654321")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("burstsms://apikey123:secret456@Acme/15551231234/15557654321?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("body"))).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_only_200_succeeds() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/send-sms.json")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
     let svc = from_url("burstsms://apikey123:secret456@Acme/15551231234").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
   }

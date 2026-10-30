@@ -2,7 +2,6 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use crate::utils::phone::{is_phone_no, parse_phone_no};
-use crate::utils::urlbase::{url_credentials, url_host};
 use async_trait::async_trait;
 
 pub struct FortySixElks {
@@ -14,24 +13,11 @@ pub struct FortySixElks {
   tags: Vec<String>,
 }
 
-/// Upstream `parse_native_url()`:
-/// `^https?://(?P<credentials>[^@]+)@api\.46elks\.com/a1/sms/?(?P<params>\?.+)$`
-fn is_native_url(url: &ParsedUrl) -> bool {
-  let after_scheme = url.raw.split_once("://").map(|(_, rest)| rest).unwrap_or_default();
-  let Some((credentials, rest)) = after_scheme.split_once('@') else { return false };
-  let rest = rest.to_lowercase();
-  let Some(params) = rest.strip_prefix("api.46elks.com/a1/sms").map(|p| p.strip_prefix('/').unwrap_or(p)) else { return false };
-  !credentials.is_empty() && params.starts_with('?') && params.len() > 1
-}
-
 impl FortySixElks {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let native = url.schema == "http" || url.schema == "https";
-    if native && !is_native_url(url) {
-      return None;
-    }
-
-    let (user, password) = url_credentials(url);
+    // Native https://{credentials}@api.46elks.com/a1/sms URLs arrive here
+    // already rewritten by the registry as 46elks://{credentials}@/{params}
+    let (user, password) = (url.user.clone(), url.password.clone());
     let Some(password) = password.filter(|p| !p.is_empty()) else {
       tracing::warn!("No 46elks password was specified.");
       return None;
@@ -41,12 +27,11 @@ impl FortySixElks {
       return None;
     };
 
-    // A native URL is rewritten upstream as 46elks://{credentials}@/{params}
-    let host = if native { String::new() } else { url_host(url) };
+    let host = url.host.clone().unwrap_or_default();
     let source = url.get("from").filter(|f| !f.is_empty()).map(str::to_string).unwrap_or(host);
     let source = Some(source.trim().to_string()).filter(|s| !s.is_empty());
 
-    let mut raw_targets = if native { Vec::new() } else { url.path_parts.clone() };
+    let mut raw_targets = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
       raw_targets.extend(parse_phone_no(&[to]));
     }
@@ -114,17 +99,24 @@ impl Notify for FortySixElks {
     let mut has_error = false;
 
     for target in &self.targets {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
+
       let mut payload = vec![("to", target.as_str())];
       if let Some(source) = &self.source {
         payload.push(("from", source.as_str()));
       }
       payload.push(("message", ctx.body.as_str()));
 
+      crate::notify::throttle().await;
       let resp = match client.post(&notify_url).header("User-Agent", APP_ID).basic_auth(&self.user, Some(&self.password)).form(&payload).send().await {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending 46elks notification to {}.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -138,6 +130,7 @@ impl Notify for FortySixElks {
         continue;
       }
       tracing::info!("Sent 46elks notification to {}.", target);
+      crate::delivery::mark_delivered(target, false);
     }
 
     Ok(!has_error)
@@ -148,7 +141,7 @@ impl Notify for FortySixElks {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::matchers::{body_string, body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> FortySixElks {
@@ -216,12 +209,13 @@ mod tests {
     assert!(obj.source.is_none());
     assert!(obj.targets.is_empty());
 
-    let obj = parse("https://user1:pass@api.46elks.com/a1/sms?to=15551234511&from=Acme");
+    // What the registry makes of a native https:// URL
+    let obj = parse("46elks://user1:pass@/?to=15551234511&from=Acme");
     assert_eq!(obj.user, "user1");
     assert_eq!(obj.source.as_deref(), Some("Acme"));
     assert_eq!(obj.targets, vec!["15551234511"]);
 
-    let obj = parse("https://user1:pass@api.46elks.com/a1/sms/?to=15551234511");
+    let obj = parse("46elks://user1:pass@/?to=15551234511");
     assert!(obj.source.is_none());
     assert_eq!(obj.targets, vec!["15551234511"]);
   }
@@ -282,9 +276,22 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/a1/sms"));
+    send().and(body_string_contains("to=15551234567")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    send().and(body_string_contains("to=15551234568")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(body_string_contains("to=15551234568")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("46elks://user:pass@/15551234567/15551234568?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("body"))).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_only_200_succeeds() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(201)).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path("/a1/sms")).respond_with(ResponseTemplate::new(201)).expect(2).mount(&server).await;
     let svc = from_url("46elks://user:pass@/15551234567/15551234568").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
   }

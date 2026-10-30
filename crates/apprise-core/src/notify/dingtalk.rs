@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyFormat;
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, parse_list, unquote};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -19,20 +19,6 @@ pub struct DingTalk {
 
 fn is_token(s: &str) -> bool {
   !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric())
-}
-
-/// Upstream `parse_list()`: split on `[]`, `;`, `,` and whitespace, then
-/// drop empty entries, de-duplicate and sort.
-fn parse_list<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-  let mut out: Vec<String> = items
-    .into_iter()
-    .flat_map(|s| s.split(|c: char| c == '[' || c == ']' || c == ';' || c == ',' || c.is_whitespace()))
-    .filter(|s| !s.is_empty())
-    .map(String::from)
-    .collect();
-  out.sort();
-  out.dedup();
-  out
 }
 
 /// Upstream `IS_PHONE_NO`: an optional `+`, then digits, spaces, `(`, `)`,
@@ -59,9 +45,10 @@ fn signature(secret: &str, timestamp: &str) -> String {
 
 impl DingTalk {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let mut token = url.host.as_deref().map(|h| urlencoding::decode(h).map(|s| s.into_owned()).unwrap_or_default()).unwrap_or_default();
+    // Upstream unquotes query values a second time
+    let mut token = url.host.clone().unwrap_or_default();
     if let Some(t) = url.get("token").filter(|t| !t.is_empty()) {
-      token = t.to_string();
+      token = unquote(t);
     }
     if !is_token(&token) {
       tracing::warn!("An invalid DingTalk API Token was specified.");
@@ -71,7 +58,7 @@ impl DingTalk {
     // The user field (or ?secret=) holds the signing secret
     let mut secret = url.user.clone().filter(|s| !s.is_empty());
     if let Some(s) = url.get("secret").filter(|s| !s.is_empty()) {
-      secret = Some(s.to_string());
+      secret = Some(unquote(s));
     }
     if let Some(ref s) = secret
       && !is_token(s)
@@ -80,12 +67,12 @@ impl DingTalk {
       return None;
     }
 
-    let mut raw: Vec<&str> = url.path_parts.iter().map(String::as_str).collect();
+    let mut raw = url.path_parts.clone();
     if let Some(to) = url.get("to") {
-      raw.push(to);
+      raw.push(to.to_string());
     }
     let mut targets = Vec::new();
-    for target in parse_list(raw) {
+    for target in parse_list(&raw.join(" ")) {
       match phone_digits(&target) {
         Some(digits) => targets.push(digits),
         None => tracing::warn!("Dropped invalid phone # ({}) specified.", target),
@@ -152,6 +139,13 @@ impl Notify for DingTalk {
     // of the payload
     19985
   }
+  fn notify_formats(&self) -> Vec<NotifyFormat> {
+    vec![NotifyFormat::Text, NotifyFormat::Markdown]
+  }
+  /// The title is sent with the body, so both count against the limit
+  fn overflow_amalgamate_title(&self) -> bool {
+    true
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let url = format!("{}/robot/send", service_base("https://oapi.dingtalk.com"));
@@ -164,6 +158,7 @@ impl Notify for DingTalk {
     }
 
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client.post(&url).query(&query).header("User-Agent", APP_ID).json(&self.payload(ctx)).send().await?;
     let status = resp.status();
     if status == reqwest::StatusCode::OK {
@@ -259,6 +254,7 @@ mod tests {
     assert!(!details.attachment_support);
     assert_eq!(parse("dingtalk://aaaaaaaa").body_maxlen(), 19985);
     assert!(parse("dingtalk://aaaaaaaa").title_maxlen() > 0);
+    assert!(parse("dingtalk://aaaaaaaa").overflow_amalgamate_title());
   }
 
   fn ctx(title: &str, body: &str, format: NotifyFormat) -> NotifyContext {
@@ -321,6 +317,32 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn test_input_format_picks_text_or_markdown() {
+    // Verified against upstream with pycapture.py
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/robot/send"));
+    send()
+      .and(body_json(json!({"msgtype": "markdown", "at": {"atMobiles": [], "isAtAll": false}, "markdown": {"title": "T", "text": "# T\n<b>B</b> **x**"}})))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    // HTML is not one of its formats, so it becomes text
+    send()
+      .and(body_json(json!({"msgtype": "text", "at": {"atMobiles": [], "isAtAll": false}, "text": {"content": "T\r\nB **x**"}})))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("dingtalk://aaaaaaaa"));
+    for format in [NotifyFormat::Markdown, NotifyFormat::Html] {
+      let sent = crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("T", "<b>B</b> **x**", format))).await;
+      assert!(sent.is_success());
+    }
+  }
+
+  #[tokio::test]
   async fn test_send_signed() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -343,13 +365,13 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(999)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/robot/send")).respond_with(ResponseTemplate::new(999)).mount(&server).await;
     let svc = from_url("dingtalk://aaaaaaaa").unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("T", "B", NotifyFormat::Text))).await.is_err());
 
     // Only HTTP 200 counts as delivered
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(204)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/robot/send")).respond_with(ResponseTemplate::new(204)).mount(&server).await;
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("T", "B", NotifyFormat::Text))).await.is_err());
   }
 }

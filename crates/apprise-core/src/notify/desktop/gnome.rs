@@ -67,8 +67,13 @@ impl Notify for Gnome {
   fn body_max_line_count(&self) -> usize {
     10
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
+    0.0
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
+    crate::notify::throttle().await;
     match bus::send(&self.notification(ctx)).await {
       Ok(_) => {
         tracing::info!("Sent Gnome notification.");

@@ -3,7 +3,6 @@ use crate::notify::custom_json::{basic_auth, custom_args, header_map};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::types::NotifyType;
 use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd;
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -30,7 +29,7 @@ pub struct Enigma2 {
 impl Enigma2 {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     let host = url.host.clone().filter(|h| !h.is_empty())?;
-    let timeout = qsd::get(url, "timeout").and_then(|t| t.trim().parse::<i64>().ok()).map(|t| t.max(MIN_TIMEOUT)).unwrap_or(DEFAULT_TIMEOUT);
+    let timeout = url.get("timeout").and_then(|t| t.trim().parse::<i64>().ok()).map(|t| t.max(MIN_TIMEOUT)).unwrap_or(DEFAULT_TIMEOUT);
     Some(Self {
       host,
       port: url.port,
@@ -110,6 +109,7 @@ impl Notify for Enigma2 {
       req = req.basic_auth(user, Some(password));
     }
 
+    crate::notify::throttle().await;
     let resp = req.send().await?;
     let status = resp.status().as_u16();
     if status != 200 {

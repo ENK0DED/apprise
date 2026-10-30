@@ -1,8 +1,8 @@
 use crate::error::NotifyError;
 use crate::notify::custom_json::{attachment_filename, custom_args, header_map};
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd;
+use crate::notify::{APP_ID, ClientDefaults, DEFAULT_CONNECT_TIMEOUT, Notify, NotifyContext, ServiceDetails, build_client_with};
+use crate::types::NotifyFormat;
+use crate::utils::parse::{ParsedUrl, parse_list, unquote};
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::{Value, json};
@@ -14,6 +14,10 @@ const METHODS: &[&str] = &["form", "json"];
 /// `?version=` values. Version 1 puts the token in the path, version 2 (the
 /// default) sends it in the `X-Apprise-Config-ID` header.
 const VERSIONS: &[&str] = &["1", "2"];
+
+/// Relays can take a while to fan a notification out (upstream
+/// `socket_read_timeout`).
+const READ_TIMEOUT: f64 = 30.0;
 
 /// A random (version 4) UUID.
 pub(crate) fn uuid4() -> String {
@@ -57,27 +61,19 @@ pub struct AppriseApi {
 
 impl AppriseApi {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let native = url.schema == "http" || url.schema == "https";
+    // Native http(s)://host/[path/]notify/{token} URLs arrive here already
+    // rewritten by the registry as apprise(s)://host/[path/]{token}/?version=1
     let host = url.host.clone().filter(|h| !h.is_empty())?;
     let encoded: Vec<&str> = url.path.split('/').filter(|s| !s.is_empty()).collect();
+    // Upstream unquotes these a second time
+    let arg = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote);
 
-    let (token, fullpath, secure) = if native {
-      // http(s)://hostname[:port][/path]/notify/{token}
-      if url.user.is_some() || url.password.is_some() || !host.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
-        return None;
+    let (token, fullpath) = match arg("token").or_else(|| arg("to")) {
+      Some(t) => (t, encoded.join("/")),
+      None => {
+        let token = url.path_parts.last().cloned().unwrap_or_default();
+        (token, encoded[..encoded.len().saturating_sub(1)].join("/"))
       }
-      let n = url.path_parts.len();
-      if n < 2 || !url.path_parts[n - 2].eq_ignore_ascii_case("notify") || !valid_token(&url.path_parts[n - 1], 32) {
-        return None;
-      }
-      (url.path_parts[n - 1].clone(), encoded[..encoded.len() - 2].join("/"), url.schema == "https")
-    } else if let Some(t) = qsd::get(url, "token").filter(|t| !t.is_empty()) {
-      (qsd::unquote(&t), encoded.join("/"), url.schema == "apprises")
-    } else if let Some(t) = qsd::get(url, "to").filter(|t| !t.is_empty()) {
-      (qsd::unquote(&t), encoded.join("/"), url.schema == "apprises")
-    } else {
-      let token = url.path_parts.last().cloned().unwrap_or_default();
-      (token, encoded[..encoded.len().saturating_sub(1)].join("/"), url.schema == "apprises")
     };
     let token = token.trim().to_string();
     if !valid_token(&token, 128) {
@@ -85,18 +81,13 @@ impl AppriseApi {
       return None;
     }
 
-    let method = qsd::get(url, "method").filter(|m| !m.is_empty()).map(|m| qsd::unquote(&m).to_lowercase()).unwrap_or_else(|| METHODS[0].to_string());
+    let method = arg("method").map(|m| m.to_lowercase()).unwrap_or_else(|| METHODS[0].to_string());
     if !METHODS.contains(&method.as_str()) {
       tracing::warn!("The method specified ({}) is invalid.", method);
       return None;
     }
 
-    let version = qsd::get(url, "version")
-      .filter(|v| !v.is_empty())
-      .or_else(|| qsd::get(url, "v").filter(|v| !v.is_empty()))
-      .map(|v| qsd::unquote(&v))
-      // A native URL is a version 1 endpoint unless told otherwise
-      .unwrap_or_else(|| if native { "1" } else { "2" }.to_string());
+    let version = arg("version").or_else(|| arg("v")).unwrap_or_else(|| "2".to_string());
     if !VERSIONS.contains(&version.as_str()) {
       tracing::warn!("The Apprise API version specified ({}) is invalid.", version);
       return None;
@@ -107,15 +98,15 @@ impl AppriseApi {
       port: url.port,
       fullpath,
       token,
-      secure,
+      secure: url.schema == "apprises",
       user: url.user.clone(),
       password: url.password.clone(),
       method,
       version,
       headers: custom_args(url, '+'),
-      relay_tags: qsd::get(url, "tags").map(|t| qsd::parse_list(&t)).unwrap_or_default(),
+      relay_tags: url.get("tags").map(parse_list).unwrap_or_default(),
       verify_certificate: url.verify_certificate(),
-      tags: url.assigned_tags.clone().unwrap_or_else(|| url.get("tag").map(qsd::parse_list).unwrap_or_default()),
+      tags: url.tags(),
     })
   }
 
@@ -194,6 +185,15 @@ impl Notify for AppriseApi {
     // Upstream disables throttling for this service
     0.0
   }
+  /// Content is relayed unchanged; the downstream Apprise server converts
+  /// it. The caller's format always wins (upstream's `resolve_format`
+  /// override), so `?format=` cannot change it.
+  fn notify_formats(&self) -> Vec<NotifyFormat> {
+    vec![NotifyFormat::Text, NotifyFormat::Html, NotifyFormat::Markdown]
+  }
+  fn notify_format_overridable(&self) -> bool {
+    false
+  }
   fn attachment_support(&self) -> bool {
     true
   }
@@ -217,7 +217,7 @@ impl Notify for AppriseApi {
 
     tracing::debug!("Apprise API POST URL: {} (cert_verify={})", url, self.verify_certificate);
 
-    let client = build_client(self.verify_certificate)?;
+    let client = build_client_with(self.verify_certificate, ClientDefaults { connect_timeout: DEFAULT_CONNECT_TIMEOUT, read_timeout: READ_TIMEOUT })?;
     let mut req = client.post(&url);
     req = if self.method == "json" {
       req.body(serde_json::to_string(&self.json_payload(ctx))?)
@@ -243,6 +243,7 @@ impl Notify for AppriseApi {
       req = req.basic_auth(self.user.clone().unwrap_or_default(), Some(self.password.clone().unwrap_or_else(|| "None".to_string())));
     }
 
+    crate::notify::throttle().await;
     let resp = req.send().await?;
     let status = resp.status().as_u16();
     // Upstream accepts 200 only
@@ -315,7 +316,7 @@ mod tests {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
     // Native URLs take a token of at most 32 characters
-    assert!(AppriseApi::from_url(&ParsedUrl::parse(&format!("http://example.com/notify/{}", "d".repeat(33))).unwrap()).is_none());
+    assert!(from_url(&format!("http://example.com/notify/{}", "d".repeat(33))).is_none());
   }
 
   #[test]
@@ -336,12 +337,13 @@ mod tests {
     assert_eq!((a.token.as_str(), a.fullpath.as_str(), a.version.as_str()), ("abcd", "path", "2"));
     assert_eq!(a.notify_url(), "http://localhost/path/notify");
 
-    // Native URLs default to version 1
-    let a = api(&format!("https://example.com/path/notify/{}", "d".repeat(32)));
+    // What the registry makes of native URLs, which default to version 1
+    let a = api(&format!("apprises://example.com/path/{}/?version=1", "d".repeat(32)));
     assert_eq!((a.secure, a.fullpath.as_str(), a.version.as_str()), (true, "path", "1"));
     assert_eq!(a.notify_url(), format!("https://example.com/path/notify/{}", "d".repeat(32)));
-    let a = api("http://example.com/notify/tok/?version=2&method=json");
+    let a = api("apprise://example.com/tok/?version=2&method=json");
     assert_eq!((a.secure, a.version.as_str(), a.method.as_str()), (false, "2", "json"));
+    assert_eq!(from_url("http://example.com/notify/tok/?version=2&method=json").unwrap().service_name(), "Apprise API");
   }
 
   fn ctx(title: &str, body: &str) -> NotifyContext {
@@ -446,6 +448,25 @@ mod tests {
       assert!(matches!(a.send(&ctx("t", "b")).await, Err(NotifyError::ServiceError { status: s, .. }) if s == status));
     }
     assert!(matches!(api("apprise://127.0.0.1:1/tok").send(&ctx("t", "b")).await, Err(NotifyError::Http(_))));
+  }
+
+  #[tokio::test]
+  async fn test_relays_the_input_format() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/notify")).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
+    let markdown = NotifyContext { body_format: NotifyFormat::Markdown, ..ctx("t", "**b**") };
+    // ?format= cannot make it convert what it relays
+    for url in [
+      format!("apprise://localhost:{}/tok?method=json", server.address().port()),
+      format!("apprise://localhost:{}/tok?method=json&format=html", server.address().port()),
+    ] {
+      let mut apprise = crate::Apprise::new();
+      assert!(apprise.add(&url));
+      assert!(apprise.notify(&markdown).await.is_success(), "{}", url);
+      let requests = requests_to(&server, "POST", "/notify").await;
+      let body: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+      assert_eq!((body["body"].as_str(), body["format"].as_str()), (Some("**b**"), Some("markdown")), "{}", url);
+    }
   }
 
   #[test]

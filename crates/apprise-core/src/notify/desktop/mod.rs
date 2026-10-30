@@ -23,12 +23,8 @@ pub mod macosx;
 #[cfg(any(windows, test))]
 pub mod windows;
 
-use crate::asset::AppriseAsset;
 use crate::types::NotifyType;
 use crate::utils::parse::ParsedUrl;
-
-/// Upstream `AppriseAsset.image_url_mask`.
-const DEFAULT_IMAGE_URL_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
 
 /// The 128x128 icons every desktop plugin uses (upstream `NotifyImageSize.XY_128`).
 const IMAGE_SIZE: &str = "128x128";
@@ -41,17 +37,6 @@ fn image_png(notify_type: &NotifyType) -> &'static [u8] {
     NotifyType::Warning => include_bytes!("assets/apprise-warning-128x128.png"),
     NotifyType::Failure => include_bytes!("assets/apprise-failure-128x128.png"),
   }
-}
-
-/// The icon's URL (upstream `image_url()`), or `None` when the asset turns
-/// image URLs off with an empty mask.
-#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
-fn image_url(asset: &AppriseAsset, notify_type: &NotifyType) -> Option<String> {
-  let mask = asset.image_url_mask.as_deref().unwrap_or(DEFAULT_IMAGE_URL_MASK);
-  if mask.is_empty() {
-    return None;
-  }
-  Some(mask.replace("{THEME}", &asset.theme).replace("{TYPE}", notify_type.as_str()).replace("{XY}", IMAGE_SIZE).replace("{EXTENSION}", ".png"))
 }
 
 /// A local copy of the icon (upstream `image_path()`), written to the cache
@@ -156,16 +141,6 @@ mod tests {
 
   #[test]
   fn test_images() {
-    let asset = AppriseAsset::default();
-    assert_eq!(
-      image_url(&asset, &NotifyType::Warning).as_deref(),
-      Some("https://github.com/caronc/apprise/raw/master/apprise/assets/themes/default/apprise-warning-128x128.png")
-    );
-    let custom = AppriseAsset { image_url_mask: Some("https://example.com/{TYPE}-{XY}{EXTENSION}".into()), ..Default::default() };
-    assert_eq!(image_url(&custom, &NotifyType::Info).as_deref(), Some("https://example.com/info-128x128.png"));
-    let off = AppriseAsset { image_url_mask: Some(String::new()), ..Default::default() };
-    assert!(image_url(&off, &NotifyType::Info).is_none());
-
     for notify_type in [NotifyType::Info, NotifyType::Success, NotifyType::Warning, NotifyType::Failure] {
       assert!(image_png(&notify_type).starts_with(b"\x89PNG"));
       let path = image_path(&notify_type).unwrap();

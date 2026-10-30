@@ -15,7 +15,7 @@ impl FeiShu {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     let token = match url.get("token").filter(|t| !t.is_empty()) {
       Some(t) => t.to_string(),
-      None => urlencoding::decode(url.host.as_deref().unwrap_or_default()).ok()?.into_owned(),
+      None => url.host.clone().unwrap_or_default(),
     };
     if token.is_empty() || !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
       tracing::warn!("The Feishu token specified is invalid.");
@@ -59,6 +59,7 @@ impl Notify for FeiShu {
     let url = format!("{}/open-apis/bot/v2/hook/{}/", service_base("https://open.feishu.cn"), self.token);
     let payload = json!({ "msg_type": "text", "content": { "text": ctx.body } });
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
     let status = resp.status();
     if status == reqwest::StatusCode::OK {
@@ -134,7 +135,7 @@ mod tests {
   async fn test_send_failure() {
     for code in [500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/open-apis/bot/v2/hook/token/")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let svc = from_url("feishu://token").unwrap();
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.is_err());

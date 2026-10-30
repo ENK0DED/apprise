@@ -11,6 +11,7 @@
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
@@ -49,7 +50,7 @@ impl MobileMessage {
     };
 
     // With ?from= the host becomes a target
-    let host = decode(url.host.as_deref().unwrap_or_default());
+    let host = url.host.clone().unwrap_or_default();
     let (source, mut entries) = match qsd("from") {
       Some(from) => {
         let mut entries = parse_phone_no(&[host.as_str()]);
@@ -131,21 +132,37 @@ impl MobileMessage {
       .collect();
     let payload = json!({ "messages": messages, "enable_unicode": self.unicode, "max_parts": self.max_parts });
 
+    // Serialize once so the sent data also identifies this request: a
+    // retry of an unanswered request reuses its key, so the service does
+    // not send or charge for it twice
+    let data = payload.to_string();
+    let fingerprint = hex::encode(Sha256::digest(data.as_bytes()));
+    let idempotency_key = match crate::delivery::recall(&fingerprint, false).and_then(|v| v.as_str().map(str::to_string)) {
+      Some(key) => key,
+      None => {
+        let key = uuid4();
+        crate::delivery::remember(&fingerprint, json!(key), false);
+        key
+      }
+    };
+
     tracing::debug!("Mobile Message POST URL: {} (cert_verify={})", url, self.verify_certificate);
+    crate::notify::throttle().await;
     let resp = match client
       .post(url)
       .header("User-Agent", APP_ID)
       .header("Accept", "application/json")
-      .header("Idempotency-Key", uuid4())
+      .header("Content-Type", "application/json")
+      .header("Idempotency-Key", idempotency_key)
       .basic_auth(&self.user, Some(&self.password))
-      .json(&payload)
+      .body(data)
       .send()
       .await
     {
       Ok(r) => r,
       Err(e) => {
         tracing::warn!("A Connection error occurred sending Mobile Message notification to {} target(s).", targets.len());
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return false;
       }
     };
@@ -171,6 +188,8 @@ impl MobileMessage {
     let mut accepted = 0;
     for (target, result) in targets.iter().zip(results) {
       if result.get("status").and_then(Value::as_str) == Some("success") {
+        // Taken by the service, so a retry can skip this one
+        crate::delivery::mark_delivered(target, false);
         accepted += 1;
         continue;
       }
@@ -215,8 +234,14 @@ impl Notify for MobileMessage {
     let url = format!("{}/v1/messages", service_base("https://api.mobilemessage.com.au"));
     let batch_size = if self.batch { BATCH_SIZE } else { 1 };
     let mut ok = true;
-    for targets in self.targets.chunks(batch_size) {
-      if !self.send_batch(&client, &url, targets, &ctx.body).await {
+    for batch in self.targets.chunks(batch_size) {
+      // The service reports on each recipient separately, so a retry only
+      // has to carry the ones it has not already taken
+      let targets: Vec<String> = batch.iter().filter(|t| !crate::delivery::is_delivered(t, false)).cloned().collect();
+      if targets.is_empty() {
+        continue;
+      }
+      if !self.send_batch(&client, &url, &targets, &ctx.body).await {
         ok = false;
       }
     }
@@ -272,10 +297,6 @@ fn status_reason(status: u16) -> &'static str {
     429 => "Too many requests in flight; five is the maximum.",
     _ => reqwest::StatusCode::from_u16(status).ok().and_then(|s| s.canonical_reason()).unwrap_or(""),
   }
-}
-
-fn decode(s: &str) -> String {
-  urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string())
 }
 
 fn truncate(text: &str) -> &str {
@@ -427,6 +448,7 @@ mod tests {
     let server = MockServer::start().await;
     for to in ["61412345678", "61498765432"] {
       Mock::given(method("POST"))
+        .and(path("/v1/messages"))
         .and(body_json(json!({"messages": [entry(to, "Title\r\n你好", "Unraid")], "enable_unicode": true, "max_parts": 2})))
         .respond_with(ok(1))
         .expect(1)
@@ -437,8 +459,7 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("Title\r\n你好"))).await.unwrap());
 
     // Every request carries its own Idempotency-Key
-    let requests = server.received_requests().await.unwrap();
-    let keys: Vec<_> = requests.iter().map(|r| r.headers.get("idempotency-key").unwrap().to_str().unwrap().to_string()).collect();
+    let keys = idempotency_keys(&server).await;
     assert_eq!(keys.len(), 2);
     assert_ne!(keys[0], keys[1]);
   }
@@ -460,17 +481,63 @@ mod tests {
     ];
     for body in failures {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(&body)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1/messages")).respond_with(ResponseTemplate::new(200).set_body_json(&body)).expect(1).mount(&server).await;
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap(), "{}", body);
     }
 
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/messages")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).expect(1).mount(&server).await;
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap());
 
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ok(2)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/messages")).respond_with(ok(2)).expect(1).mount(&server).await;
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap());
+  }
+
+  async fn idempotency_keys(server: &MockServer) -> Vec<String> {
+    let requests = server.received_requests().await.unwrap();
+    let ours = requests.iter().filter(|r| r.method.as_str() == "POST" && r.url.path() == "/v1/messages");
+    ours.map(|r| r.headers.get("idempotency-key").unwrap().to_str().unwrap().to_string()).collect()
+  }
+
+  #[tokio::test]
+  async fn test_retry_reuses_key_of_unanswered_request() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/v1/messages"));
+    send().respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().respond_with(ok(1)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("mobilemessage://user:pass@ALERTS/0412345678?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("B"))).await.is_success());
+    // The same request goes out again under the same key
+    let keys = idempotency_keys(&server).await;
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys[0], keys[1]);
+  }
+
+  #[tokio::test]
+  async fn test_retry_resends_only_refused_recipients() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/v1/messages"));
+    let refused = json!({"status": "complete", "results": [{"status": "success"}, {"status": "error", "error": "Invalid number"}]});
+    send()
+      .and(body_json(json!({"messages": [entry("61412345678", "B", "ALERTS"), entry("61498765432", "B", "ALERTS")], "enable_unicode": false, "max_parts": 10})))
+      .respond_with(ResponseTemplate::new(200).set_body_json(refused))
+      .expect(1)
+      .mount(&server)
+      .await;
+    send()
+      .and(body_json(json!({"messages": [entry("61498765432", "B", "ALERTS")], "enable_unicode": false, "max_parts": 10})))
+      .respond_with(ok(1))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("mobilemessage://user:pass@ALERTS/0412345678/0498765432?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("B"))).await.is_success());
+    // A different request gets a new key
+    let keys = idempotency_keys(&server).await;
+    assert_ne!(keys[0], keys[1]);
   }
 
   #[tokio::test]
@@ -478,7 +545,7 @@ mod tests {
     let svc = from_url("mobilemessage://user:pass@ALERTS/0412345678").unwrap();
     for status in [201, 400, 401, 403, 422, 429, 500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1/messages")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap(), "status {}", status);
     }
 

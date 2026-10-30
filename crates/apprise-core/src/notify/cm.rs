@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list};
 use crate::utils::phone::{is_phone_no, parse_phone_no};
 
 /// The channels that can reach a phone number, with the spelling the API
@@ -42,7 +42,7 @@ impl Cm {
     // The Product Token is the host, or ?token=
     let token = match url.get("token").filter(|t| !t.is_empty()) {
       Some(t) => t.to_string(),
-      None => decode(url.host.as_deref().unwrap_or_default()),
+      None => url.host.clone().unwrap_or_default(),
     };
     if !is_product_token(&token) {
       tracing::warn!("An invalid CM.com Product Token was specified.");
@@ -57,14 +57,9 @@ impl Cm {
 
     // Upstream parse_list() de-duplicates and sorts the channels before
     // they are matched without regard to case.
-    let mut requested: Vec<&str> = url
-      .get("channels")
-      .map(|c| c.split(|ch: char| ch.is_whitespace() || matches!(ch, '[' | ']' | ';' | ',')).filter(|s| !s.is_empty()).collect())
-      .unwrap_or_default();
-    requested.sort_unstable();
-    requested.dedup();
+    let mut requested = url.get("channels").map(parse_list).unwrap_or_default();
     if requested.is_empty() {
-      requested.push("sms");
+      requested.push("sms".to_string());
     }
     let mut channels = Vec::new();
     for channel in requested {
@@ -124,6 +119,7 @@ impl Cm {
 
     let url = format!("{}/v1.0/message", service_base("https://gw.messaging.cm.com"));
     tracing::debug!("CM.com POST URL: {} (cert_verify={})", url, self.verify_certificate);
+    crate::notify::throttle().await;
     let resp = match client
       .post(&url)
       .header("User-Agent", APP_ID)
@@ -136,7 +132,7 @@ impl Cm {
       Ok(r) => r,
       Err(e) => {
         tracing::warn!("A Connection error occurred sending CM.com notification to {} target(s).", targets.len());
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return false;
       }
     };
@@ -154,6 +150,9 @@ impl Cm {
 
     // An errorCode of 0 means every recipient was taken
     if !content.get("errorCode").is_some_and(truthy) {
+      for target in targets {
+        crate::delivery::mark_delivered(target, false);
+      }
       tracing::info!("Sent CM.com notification to {} target(s).", targets.len());
       return true;
     }
@@ -165,6 +164,8 @@ impl Cm {
     for (no, target) in &recipients {
       let result = results.iter().rev().find(|m| m.get("to").and_then(Value::as_str) == Some(no.as_str()));
       if result.and_then(|r| r.get("messageErrorCode")).is_some_and(is_zero) {
+        // Taken by CM.com, so a retry can skip this one
+        crate::delivery::mark_delivered(target, false);
         tracing::info!("Sent CM.com notification to {}.", target);
         continue;
       }
@@ -212,8 +213,14 @@ impl Notify for Cm {
     let sender = self.source.as_deref().unwrap_or(ctx.asset.app_id.as_str());
     let batch_size = if self.batch { BATCH_SIZE } else { 1 };
     let mut ok = true;
-    for targets in self.targets.chunks(batch_size) {
-      if !self.send_batch(&client, targets, &ctx.body, sender).await {
+    for batch in self.targets.chunks(batch_size) {
+      // CM.com reports on each recipient separately, so a retry only has
+      // to carry the ones it has not already taken
+      let targets: Vec<String> = batch.iter().filter(|t| !crate::delivery::is_delivered(t, false)).cloned().collect();
+      if targets.is_empty() {
+        continue;
+      }
+      if !self.send_batch(&client, &targets, &ctx.body, sender).await {
         ok = false;
       }
     }
@@ -252,10 +259,6 @@ fn status_reason(status: u16) -> &'static str {
     500 => "Unknown Error.",
     _ => reqwest::StatusCode::from_u16(status).ok().and_then(|s| s.canonical_reason()).unwrap_or(""),
   }
-}
-
-fn decode(s: &str) -> String {
-  urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string())
 }
 
 fn truncate(text: &str) -> &str {
@@ -374,6 +377,7 @@ mod tests {
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path("/v1.0/message"))
       .and(body_json(message(&["SMS"], "Apprise", &["0015551234568"], "B")))
       .respond_with(ok_response())
       .expect(1)
@@ -390,6 +394,7 @@ mod tests {
     // comes first here (verified with pycapture.py)
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v1.0/message"))
       .and(body_json(message(&["WhatsApp", "SMS"], "Alerts", &["0015551234567", "0015551234568"], "B")))
       .respond_with(ok_response())
       .expect(1)
@@ -405,6 +410,7 @@ mod tests {
     // A non-zero errorCode means each recipient has to be checked
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v1.0/message"))
       .respond_with(ResponseTemplate::new(200).set_body_json(json!({
         "details": "Created 1 message(s)",
         "errorCode": 201,
@@ -422,6 +428,7 @@ mod tests {
     // Every recipient accepted, even though errorCode is set
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v1.0/message"))
       .respond_with(ResponseTemplate::new(200).set_body_json(json!({
         "errorCode": 201,
         "messages": [
@@ -436,6 +443,7 @@ mod tests {
     // A recipient missing from the response counts as refused
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v1.0/message"))
       .respond_with(ResponseTemplate::new(200).set_body_json(json!({"errorCode": 201, "messages": [{"to": "0015551234567", "messageErrorCode": 0}]})))
       .mount(&server)
       .await;
@@ -443,17 +451,38 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn test_retry_resends_only_refused_recipients() {
+    let server = MockServer::start().await;
+    let refused = json!({
+      "errorCode": 201,
+      "messages": [{"to": "0015551234567", "messageErrorCode": 303}, {"to": "0015551234568", "messageErrorCode": 0}],
+    });
+    let send = || Mock::given(method("POST")).and(path("/v1.0/message"));
+    send()
+      .and(body_json(message(&["SMS"], "Apprise", &["0015551234567", "0015551234568"], "B")))
+      .respond_with(ResponseTemplate::new(200).set_body_json(refused))
+      .expect(1)
+      .mount(&server)
+      .await;
+    // The retry carries the refused number only
+    send().and(body_json(message(&["SMS"], "Apprise", &["0015551234567"], "B"))).respond_with(ok_response()).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("cm://{TOKEN}/15551234567/15551234568?batch=yes&retry=1&wait=0")));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("B"))).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_failures() {
     let svc = from_url(&format!("cm://{TOKEN}/15551234567")).unwrap();
     for (status, body) in [(400, r#"{"details": "Bad token"}"#), (500, "not json"), (999, "")] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1.0/message")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(1).mount(&server).await;
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap(), "status {}", status);
     }
 
     // Unreadable 200 responses rely on the status code
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1.0/message")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).mount(&server).await;
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap());
 
     // Nothing to notify

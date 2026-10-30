@@ -15,7 +15,6 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use crate::utils::phone::{is_phone_no, parse_phone_no};
-use crate::utils::validate::is_ipaddr;
 
 /// Added to a base URL given without its domain.
 const DOMAIN: &str = "api.infobip.com";
@@ -38,7 +37,7 @@ impl Infobip {
     let qsd = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty());
 
     // The host must be a valid hostname or IP address
-    let host = valid_host(url.host.as_deref().unwrap_or_default())?;
+    let host = url.verified_host()?;
 
     let apikey = qsd("key").map(str::to_string).or_else(|| url.user.clone()).unwrap_or_default();
     let Some(apikey) = validate(&apikey) else {
@@ -109,6 +108,12 @@ impl Notify for Infobip {
 
     let mut ok = true;
     for target in &self.targets {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
+
       let mut message = json!({ "destinations": [{ "to": target }], "content": { "text": ctx.body } });
       if let Some(source) = &self.source {
         message["sender"] = json!(source);
@@ -116,6 +121,7 @@ impl Notify for Infobip {
       let payload = json!({ "messages": [message] });
 
       tracing::debug!("Infobip POST URL: {} (cert_verify={})", url, self.verify_certificate);
+      crate::notify::throttle().await;
       let resp = match client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -128,7 +134,7 @@ impl Notify for Infobip {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Infobip notification to {}.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           ok = false;
           continue;
         }
@@ -159,36 +165,10 @@ impl Notify for Infobip {
         continue;
       }
       tracing::info!("Sent Infobip notification to {}.", target);
+      crate::delivery::mark_delivered(target, false);
     }
     Ok(ok)
   }
-}
-
-/// Upstream `is_hostname()` (underscores allowed, trailing dot dropped),
-/// falling back to an IP address.
-fn valid_host(host: &str) -> Option<String> {
-  if host.is_empty() || host.len() > 253 {
-    return None;
-  }
-  let name = host.strip_suffix('.').unwrap_or(host);
-  let labels: Vec<&str> = name.split('.').collect();
-  let ipv4_like = labels.len() == 4 && name.chars().all(|c| c.is_ascii_digit() || c == '.');
-  // ^([a-z0-9][a-z0-9_-]{1,62}|[a-z_-])(?<![_-])$
-  let label_ok = |l: &&str| {
-    let first = l.chars().next();
-    let last = l.chars().last();
-    let shaped = match l.len() {
-      1 => first.is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, '_' | '-')),
-      2..=63 => first.is_some_and(|c| c.is_ascii_alphanumeric()) && l.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')),
-      _ => false,
-    };
-    shaped && !matches!(last, Some('_' | '-'))
-  };
-  if !ipv4_like && labels.iter().all(label_ok) {
-    return Some(name.to_string());
-  }
-  let bare = name.trim_start_matches('[').trim_end_matches(']');
-  if is_ipaddr(bare) { Some(name.to_string()) } else { None }
 }
 
 /// Upstream `validate_regex()` with its default pattern: the value must not
@@ -325,6 +305,7 @@ mod tests {
     // No sender unless one was given
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/sms/3/messages"))
       .and(body_json(json!({"messages": [{"destinations": [{"to": "15551234567"}], "content": {"text": "B"}}]})))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -346,24 +327,25 @@ mod tests {
       (ResponseTemplate::new(999), "999"),
     ] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(response).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/sms/3/messages")).respond_with(response).expect(1).mount(&server).await;
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap(), "{}", label);
     }
 
     // A 200 answer that is not JSON relies on the status code
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).mount(&server).await;
+    Mock::given(method("POST")).and(path("/sms/3/messages")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).mount(&server).await;
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap());
 
     // One failed target fails the send, but the rest are still tried
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/sms/3/messages"))
       .and(wiremock::matchers::body_string_contains("15551234567"))
       .respond_with(status("REJECTED", "Not enough credits"))
       .expect(1)
       .mount(&server)
       .await;
-    Mock::given(method("POST")).respond_with(status("PENDING", "")).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/sms/3/messages")).respond_with(status("PENDING", "")).expect(1).mount(&server).await;
     let svc = from_url("infobip://KEY@xyz123/15551234567/15551234568").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap());
 
@@ -374,5 +356,19 @@ mod tests {
     // Connection errors fail the send
     let svc = from_url("infobip://KEY@xyz123/15551234567").unwrap();
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx("B"))).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    use wiremock::matchers::body_string_contains;
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/sms/3/messages"));
+    send().and(body_string_contains("15551234567")).respond_with(status("PENDING", "")).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    send().and(body_string_contains("15551234568")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(body_string_contains("15551234568")).respond_with(status("PENDING", "")).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("infobip://KEY@xyz123/15551234567/15551234568?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("B"))).await.is_success());
   }
 }

@@ -60,7 +60,7 @@ impl Gupshup {
     };
 
     // ?source= wins over ?from=, which wins over the host
-    let source = qsd("source").or_else(|| qsd("from")).map(str::to_string).unwrap_or_else(|| decode(url.host.as_deref().unwrap_or_default()));
+    let source = qsd("source").or_else(|| qsd("from")).map(str::to_string).unwrap_or_else(|| url.host.clone().unwrap_or_default());
     let Some(source) = is_phone_no(&source, 10) else {
       tracing::warn!("An invalid Gupshup Source Phone No ({}) was specified.", source);
       return None;
@@ -73,7 +73,7 @@ impl Gupshup {
 
     // Template placeholders arrive as :key=value
     let mut params = BTreeMap::new();
-    for (key, value) in url.qsd.iter().filter_map(|(k, v)| Some((k.strip_prefix(':')?, v.trim()))) {
+    for (key, value) in url.qsd_colon.iter().map(|(k, v)| (k.as_str(), v.as_str())) {
       let (index, fill) = match template_key(key) {
         Some(TemplateKey::Index(index)) => (index, Fill::Text(value.to_string())),
         Some(TemplateKey::Map(fill)) => match template_key(value) {
@@ -173,10 +173,17 @@ impl Notify for Gupshup {
 
     let mut ok = true;
     for target in &self.targets {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
+
       let mut form: Vec<(&str, &str)> = vec![("source", &self.source), ("src.name", &self.app), ("destination", target)];
       form.extend(fields.iter().map(|(k, v)| (*k, v.as_str())));
 
       tracing::debug!("Gupshup POST URL: {} (cert_verify={})", url, self.verify_certificate);
+      crate::notify::throttle().await;
       let resp = match client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -189,7 +196,7 @@ impl Notify for Gupshup {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Gupshup notification to {}.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           ok = false;
           continue;
         }
@@ -207,6 +214,7 @@ impl Notify for Gupshup {
         continue;
       }
       tracing::info!("Sent Gupshup notification to {}.", target);
+      crate::delivery::mark_delivered(target, false);
     }
     Ok(ok)
   }
@@ -271,10 +279,6 @@ fn status_reason(status: u16) -> &'static str {
     429 => "Too many requests were made.",
     _ => reqwest::StatusCode::from_u16(status).ok().and_then(|s| s.canonical_reason()).unwrap_or(""),
   }
-}
-
-fn decode(s: &str) -> String {
-  urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string())
 }
 
 fn truncate(text: &str) -> &str {
@@ -427,28 +431,43 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    use wiremock::matchers::body_string_contains;
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/wa/api/v1/msg"));
+    send().and(body_string_contains("destination=15551234567")).respond_with(ok_response()).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    send().and(body_string_contains("destination=15551234568")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(body_string_contains("destination=15551234568")).respond_with(ok_response()).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("{}/15551234567/15551234568?retry=1&wait=0", base())));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("B"))).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_failures() {
     let svc = from_url(&format!("{}/15551234567", base())).unwrap();
     for (status, body) in [(200, r#"{"status": "error", "message": "Authentication Failed"}"#), (401, ""), (500, "not json"), (999, "")] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/wa/api/v1/msg")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(1).mount(&server).await;
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap(), "status {}", status);
     }
 
     // A 2xx answer that is not JSON relies on the status code
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).mount(&server).await;
+    Mock::given(method("POST")).and(path("/wa/api/v1/msg")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).mount(&server).await;
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap());
 
     // One failed target fails the send, but the rest are still tried
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/wa/api/v1/msg"))
       .and(wiremock::matchers::body_string_contains("destination=15551234567"))
       .respond_with(ResponseTemplate::new(400))
       .expect(1)
       .mount(&server)
       .await;
-    Mock::given(method("POST")).respond_with(ok_response()).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/wa/api/v1/msg")).respond_with(ok_response()).expect(1).mount(&server).await;
     let svc = from_url(&format!("{}/15551234567/15551234568", base())).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap());
 

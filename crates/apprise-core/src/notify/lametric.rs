@@ -6,7 +6,7 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyType;
 use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{split_path, unquote};
+use crate::utils::parse::unquote;
 use crate::utils::validate::{is_hostname, is_ipaddr};
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -123,33 +123,20 @@ pub struct LaMetric {
 
 impl LaMetric {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(str::to_string);
+    // Upstream unquotes query values a second time
+    let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(unquote);
 
-    // A native https://developer.lametric.com/api/v1/dev/widget/update/
-    // com.lametric.{app_id}[/{ver}] URL is an indicator app in the cloud
-    let native = matches!(url.schema.as_str(), "http" | "https");
-    let (host, password, mut entries, native_ver) = if native {
-      let path = url.path.trim_end_matches('/');
-      let mut parts = path.splitn(5, '/');
-      let (Some("api"), Some(v), Some("dev"), Some("widget"), Some(rest)) = (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()) else {
-        return None;
-      };
-      let rest = rest.strip_prefix("update/")?;
-      if !v.starts_with('v') || !v[1..].chars().all(|c| c.is_ascii_digit()) || v.len() < 2 {
-        return None;
-      }
-      let (app, ver) = rest.split_once('/').map(|(a, v)| (a, Some(v.to_string()))).unwrap_or((rest, None));
-      let app = app.get(..13).filter(|p| p.eq_ignore_ascii_case("com.lametric.")).map(|_| &app[13..])?;
-      (Some(app.to_string()), None, Vec::new(), ver)
-    } else {
-      // A lone user is the API key or token
-      let password = url.password.clone().filter(|p| !p.is_empty()).or_else(|| url.user.clone().filter(|_| url.password.is_none()));
-      (url.host.clone().filter(|h| !h.is_empty()), password, split_path(url), None)
-    };
-    let user = if native || url.password.is_none() { None } else { url.user.clone().filter(|u| !u.is_empty()) };
+    // Native https://developer.lametric.com/api/v1/dev/widget/update/
+    // com.lametric.{app_id}[/{ver}] URLs arrive here already rewritten by
+    // the registry as lametric(s)://{app_id}[/{ver}]
+    // A lone user is the API key or token
+    let password = url.password.clone().or_else(|| url.user.clone().filter(|_| url.password.is_none()));
+    let host = url.host.clone();
+    let mut entries = url.path_parts.clone();
+    let user = if url.password.is_none() { None } else { url.user.clone() };
 
     let app_id_arg = qsd("app");
-    let app_ver_arg = qsd("app_ver").or(native_ver).or_else(|| if entries.is_empty() { None } else { Some(entries.remove(0)) });
+    let app_ver_arg = qsd("app_ver").or_else(|| if entries.is_empty() { None } else { Some(entries.remove(0)) });
     let token_arg = qsd("token");
 
     let mode = match qsd("mode") {
@@ -160,20 +147,19 @@ impl LaMetric {
           && password.as_deref().is_some_and(|p| !is_app_token(p))
           && app_id_arg.is_none()
           && app_ver_arg.is_none()
-          && token_arg.is_none()
-          && !native;
+          && token_arg.is_none();
         if device { "device".to_string() } else { "cloud".to_string() }
       }
     };
 
     let mode = match mode.as_str() {
       "cloud" => {
-        let app_id = app_id_arg.or_else(|| host.as_deref().map(unquote));
+        let app_id = app_id_arg.or_else(|| host.clone());
         let Some((app_id, detected_ver)) = app_id.as_deref().and_then(detect_app_id) else {
           tracing::warn!("An invalid LaMetric Application ID was specified.");
           return None;
         };
-        let app_token = token_arg.or_else(|| password.as_deref().map(unquote)).unwrap_or_default();
+        let app_token = token_arg.or_else(|| password.clone()).unwrap_or_default();
         if !is_app_token(&app_token) {
           tracing::warn!("An invalid LaMetric Application Access Token was specified.");
           return None;
@@ -189,7 +175,7 @@ impl LaMetric {
         Mode::Cloud { app_id, app_ver, app_token }
       }
       "device" => {
-        let apikey = qsd("apikey").or_else(|| password.as_deref().map(unquote));
+        let apikey = qsd("apikey").or_else(|| password.clone());
         let Some(apikey) = apikey.as_deref().and_then(|k| k.split_whitespace().next()).map(str::to_string) else {
           tracing::warn!("An invalid LaMetric Device API Key was specified.");
           return None;
@@ -300,11 +286,12 @@ impl Notify for LaMetric {
       }
     };
 
+    crate::notify::throttle().await;
     let resp = match request.body(serde_json::to_vec(&payload)?).send().await {
       Ok(resp) => resp,
       Err(e) => {
         tracing::warn!("A Connection error occurred sending LaMetric notification to {}.", target);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return Ok(false);
       }
     };
@@ -390,7 +377,8 @@ mod tests {
     let Mode::Cloud { app_id, app_ver, .. } = lametric(&format!("lametrics://{}==@{}/?mode=cloud&app_ver=2", "A".repeat(88), APP)).mode else { panic!() };
     assert_eq!((app_id.as_str(), app_ver.as_str()), ("941c51dff3135bd87aa72db9d855dd50", "2"));
     let Mode::Cloud { app_id, app_ver, .. } =
-      lametric(&format!("https://developer.lametric.com/api/v1/dev/widget/update/com.lametric.ABCD123/3?token={}==", "D".repeat(88))).mode
+      // What the registry makes of a native developer.lametric.com URL
+      lametric(&format!("lametrics://ABCD123/3/?token={}==", "D".repeat(88))).mode
     else {
       panic!()
     };
@@ -429,6 +417,7 @@ mod tests {
     // apprise-go parity golden "lametric-default": dev:{apikey}
     let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
+      .and(path("/api/v2/device/notifications"))
       .and(header("authorization", "Basic ZGV2OmFwaWtleQ=="))
       .and(body_json(json!({"priority": "info", "icon_type": "none", "lifetime": 120000, "model": {"cycles": 1, "frames": [{"icon": "i620", "text": "B"}]}})))
       .respond_with(ResponseTemplate::new(200))
@@ -461,7 +450,7 @@ mod tests {
   async fn test_send_failure() {
     for status in [500, 999, 204] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/api/v2/device/notifications")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let addr = server.address();
       let svc = from_url(&format!("lametric://{}@{}:{}/", UUID4, addr.ip(), addr.port())).unwrap();
       assert!(!svc.send(&NotifyContext { body: "B".into(), ..Default::default() }).await.unwrap());

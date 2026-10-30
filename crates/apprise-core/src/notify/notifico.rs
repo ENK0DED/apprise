@@ -1,8 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyType;
-use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd;
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
 use async_trait::async_trait;
 
 /// IRC formatting codes.
@@ -10,16 +9,10 @@ const COLOR_RESET: &str = "\x03";
 const FORMAT_BOLD: &str = "\x02";
 const FORMAT_RESET: &str = "\x0f";
 
-/// Upstream `parse_bool()` for a flag that defaults to yes when absent but
-/// to no when given an unrecognised value.
+/// Upstream `parse_bool(qsd.get(key, True))`: yes when absent, no when
+/// given an unrecognised value.
 fn flag(url: &ParsedUrl, key: &str) -> bool {
-  match qsd::get(url, key) {
-    None => true,
-    Some(v) => {
-      let head: String = v.to_lowercase().chars().take(2).collect();
-      ["en", "al", "t", "y", "ye", "on", "1", "tr"].contains(&head.as_str())
-    }
-  }
+  url.get(key).is_none_or(parse_bool)
 }
 
 /// Remove literal `\x03NN[,NN]` colour escapes typed into the body.
@@ -65,23 +58,20 @@ impl Notifico {
     let host = url.host.clone().unwrap_or_default();
     let entries = &url.path_parts;
 
-    let (mut project_id, mut msghook, selfhosted) = if url.schema == "http" || url.schema == "https" {
-      // Native https://n.tkte.ch/h/{project}/{hook}
-      if !host.eq_ignore_ascii_case("n.tkte.ch") || url.user.is_some() || url.port.is_some() || entries.len() != 3 || entries[0] != "h" {
-        return None;
-      }
-      (Some(entries[1].clone()), Some(entries[2].clone()), false)
-    } else if !host.is_empty() && host.chars().all(|c| c.is_ascii_digit()) {
+    // Native https://n.tkte.ch/h/{project}/{hook} URLs arrive here already
+    // rewritten by the registry as notifico://{project}/{hook}
+    let (mut project_id, mut msghook, selfhosted) = if !host.is_empty() && host.chars().all(|c| c.is_ascii_digit()) {
       // notifico://{project}/{hook}: the official service
       (Some(host.clone()), entries.first().cloned(), false)
     } else {
       (entries.first().cloned(), entries.get(1).cloned(), !host.is_empty())
     };
-    if let Some(t) = qsd::get(url, "token").filter(|t| !t.is_empty()) {
-      msghook = Some(qsd::unquote(&t));
+    // Upstream unquotes these a second time
+    if let Some(t) = url.get("token").filter(|t| !t.is_empty()) {
+      msghook = Some(unquote(t));
     }
-    if let Some(p) = qsd::get(url, "project").filter(|p| !p.is_empty()) {
-      project_id = Some(qsd::unquote(&p));
+    if let Some(p) = url.get("project").filter(|p| !p.is_empty()) {
+      project_id = Some(unquote(p));
     }
 
     let Some(project_id) = project_id.map(|p| p.trim().to_string()).filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) else {
@@ -182,6 +172,7 @@ impl Notify for Notifico {
       req = req.basic_auth(user, Some(self.password.clone().unwrap_or_default()));
     }
 
+    crate::notify::throttle().await;
     let resp = req.send().await?;
     let status = resp.status().as_u16();
     if status == 200 {
@@ -235,7 +226,8 @@ mod tests {
 
   #[test]
   fn test_parse() {
-    let n = nf("https://n.tkte.ch/h/2144/uJmKaBW9WFk42miB146ci3Kj?prefix=no");
+    // What the registry makes of https://n.tkte.ch/h/2144/uJmKaBW9WFk42miB146ci3Kj?prefix=no
+    let n = nf("notifico://2144/uJmKaBW9WFk42miB146ci3Kj/?prefix=no");
     assert_eq!((n.project_id.as_str(), n.msghook.as_str(), n.host.is_none(), n.prefix), ("2144", "uJmKaBW9WFk42miB146ci3Kj", true, false));
     let n = nf("notificos://user:pass@example.com:8443/?project=1234&token=hook");
     assert_eq!(n.notify_url(), "https://example.com:8443/h/1234/hook");

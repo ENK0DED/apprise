@@ -326,8 +326,8 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(nextcloudtalk::NextcloudTalk::from_url, "nctalk", "nctalks");
   reg!(notica::Notica::from_url, "notica", "noticas");
   reg!(notifiarr::Notifiarr::from_url, "notifiarr");
-  reg!(notifyre::Notifyre::from_url, "notifyre");
   reg!(notifico::Notifico::from_url, "notifico", "notificos");
+  reg!(notifyre::Notifyre::from_url, "notifyre");
   reg!(ntfy::Ntfy::from_url, "ntfy", "ntfys");
   reg!(octopush::Octopush::from_url, "octopush");
   reg!(office365::Office365::from_url, "o365", "azure");

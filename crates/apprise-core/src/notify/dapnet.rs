@@ -1,7 +1,6 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{parse_list, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -112,19 +111,18 @@ fn is_call_sign(target: &str) -> Option<String> {
 
 impl Dapnet {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (url_user, url_password) = url_credentials(url);
     // dapnet://user:password@callsign/callsigns
-    let user = url_user.clone().unwrap_or_default();
-    let password = url_password.clone().unwrap_or_default();
+    let user = url.user.clone().unwrap_or_default();
+    let password = url.password.clone().unwrap_or_default();
     if user.is_empty() || password.is_empty() {
       tracing::warn!("A Dapnet user/pass was not provided.");
       return None;
     }
 
-    let mut entries: Vec<String> = unquoted_host(url).into_iter().collect();
+    let mut entries: Vec<String> = url.host.iter().cloned().collect();
     entries.extend(url.path_parts.iter().cloned());
-    if let Some(to) = url.get("to").filter(|v| !v.trim().is_empty()) {
-      entries.extend(parse_list([to], true));
+    if let Some(to) = url.get("to").filter(|v| !v.is_empty()) {
+      entries.extend(parse_list(to));
     }
     let mut targets: Vec<String> = Vec::new();
     for target in parse_call_sign(&entries) {
@@ -140,7 +138,7 @@ impl Dapnet {
       let p = p.to_lowercase();
       PRIORITY_MAP.iter().find(|(k, _)| p.starts_with(k)).map(|(_, e)| *e)
     });
-    let txgroups = url.get("txgroups").map(|t| parse_list([t.to_lowercase()], true)).filter(|g| !g.is_empty()).unwrap_or_else(|| vec!["dl-all".to_string()]);
+    let txgroups = url.get("txgroups").map(|t| parse_list(&t.to_lowercase())).filter(|g| !g.is_empty()).unwrap_or_else(|| vec!["dl-all".to_string()]);
     let batch = url.get("batch").map(parse_bool).unwrap_or(false);
 
     Some(Self {
@@ -198,7 +196,14 @@ impl Notify for Dapnet {
     let batch_size = if self.batch { DEFAULT_BATCH_SIZE } else { 1 };
     let mut has_error = false;
 
-    for chunk in self.targets.chunks(batch_size) {
+    for (index, chunk) in self.targets.chunks(batch_size).enumerate() {
+      // Skip a batch that already went out so a retry does not deliver it
+      // to those recipients twice
+      let key = (index * batch_size).to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
+
       let payload = json!({
         "text": ctx.body,
         "callSignNames": chunk,
@@ -206,6 +211,7 @@ impl Notify for Dapnet {
         "emergency": self.emergency,
       });
       tracing::debug!("DAPNET POST URL: {}", url);
+      crate::notify::throttle().await;
       let result = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -215,7 +221,10 @@ impl Notify for Dapnet {
         .send()
         .await;
       match result {
-        Ok(resp) if resp.status() == reqwest::StatusCode::CREATED => tracing::info!("Sent DAPNET notification to {:?}", chunk),
+        Ok(resp) if resp.status() == reqwest::StatusCode::CREATED => {
+          tracing::info!("Sent DAPNET notification to {:?}", chunk);
+          crate::delivery::mark_delivered(&key, false);
+        }
         Ok(resp) => {
           let status = resp.status();
           tracing::warn!("Failed to send DAPNET notification to {:?}: error={}.", chunk, status.as_u16());
@@ -224,7 +233,7 @@ impl Notify for Dapnet {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending DAPNET notification to {:?}", chunk);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -237,7 +246,7 @@ impl Notify for Dapnet {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn dapnet(url: &str) -> Dapnet {
@@ -344,6 +353,7 @@ mod tests {
     let server = MockServer::start().await;
     for call in ["DF1ABC", "DF1DEF"] {
       Mock::given(method("POST"))
+        .and(path("/calls"))
         .and(body_json(json!({"text": "b", "callSignNames": [call], "transmitterGroupNames": ["dl-all"], "emergency": false})))
         .respond_with(ResponseTemplate::new(201))
         .expect(1)
@@ -355,10 +365,25 @@ mod tests {
 
     // Only 201 Created is success
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path("/calls")).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     assert!(!dapnet("dapnet://user:pass@abcdefghi/a").send(&ctx).await.unwrap());
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_accepted_call_signs() {
+    let ctx = NotifyContext { body: "b".into(), ..Default::default() };
+    let server = MockServer::start().await;
+    let calls = || Mock::given(method("POST")).and(path("/calls"));
+    calls().and(body_partial_json(json!({"callSignNames": ["DF1ABC"]}))).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    // The second call sign fails once, then accepts the retry
+    let second = json!({"callSignNames": ["DF1DEF"]});
+    calls().and(body_partial_json(&second)).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    calls().and(body_partial_json(&second)).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("dapnet://user:pass@DF1ABC/DF1DEF?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx)).await.is_success());
   }
 }

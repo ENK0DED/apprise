@@ -1,8 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::custom_json::{basic_auth, custom_args, header_map};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd;
+use crate::utils::parse::{ParsedUrl, parse_list, quote, unquote};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -13,6 +12,10 @@ const DEFAULT_VERSION: i64 = 21;
 
 /// Group ID meaning every user on the server.
 const ALL_GROUP: &str = "all";
+
+/// How long a group's members stay in the persistent store (upstream
+/// `group_discovery_cache_length_sec`).
+const GROUP_CACHE: std::time::Duration = std::time::Duration::from_secs(86400);
 
 /// A `[a-z0-9_-]+` name.
 fn is_name(s: &str) -> bool {
@@ -60,12 +63,12 @@ impl Nextcloud {
     let host = url.host.clone().filter(|h| !h.is_empty())?;
 
     let mut targets: Vec<String> = url.path_parts.clone();
-    if let Some(to) = qsd::get(url, "to").filter(|t| !t.is_empty()) {
-      targets.extend(qsd::parse_list(&to));
+    if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
+      targets.extend(parse_list(to));
     }
     let mut users = Vec::new();
     let mut groups = BTreeSet::new();
-    for target in qsd::parse_list(&targets.join(" ")) {
+    for target in parse_list(&targets.join(" ")) {
       if let Some(g) = parse_group(&target) {
         groups.insert(g);
       } else if let Some(u) = parse_user(&target) {
@@ -75,8 +78,9 @@ impl Nextcloud {
       }
     }
 
-    let version = match qsd::get(url, "version").filter(|v| !v.is_empty()) {
-      Some(v) => match qsd::unquote(&v).trim().parse::<i64>() {
+    // Upstream unquotes these a second time
+    let version = match url.get("version").filter(|v| !v.is_empty()) {
+      Some(v) => match unquote(v).trim().parse::<i64>() {
         Ok(n) if n >= 1 => n,
         _ => {
           tracing::warn!("At invalid Nextcloud version ({}) was specified.", v);
@@ -86,8 +90,7 @@ impl Nextcloud {
       None => DEFAULT_VERSION,
     };
 
-    let url_prefix =
-      qsd::get(url, "url_prefix").map(|p| qsd::unquote(&p)).filter(|p| !p.is_empty()).map(|p| format!("/{}", p.trim_matches('/'))).unwrap_or_default();
+    let url_prefix = url.get("url_prefix").map(unquote).filter(|p| !p.is_empty()).map(|p| format!("/{}", p.trim_matches('/'))).unwrap_or_default();
 
     Some(Self {
       host,
@@ -132,17 +135,22 @@ impl Nextcloud {
   }
 
   /// The users in `group` (or every user for [`ALL_GROUP`]) from the OCS
-  /// provisioning API. `Err` when the lookup itself failed.
-  ///
-  /// Upstream caches the answer in its persistent store for a day; this
-  /// port asks the server on every send.
+  /// provisioning API, kept in the persistent store for a day as upstream
+  /// does. `Err` when the lookup itself failed.
   async fn group_users(&self, client: &reqwest::Client, group: &str) -> Result<BTreeSet<String>, NotifyError> {
+    let cached = crate::storage::with_service_store(|s| s.get(group)).flatten().and_then(|v| serde_json::from_value::<BTreeSet<String>>(v).ok());
+    if let Some(users) = cached {
+      tracing::trace!("Using Nextcloud cached response for group '{}' query", group);
+      return Ok(users);
+    }
+
     let url = if group == ALL_GROUP {
       format!("{}/ocs/v1.php/cloud/users", self.base_url())
     } else {
-      format!("{}/ocs/v1.php/cloud/groups/{}", self.base_url(), qsd::quote(group, "/"))
+      format!("{}/ocs/v1.php/cloud/groups/{}", self.base_url(), quote(group, "/"))
     };
     tracing::debug!("Nextcloud group GET URL: {} (cert_verify={})", url, self.verify_certificate);
+    crate::notify::throttle().await;
     let resp = self.request(client, reqwest::Method::GET, &url)?.query(&[("format", "json")]).send().await?;
     let status = resp.status().as_u16();
     let text = resp.text().await.unwrap_or_default();
@@ -160,9 +168,15 @@ impl Nextcloud {
       }
       _ => BTreeSet::new(),
     };
+    if users.is_empty() && group == ALL_GROUP {
+      // Nothing worth keeping
+      tracing::warn!("Failed to retrieve all users from Nextcloud");
+      return Ok(users);
+    }
     if users.is_empty() {
       tracing::warn!("No users associated with Nextcloud group '{}'", group);
     }
+    crate::storage::with_service_store(|s| s.set(group, serde_json::json!(users), Some(GROUP_CACHE), true));
     Ok(users)
   }
 }
@@ -186,6 +200,19 @@ impl Notify for Nextcloud {
   }
   fn body_maxlen(&self) -> usize {
     4000
+  }
+  /// The server, not its users, decides what the group cache holds
+  fn url_identifier(&self) -> Option<Vec<String>> {
+    let opt = |v: &Option<String>| v.clone().unwrap_or_else(|| "\0".to_string());
+    let schema = if self.secure { "nclouds" } else { "ncloud" };
+    Some(vec![
+      schema.to_string(),
+      opt(&self.user),
+      opt(&self.password),
+      self.host.clone(),
+      self.port.map(|p| p.to_string()).unwrap_or_else(|| "\0".to_string()),
+      self.url_prefix.clone(),
+    ])
   }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
@@ -214,22 +241,31 @@ impl Notify for Nextcloud {
 
     let mut has_error = false;
     for target in &targets {
-      let target_esc = qsd::quote(target, "/");
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
+      let target_esc = quote(target, "/");
       let url = if self.version < 21 {
         format!("{}/ocs/v2.php/apps/admin_notifications/api/v1/notifications/{}", self.base_url(), target_esc)
       } else {
         format!("{}/ocs/v2.php/apps/notifications/api/v2/admin_notifications/{}", self.base_url(), target_esc)
       };
       tracing::debug!("Nextcloud v{} POST URL: {} (cert_verify={})", self.version, url, self.verify_certificate);
+      crate::notify::throttle().await;
       match self.request(&client, reqwest::Method::POST, &url)?.form(&payload).send().await {
-        Ok(r) if r.status().as_u16() == 200 => tracing::info!("Sent Nextcloud v{} Notify \"{}\"", self.version, target),
+        Ok(r) if r.status().as_u16() == 200 => {
+          tracing::info!("Sent Nextcloud v{} Notify \"{}\"", self.version, target);
+          crate::delivery::mark_delivered(target, false);
+        }
         Ok(r) => {
           tracing::warn!("Failed to send Nextcloud v{} Notify \"{}\": error={}.", self.version, target, r.status().as_u16());
           has_error = true;
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred with Nextcloud v{} Notify \"{}\"", self.version, target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -405,5 +441,42 @@ mod tests {
     Mock::given(method("POST")).and(path(format!("{}/a", base))).respond_with(ResponseTemplate::new(204)).expect(1).mount(&server).await;
     Mock::given(method("POST")).and(path(format!("{}/b", base))).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
     assert!(!nc(&format!("ncloud://localhost:{}/a/b", server.address().port())).send(&ctx("t", "b")).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_group_members_come_from_the_store() {
+    let server = MockServer::start().await;
+    // One lookup across both runs
+    Mock::given(method("GET"))
+      .and(path("/ocs/v1.php/cloud/groups/devs"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ocs": {"data": {"users": ["user1"]}}})))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let base = "/ocs/v2.php/apps/notifications/api/v2/admin_notifications";
+    Mock::given(method("POST")).and(path(format!("{}/user1", base))).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+      // A fresh instance each time, as a new process would have
+      let asset = crate::AppriseAsset { storage_path: Some(tmp.path().to_path_buf()), ..Default::default() };
+      let mut apprise = crate::Apprise::with_asset(asset);
+      assert!(apprise.add(&format!("ncloud://admin:pass@localhost:{}/%23devs", server.address().port())));
+      assert!(apprise.notify(&ctx("t", "b")).await.is_success());
+      apprise.flush_stores();
+    }
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_users_that_accepted() {
+    let server = MockServer::start().await;
+    let base = "/ocs/v2.php/apps/notifications/api/v2/admin_notifications";
+    Mock::given(method("POST")).and(path(format!("{}/a", base))).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second user fails once, then accepts the retry
+    Mock::given(method("POST")).and(path(format!("{}/b", base))).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path(format!("{}/b", base))).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("ncloud://localhost:{}/a/b?retry=1&wait=0", server.address().port())));
+    assert!(apprise.notify(&ctx("t", "b")).await.is_success());
   }
 }

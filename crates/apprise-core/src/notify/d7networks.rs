@@ -2,7 +2,6 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use crate::utils::phone::{is_phone_no, parse_phone_no};
-use crate::utils::urlbase::{url_credentials, url_host};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -19,7 +18,7 @@ pub struct D7Networks {
 impl D7Networks {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // ?token= wins; otherwise the token is user[:password] or :password
-    let (user, password) = url_credentials(url);
+    let (user, password) = (url.user.clone(), url.password.clone());
     let token = match (url.get("token").filter(|t| !t.is_empty()), user.filter(|u| !u.is_empty()), password.filter(|p| !p.is_empty())) {
       (Some(t), _, _) => t.to_string(),
       (None, Some(u), Some(p)) => format!("{}:{}", u, p),
@@ -34,7 +33,7 @@ impl D7Networks {
     }
     let token = token.trim().to_string();
 
-    let mut raw_targets = vec![url_host(url)];
+    let mut raw_targets = vec![url.host.clone().unwrap_or_default()];
     raw_targets.extend(url.path_parts.iter().cloned());
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
       raw_targets.extend(parse_phone_no(&[to]));
@@ -118,6 +117,9 @@ impl Notify for D7Networks {
   fn body_maxlen(&self) -> usize {
     160
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    0.2
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     if self.targets.is_empty() {
@@ -132,7 +134,14 @@ impl Notify for D7Networks {
     // One request for every target, or a single one for all of them
     let batches: Vec<&[String]> = if self.batch { vec![&self.targets[..]] } else { self.targets.chunks(1).collect() };
     for recipients in batches {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice (a batch is one request, so it is never split)
+      if !self.batch && crate::delivery::is_delivered(&recipients[0], false) {
+        continue;
+      }
+
       let p_target = recipients.join(", ");
+      crate::notify::throttle().await;
       let resp = match client
         .post(&notify_url)
         .header("User-Agent", APP_ID)
@@ -146,7 +155,7 @@ impl Notify for D7Networks {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending D7 Networks: {} notification.", p_target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -183,6 +192,7 @@ impl Notify for D7Networks {
         tracing::info!("Sent D7 Networks batch SMS notification to {} target(s).", recipients.len());
       } else {
         tracing::info!("Sent D7 Networks SMS notification to {}.", p_target);
+        crate::delivery::mark_delivered(&recipients[0], false);
       }
     }
 
@@ -194,7 +204,7 @@ impl Notify for D7Networks {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> D7Networks {
@@ -262,6 +272,7 @@ mod tests {
     let obj = parse("d7sms://token@15551231234");
     assert_eq!(obj.title_maxlen(), 0);
     assert_eq!(obj.body_maxlen(), 160);
+    assert_eq!(obj.request_rate_per_sec(), 0.2);
   }
 
   #[tokio::test]
@@ -308,6 +319,7 @@ mod tests {
     // A failed batch is reported as a failure (upstream 5e4d74d2), sent once
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/messages/v1/send"))
       .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"message": "Insufficient credit"}"#))
       .expect(1)
       .mount(&server)
@@ -319,9 +331,44 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure_per_target() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500).set_body_string("not json")).expect(2).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path("/messages/v1/send"))
+      .respond_with(ResponseTemplate::new(500).set_body_string("not json"))
+      .expect(2)
+      .mount(&server)
+      .await;
     let svc = from_url("d7sms://Token@15551231234/15551231236").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("test"))).await.unwrap());
+  }
+
+  fn to(number: &str) -> serde_json::Value {
+    json!({"messages": [{"recipients": [number]}]})
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/messages/v1/send"));
+    send().and(body_partial_json(to("15551231234"))).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    send().and(body_partial_json(to("15551231236"))).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(body_partial_json(to("15551231236"))).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("d7sms://Token@15551231234/15551231236?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("test"))).await.is_success());
+  }
+
+  #[tokio::test]
+  async fn test_requests_are_spaced_out() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/messages/v1/send")).respond_with(ResponseTemplate::new(200)).expect(3).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("d7sms://Token@15551231234/15551231235/15551231236"));
+    let started = std::time::Instant::now();
+    let sent = crate::notify::with_throttling_in_tests(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("test")))).await;
+    assert!(sent.is_success());
+    // Upstream waits 0.2s between requests
+    assert!(started.elapsed() >= std::time::Duration::from_millis(400), "{:?}", started.elapsed());
   }
 
   #[tokio::test]

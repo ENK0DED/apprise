@@ -134,6 +134,7 @@ impl Notify for Lauther {
     tracing::debug!("Lauther POST URL: {} (cert_verify={})", url, self.verify_certificate);
     tracing::debug!("Lauther Payload: {}", payload);
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client
       .post(&url)
       .header("User-Agent", APP_ID)
@@ -262,7 +263,7 @@ mod tests {
   async fn test_send_failure() {
     for code in [500u16, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1/push")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let svc = from_url("lauther://lpt_abc123").unwrap();
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&NotifyContext::default())).await.is_err());
     }

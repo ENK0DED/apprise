@@ -1,6 +1,7 @@
 use crate::error::NotifyError;
-use crate::notify::custom_json::{attachment_filename, basic_auth, custom_args, fullpath, header_map, parse_method};
+use crate::notify::custom_json::{CUSTOM_FORMATS, attachment_filename, basic_auth, custom_args, fullpath, header_map, parse_method};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::types::NotifyFormat;
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
 use base64::Engine;
@@ -166,6 +167,9 @@ impl Notify for Xml {
     // Upstream disables throttling for this service
     0.0
   }
+  fn notify_formats(&self) -> Vec<NotifyFormat> {
+    CUSTOM_FORMATS.to_vec()
+  }
   fn attachment_support(&self) -> bool {
     true
   }
@@ -186,6 +190,7 @@ impl Notify for Xml {
       req = req.basic_auth(user, Some(password));
     }
 
+    crate::notify::throttle().await;
     let resp = req.send().await?;
     let status = resp.status();
     if status.is_success() {

@@ -1,8 +1,8 @@
+use crate::asset::NotifyImageSize;
 use crate::error::NotifyError;
 use crate::notify::{Notify, NotifyContext, ServiceDetails};
-use crate::types::NotifyType;
-use crate::utils::parse::ParsedUrl;
-use crate::utils::url_args::{has_invalid_port, parse_bool_with_default, url_credentials};
+use crate::utils::parse::{ParsedUrl, parse_bool_or};
+use crate::utils::url_args::has_invalid_port;
 use async_trait::async_trait;
 use md5::{Digest, Md5};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,9 +22,6 @@ const SOCKET_TIMEOUT: Duration = Duration::from_secs(3);
 /// starts with.
 const PRIORITY_MAP: [(&str, i8); 10] = [("l", -2), ("m", -1), ("n", 0), ("h", 1), ("e", 2), ("-2", -2), ("-1", -1), ("0", 0), ("1", 1), ("2", 2)];
 
-/// Upstream `AppriseAsset.image_url_mask`.
-const DEFAULT_IMAGE_URL_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
-
 pub struct Growl {
   host: String,
   port: u16,
@@ -40,18 +37,18 @@ pub struct Growl {
 
 impl Growl {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+    // Upstream verifies the host and port
     if has_invalid_port(&url.raw) {
       return None;
     }
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     let port = match url.get("port") {
       Some(p) => p.trim().parse::<u16>().ok().filter(|p| *p > 0)?,
       None => url.port.unwrap_or(DEFAULT_PORT),
     };
 
     // growl://password@host: without a password, the user field holds it.
-    let (user, password) = url_credentials(url);
-    let password = password.or(user);
+    let password = url.password.clone().or_else(|| url.user.clone());
 
     let priority = url
       .get("priority")
@@ -76,8 +73,8 @@ impl Growl {
     };
 
     // An unrecognised value reads as false, as upstream `parse_bool()` does
-    let include_image = url.get("image").map(|v| parse_bool_with_default(v, false)).unwrap_or(true);
-    let sticky = url.get("sticky").map(|v| parse_bool_with_default(v, false)).unwrap_or(true);
+    let include_image = url.get("image").map(|v| parse_bool_or(v, false)).unwrap_or(true);
+    let sticky = url.get("sticky").map(|v| parse_bool_or(v, false)).unwrap_or(true);
 
     Some(Self { host, port, password, priority, version, include_image, sticky, registered: AtomicBool::new(false), tags: url.tags() })
   }
@@ -149,14 +146,7 @@ impl Growl {
     if !self.include_image || self.version < 2 {
       return None;
     }
-    let mask = ctx.asset.image_url_mask.as_deref().unwrap_or(DEFAULT_IMAGE_URL_MASK);
-    let notify_type = match ctx.notify_type {
-      NotifyType::Info => "info",
-      NotifyType::Success => "success",
-      NotifyType::Warning => "warning",
-      NotifyType::Failure => "failure",
-    };
-    Some(mask.replace("{THEME}", &ctx.asset.theme).replace("{TYPE}", notify_type).replace("{XY}", "72x72").replace("{EXTENSION}", ".png"))
+    ctx.image_url(NotifyImageSize::Xy72)
   }
 
   /// Send one GNTP message on its own connection and read the reply, which
@@ -266,6 +256,10 @@ impl Notify for Growl {
   fn body_max_line_count(&self) -> usize {
     2
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
+    0.0
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     if !self.registered.load(Ordering::SeqCst) {
@@ -276,6 +270,7 @@ impl Notify for Growl {
       self.registered.store(true, Ordering::SeqCst);
     }
 
+    crate::notify::throttle().await;
     if !self.transact("notification", &self.notify_packet(ctx)).await {
       return Ok(false);
     }
@@ -288,6 +283,7 @@ impl Notify for Growl {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
+  use crate::types::NotifyType;
 
   fn parse(url: &str) -> Option<Growl> {
     ParsedUrl::parse(url).and_then(|p| Growl::from_url(&p))
@@ -321,7 +317,8 @@ mod tests {
   #[test]
   fn test_invalid_urls() {
     // An unusable port fails to parse upstream, too
-    for url in ["growl://", "growl://:@/", "growl://growl.garbageport:garbage", "growl://growl.colon:"] {
+    // So does a host that is not a valid hostname (checked with pycapture.py)
+    for url in ["growl://", "growl://:@/", "growl://growl.garbageport:garbage", "growl://growl.colon:", "growl://bad_host_/", "growl://growl.server?port=0"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
   }

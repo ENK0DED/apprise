@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
+use crate::asset::NotifyImageSize;
 use crate::error::NotifyError;
 use crate::notify::{Notify, NotifyContext, ServiceDetails};
 use crate::utils::parse::ParsedUrl;
@@ -125,8 +126,12 @@ impl MacOSX {
     }
     // Version 2 uses the image as the app icon; version 3 attaches it
     if self.include_image {
-      let image =
-        if version == 2 { super::image_url(&ctx.asset, &ctx.notify_type) } else { super::image_path(&ctx.notify_type).map(|p| p.display().to_string()) };
+      let image = if version == 2 {
+        ctx.image_url(NotifyImageSize::Xy128)
+      } else {
+        // The asset's own icon file, else our cached copy of the bundled one
+        ctx.image_path(NotifyImageSize::Xy128).or_else(|| super::image_path(&ctx.notify_type)).map(|p| p.display().to_string())
+      };
       if let Some(image) = image {
         args.extend([if version == 2 { "-appIcon" } else { "-contentImage" }.into(), escape(&image)]);
       }
@@ -152,6 +157,10 @@ impl Notify for MacOSX {
   fn body_max_line_count(&self) -> usize {
     10
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
+    0.0
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let Some(path) = self.notify_path.as_deref().filter(|p| is_executable(p)) else {
@@ -165,6 +174,7 @@ impl Notify for MacOSX {
 
     let program = path.to_path_buf();
     let limit = self.send_timeout;
+    crate::notify::throttle().await;
     let output = tokio::task::spawn_blocking(move || run(&program, &args, limit)).await.map_err(|e| NotifyError::Other(e.to_string()))?;
     let output = match output {
       Ok(output) => output,

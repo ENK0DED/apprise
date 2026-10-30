@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::asset::AppriseAsset;
+use crate::asset::NotifyImageSize;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::types::NotifyType;
@@ -83,7 +83,7 @@ impl Kodi {
       "id": 1,
     });
     if self.include_image
-      && let Some(image) = image_url(&ctx.asset, &ctx.notify_type, "128x128")
+      && let Some(image) = ctx.image_url(NotifyImageSize::Xy128)
     {
       payload["params"]["image"] = json!(image);
       // Kodi v6 also takes the notification type (upstream puts it at the
@@ -100,17 +100,6 @@ impl Kodi {
   }
 }
 
-/// Upstream `AppriseAsset.image_url()`: the notification-type image at `xy`
-/// (`128x128`), or `None` when the asset disables images.
-fn image_url(asset: &AppriseAsset, notify_type: &NotifyType, xy: &str) -> Option<String> {
-  const DEFAULT_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
-  let mask = asset.image_url_mask.as_deref().unwrap_or(DEFAULT_MASK);
-  if mask.is_empty() {
-    return None;
-  }
-  Some(mask.replace("{THEME}", &asset.theme).replace("{TYPE}", notify_type.as_str()).replace("{XY}", xy).replace("{EXTENSION}", ".png"))
-}
-
 #[async_trait]
 impl Notify for Kodi {
   fn schemas(&self) -> &[&str] {
@@ -125,10 +114,11 @@ impl Notify for Kodi {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
-  // Anything past the first two lines is too much to display
   fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
     0.0
   }
+  // Anything past the first two lines is too much to display
   fn body_max_line_count(&self) -> usize {
     2
   }
@@ -147,10 +137,11 @@ impl Notify for Kodi {
       req = req.basic_auth(user, Some(self.password.as_deref().unwrap_or("")));
     }
 
+    crate::notify::throttle().await;
     let resp = match req.send().await {
       Ok(r) => r,
       Err(e) => {
-        tracing::warn!("A Connection error occurred sending XBMC/KODI notification: {}", e);
+        tracing::warn!("A Connection error occurred sending XBMC/KODI notification: {}", crate::error::loggable_http_error(&e));
         return Ok(false);
       }
     };

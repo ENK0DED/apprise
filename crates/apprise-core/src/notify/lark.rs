@@ -4,9 +4,6 @@ use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
 use serde_json::json;
 
-/// Native webhook URL prefix (upstream `parse_native_url`).
-const NATIVE_PREFIX: &str = "https://open.larksuite.com/open-apis/bot/v2/hook/";
-
 /// Lark bot webhook: `lark://{token}`.
 pub struct Lark {
   token: String,
@@ -16,23 +13,9 @@ pub struct Lark {
 
 impl Lark {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let token = if url.schema == "https" || url.schema == "http" {
-      // https://open.larksuite.com/open-apis/bot/v2/hook/{token}, nothing after
-      let prefix = url.raw.get(..NATIVE_PREFIX.len())?;
-      if !prefix.eq_ignore_ascii_case(NATIVE_PREFIX) {
-        return None;
-      }
-      let rest = &url.raw[NATIVE_PREFIX.len()..];
-      if rest.is_empty() || !rest.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-        return None;
-      }
-      rest.to_string()
-    } else {
-      match url.get("token").filter(|t| !t.is_empty()) {
-        Some(t) => t.to_string(),
-        None => urlencoding::decode(url.host.as_deref().unwrap_or_default()).ok()?.into_owned(),
-      }
-    };
+    // Native https://open.larksuite.com/open-apis/bot/v2/hook/{token} URLs
+    // arrive here already rewritten by the registry as lark://{token}
+    let token = url.get("token").filter(|t| !t.is_empty()).map(str::to_string).or_else(|| url.host.clone()).unwrap_or_default();
     if token.is_empty() || !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
       tracing::warn!("The Lark Bot Token specified is invalid.");
       return None;
@@ -68,11 +51,18 @@ impl Notify for Lark {
   fn body_maxlen(&self) -> usize {
     19985
   }
+  /// The title is sent on the first line of the text
+  fn overflow_amalgamate_title(&self) -> bool {
+    true
+  }
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let url = format!("{}/open-apis/bot/v2/hook/{}", service_base("https://open.larksuite.com"), self.token);
     let text = if ctx.title.is_empty() { ctx.body.clone() } else { format!("{}\n{}", ctx.title, ctx.body) };
     let payload = json!({ "msg_type": "text", "content": { "text": text } });
     let client = build_client(self.verify_certificate)?;
+    // Upstream calls throttle() twice here, which makes every send wait the
+    // full 5.5s; once is enough
+    crate::notify::throttle().await;
     let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
     let status = resp.status();
     if status == reqwest::StatusCode::OK {
@@ -133,7 +123,7 @@ mod tests {
   fn test_from_url_token() {
     assert_eq!(parse_lark("lark://abcd-1234").unwrap().token, "abcd-1234");
     assert_eq!(parse_lark("lark://host?token=abcd-1234").unwrap().token, "abcd-1234");
-    assert_eq!(parse_lark("https://open.larksuite.com/open-apis/bot/v2/hook/abcd-1234").unwrap().token, "abcd-1234");
+    assert_eq!(from_url("https://open.larksuite.com/open-apis/bot/v2/hook/abcd-1234").unwrap().service_name(), "Lark (Feishu)");
   }
 
   #[test]
@@ -142,6 +132,7 @@ mod tests {
     assert_eq!(details.service_name, "Lark (Feishu)");
     assert_eq!(details.protocols, vec!["lark"]);
     assert_eq!(from_url("lark://abcd-1234").unwrap().body_maxlen(), 19985);
+    assert!(from_url("lark://abcd-1234").unwrap().overflow_amalgamate_title());
   }
 
   async fn send_expecting(ctx: &NotifyContext, text: &str) {
@@ -168,7 +159,7 @@ mod tests {
   async fn test_send_failure() {
     for code in [500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/open-apis/bot/v2/hook/abcd-1234")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let svc = from_url("lark://abcd-1234").unwrap();
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.is_err());

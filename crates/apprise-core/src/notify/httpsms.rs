@@ -2,7 +2,6 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use crate::utils::phone::{is_phone_no, parse_phone_no};
-use crate::utils::urlbase::{url_credentials, url_host};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -16,7 +15,7 @@ pub struct HttpSms {
 
 impl HttpSms {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let apikey = url.get("key").filter(|k| !k.is_empty()).map(str::to_string).or_else(|| url_credentials(url).0).unwrap_or_default();
+    let apikey = url.get("key").filter(|k| !k.is_empty()).map(str::to_string).or_else(|| url.user.clone()).unwrap_or_default();
     // validate_regex(): must start with a non-whitespace character
     if apikey.is_empty() || apikey.starts_with(char::is_whitespace) {
       tracing::warn!("An invalid API Key was specified.");
@@ -24,7 +23,7 @@ impl HttpSms {
     }
     let apikey = apikey.trim().to_string();
 
-    let host = url_host(url);
+    let host = url.host.clone().unwrap_or_default();
     let (source, mut raw_targets) = match url.get("from").filter(|f| !f.is_empty()) {
       // The host is a target when ?from= names the source
       Some(from) => (from.to_string(), parse_phone_no(&[host])),
@@ -103,7 +102,14 @@ impl Notify for HttpSms {
     let mut has_error = false;
 
     for target in &self.targets {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
+
       let payload = json!({ "from": format!("+{}", self.source), "to": format!("+{}", target), "content": ctx.body });
+      crate::notify::throttle().await;
       let resp = match client
         .post(&notify_url)
         .header("User-Agent", APP_ID)
@@ -116,7 +122,7 @@ impl Notify for HttpSms {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending HttpSMS: to {}", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -130,6 +136,7 @@ impl Notify for HttpSms {
         continue;
       }
       tracing::info!("Sent HttpSMS notification to {}.", target);
+      crate::delivery::mark_delivered(target, false);
     }
 
     Ok(!has_error)
@@ -140,7 +147,7 @@ impl Notify for HttpSms {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> HttpSms {
@@ -236,9 +243,23 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/v1/messages/send"));
+    send().and(body_partial_json(json!({"to": "+15551231234"}))).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    let second = json!({"to": "+15555555555"});
+    send().and(body_partial_json(&second)).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(body_partial_json(&second)).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("httpsms://key@14051231234/15551231234/15555555555?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("body"))).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_only_200_succeeds() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(202)).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/messages/send")).respond_with(ResponseTemplate::new(202)).expect(2).mount(&server).await;
     let svc = from_url("httpsms://key@14051231234/15551231234/15555555555").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
   }

@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 
@@ -13,7 +13,7 @@ pub struct Msg91 {
   template: String,
   targets: Vec<String>,
   short_url: bool,
-  /// `:key=value` URL arguments, in key order
+  /// `:key=value` URL arguments, in URL order
   template_mapping: Vec<(String, String)>,
   verify_certificate: bool,
   tags: Vec<String>,
@@ -21,15 +21,14 @@ pub struct Msg91 {
 
 impl Msg91 {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (url_user, _) = url_credentials(url);
     // msg91://template_id@authkey/phone1/phone2
-    let authkey = unquoted_host(url).unwrap_or_default();
+    let authkey = url.host.clone().unwrap_or_default();
     if authkey.is_empty() || !authkey.chars().all(|c| c.is_ascii_alphanumeric()) {
       tracing::warn!("An invalid MSG91 Authentication Key was specified.");
       return None;
     }
     // Upstream: `^[a-z0-9 _-]+$`, stored trimmed and never blank
-    let template = url_user.clone().unwrap_or_default();
+    let template = url.user.clone().unwrap_or_default();
     if !template.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '_' | '-')) || template.trim().is_empty() {
       tracing::warn!("An invalid MSG91 Template ID ({}) was specified.", template);
       return None;
@@ -37,11 +36,11 @@ impl Msg91 {
     let template = template.trim().to_string();
 
     let mut entries = url.path_parts.clone();
-    if let Some(to) = url.get("to").filter(|v| !v.trim().is_empty()) {
-      entries.extend(parse_phone_no([to], false));
+    if let Some(to) = url.get("to").filter(|v| !v.is_empty()) {
+      entries.extend(parse_phone_no(&[to]));
     }
     let mut targets = Vec::new();
-    for target in parse_phone_no(&entries, false) {
+    for target in parse_phone_no(&entries) {
       match is_phone_no(&target, 10) {
         Some(phone) => targets.push(phone.full),
         None => tracing::warn!("Dropped invalid phone # ({}) specified.", target),
@@ -50,9 +49,7 @@ impl Msg91 {
 
     let short_url = url.get("short_url").filter(|v| !v.trim().is_empty()).map(parse_bool).unwrap_or(false);
 
-    let mut template_mapping: Vec<(String, String)> =
-      url.qsd.iter().filter_map(|(k, v)| k.strip_prefix(':').map(|k| (k.to_string(), v.trim().to_string()))).collect();
-    template_mapping.sort();
+    let template_mapping: Vec<(String, String)> = url.qsd_colon.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
     Some(Self { authkey, template, targets, short_url, template_mapping, verify_certificate: url.verify_certificate(), tags: url.tags() })
   }
@@ -136,6 +133,7 @@ impl Notify for Msg91 {
 
     let client = build_client(self.verify_certificate)?;
     let url = format!("{}/api/v5/flow/", service_base("https://control.msg91.com"));
+    crate::notify::throttle().await;
     let result = client
       .post(&url)
       .header("User-Agent", APP_ID)
@@ -162,7 +160,7 @@ impl Notify for Msg91 {
       }
       Err(e) => {
         tracing::warn!("A Connection error occurred sending MSG91:{} notification.", self.targets.join(","));
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         Ok(false)
       }
     }
@@ -264,6 +262,7 @@ mod tests {
   async fn test_send_template_mapping() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/api/v5/flow/"))
       .and(body_json(json!({
         "template_id": "template1",
         "short_url": 1,
@@ -283,6 +282,7 @@ mod tests {
   async fn test_send_template_mapping_removes_fields() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/api/v5/flow/"))
       .and(body_json(json!({
         "template_id": "12345",
         "short_url": 0,
@@ -307,7 +307,7 @@ mod tests {
 
     // Anything but 200 fails
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(202)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api/v5/flow/")).respond_with(ResponseTemplate::new(202)).expect(1).mount(&server).await;
     let svc = from_url(&format!("msg91://{}@{}/15551232000", "t".repeat(20), "a".repeat(23))).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 

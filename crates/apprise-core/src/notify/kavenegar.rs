@@ -2,7 +2,6 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use crate::utils::phone::{is_phone_no, parse_phone_no};
-use crate::utils::urlbase::{url_credentials, url_host};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -16,14 +15,14 @@ pub struct Kavenegar {
 
 impl Kavenegar {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let apikey = url_host(url);
+    let apikey = url.host.clone().unwrap_or_default();
     // ^[a-z0-9]+$ (case-insensitive)
     if apikey.is_empty() || !apikey.chars().all(|c| c.is_ascii_alphanumeric()) {
       tracing::warn!("An invalid Kavenegar API Key was specified.");
       return None;
     }
 
-    let source = url.get("from").filter(|f| !f.is_empty()).map(str::to_string).or_else(|| url_credentials(url).0.filter(|u| !u.is_empty()));
+    let source = url.get("from").filter(|f| !f.is_empty()).map(str::to_string).or_else(|| url.user.clone());
     let source = match source {
       Some(s) => match is_phone_no(&s, 10) {
         Some(p) => Some(p.full),
@@ -108,6 +107,9 @@ impl Notify for Kavenegar {
   fn body_maxlen(&self) -> usize {
     160
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    0.2
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     if self.targets.is_empty() {
@@ -121,16 +123,23 @@ impl Notify for Kavenegar {
     let mut has_error = false;
 
     for target in &self.targets {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
+
       let mut params = vec![("receptor", target.as_str()), ("message", ctx.body.as_str())];
       if let Some(source) = &self.source {
         params.push(("sender", source.as_str()));
       }
 
+      crate::notify::throttle().await;
       let resp = match client.post(&notify_url).header("User-Agent", APP_ID).header("Accept", "application/json").query(&params).send().await {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Kavenegar:{} notification.", self.targets.join(", "));
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -163,6 +172,7 @@ impl Notify for Kavenegar {
         continue;
       }
       tracing::info!("Sent Kavenegar SMS notification to {}.", target);
+      crate::delivery::mark_delivered(target, false);
     }
 
     Ok(!has_error)
@@ -173,7 +183,7 @@ impl Notify for Kavenegar {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{header, method, path};
+  use wiremock::matchers::{header, method, path, query_param};
   use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
   fn parse(url: &str) -> Kavenegar {
@@ -240,6 +250,7 @@ mod tests {
     let obj = parse("kavenegar://apikey/15551231234");
     assert_eq!(obj.title_maxlen(), 0);
     assert_eq!(obj.body_maxlen(), 160);
+    assert_eq!(obj.request_rate_per_sec(), 0.2);
   }
 
   fn query_is(expected: &'static str) -> impl Fn(&Request) -> bool {
@@ -281,12 +292,39 @@ mod tests {
   async fn test_send_failure() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v1/apikey123/sms/send.json"))
       .respond_with(ResponseTemplate::new(418).set_body_string(r#"{"return": {"status": 418, "message": "credit"}}"#))
       .expect(2)
       .mount(&server)
       .await;
     let svc = from_url("kavenegar://apikey123/15551231234/15557654321").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/v1/apikey123/sms/send.json"));
+    send().and(query_param("receptor", "15551231234")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    send().and(query_param("receptor", "15557654321")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(query_param("receptor", "15557654321")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("kavenegar://apikey123/15551231234/15557654321?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("body"))).await.is_success());
+  }
+
+  #[tokio::test]
+  async fn test_requests_are_spaced_out() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/v1/apikey123/sms/send.json")).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("kavenegar://apikey123/15551231234/15557654321"));
+    let started = std::time::Instant::now();
+    let sent = crate::notify::with_throttling_in_tests(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("body")))).await;
+    assert!(sent.is_success());
+    // Upstream waits 0.2s between requests
+    assert!(started.elapsed() >= std::time::Duration::from_millis(200), "{:?}", started.elapsed());
   }
 
   #[tokio::test]

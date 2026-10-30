@@ -120,6 +120,7 @@ impl Notify for Gotify {
     }
 
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client.post(&api_url).header("User-Agent", APP_ID).header("X-Gotify-Key", &self.token).json(&payload).send().await?;
 
     // Upstream accepts 200 only

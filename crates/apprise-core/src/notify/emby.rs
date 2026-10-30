@@ -161,7 +161,7 @@ impl Emby {
       Ok(r) => r,
       Err(e) => {
         tracing::warn!("A Connection error occurred querying {} for session information at {}.", self.flavor.details().service_name, self.host);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return Vec::new();
       }
     };
@@ -225,16 +225,25 @@ impl Notify for Emby {
 
     let mut has_error = false;
     for session in &sessions {
+      // Skip a session that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(session, false) {
+        continue;
+      }
       let url = format!("{}/Sessions/{}/Message", self.base_url(), session);
+      crate::notify::throttle().await;
       match self.request(&client, reqwest::Method::POST, &url, ctx, Some(&login)).body(body.clone()).send().await {
-        Ok(r) if [200, 204].contains(&r.status().as_u16()) => tracing::info!("Sent {} notification.", self.flavor.details().service_name),
+        Ok(r) if [200, 204].contains(&r.status().as_u16()) => {
+          tracing::info!("Sent {} notification.", self.flavor.details().service_name);
+          crate::delivery::mark_delivered(session, false);
+        }
         Ok(r) => {
           tracing::warn!("Failed to send {} notification: error={}.", self.flavor.details().service_name, r.status().as_u16());
           has_error = true;
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending {} notification to {}.", self.flavor.details().service_name, self.host);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -402,5 +411,25 @@ mod tests {
     assert!(!emby_for(&server, "l2g:pass", "").send(&ctx()).await.unwrap());
 
     assert!(matches!(Emby::from_url(&ParsedUrl::parse("emby://l2g@127.0.0.1:1").unwrap()).unwrap().send(&ctx()).await, Err(NotifyError::Http(_))));
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_sessions_that_accepted() {
+    let server = MockServer::start().await;
+    mount_login(&server, json!({"AccessToken": "tok", "Id": "uid"})).await;
+    Mock::given(method("GET"))
+      .and(path("/Sessions"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"Id": "s1"}, {"Id": "s2"}])))
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/Sessions/s1/Message")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second session fails once, then accepts the retry
+    let s2 = || Mock::given(method("POST")).and(path("/Sessions/s2/Message"));
+    s2().respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    s2().respond_with(ResponseTemplate::new(204)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/Sessions/Logout")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("emby://l2g:pass@localhost:{}?retry=1&wait=0", server.address().port())));
+    assert!(apprise.notify(&ctx()).await.is_success());
   }
 }

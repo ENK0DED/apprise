@@ -6,8 +6,7 @@
 
 use crate::error::NotifyError;
 use crate::notify::{Notify, NotifyContext, ServiceDetails};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::url_args::{parse_bool_with_default, parse_list, split_path, url_credentials};
+use crate::utils::parse::{ParsedUrl, parse_bool_or, parse_list, unquote};
 use async_trait::async_trait;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -98,24 +97,23 @@ pub struct Irc {
 impl Irc {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     let host = url.host.clone().unwrap_or_default();
-    let (user, password) = url_credentials(url);
+    let (user, password) = (url.user.clone(), url.password.clone());
     let mut secure = url.schema == "ircs";
 
     let mut entries = Vec::new();
     // With ?host=, the URL's host is a target too (it does not replace the
     // host).
     if url.get("host").is_some_and(|h| !h.is_empty()) {
-      entries.push(urlencoding::decode(&host).map(|h| h.into_owned()).unwrap_or_else(|_| host.clone()));
+      entries.push(host.clone());
     }
-    entries.extend(split_path(url));
+    entries.extend(url.path_parts.iter().cloned());
+    // Upstream unquotes this a second time
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      entries.push(to.to_string());
+      entries.push(unquote(to));
     }
 
-    let mut port = match url.get("port") {
-      Some(p) => Some(p.trim().parse::<u16>().ok().filter(|p| *p > 0)?),
-      None => url.port,
-    };
+    // ParsedUrl already applied ?port=; an unreadable one is ignored
+    let mut port = url.port.filter(|p| *p > 0);
     let mut auth_mode = AuthMode::Server;
     if port.is_none() {
       let lower = host.to_lowercase();
@@ -139,7 +137,7 @@ impl Irc {
 
     let mut channels: Vec<(String, Option<String>)> = Vec::new();
     let mut users = Vec::new();
-    for target in parse_list(&entries) {
+    for target in parse_list(&entries.join(" ")) {
       if let Some((channel, key)) = parse_channel(&target) {
         match channels.iter_mut().find(|(c, _)| *c == channel) {
           Some(existing) => existing.1 = key,
@@ -161,7 +159,7 @@ impl Irc {
       .unwrap_or_default();
     let fullname = url.get("name").map(|n| n.trim().to_string()).unwrap_or_default();
     // A value that is not a recognised boolean reads as false.
-    let join = url.get("join").map(|v| parse_bool_with_default(v, false)).unwrap_or(true);
+    let join = url.get("join").map(|v| parse_bool_or(v, false)).unwrap_or(true);
 
     let timeouts = crate::utils::socket::url_timeouts(url);
     let rto = timeouts.read_timeout().unwrap_or(Duration::from_secs(4)).as_secs_f64();
@@ -226,16 +224,28 @@ impl Irc {
     }
 
     for (channel, key) in &self.channels {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      let delivery_key = format!("channel|{}", channel);
+      if crate::delivery::is_delivered(&delivery_key, false) {
+        continue;
+      }
       let chan = format!("#{}", channel);
       if self.join || key.is_some() {
         client.join(&chan, key.as_deref(), self.join_timeout, self.send_timeout).await?;
       }
       client.privmsg(&chan, message, self.send_timeout).await?;
       tracing::info!("Sent IRC notification to #{} as @{}", channel, client.accepted_nick);
+      crate::delivery::mark_delivered(&delivery_key, false);
     }
     for user in &self.users {
+      let delivery_key = format!("user|{}", user);
+      if crate::delivery::is_delivered(&delivery_key, false) {
+        continue;
+      }
       client.privmsg(user, message, self.send_timeout).await?;
       tracing::info!("Sent IRC notification to @{} as @{}", user, client.accepted_nick);
+      crate::delivery::mark_delivered(&delivery_key, false);
     }
     Ok(())
   }
@@ -566,6 +576,9 @@ impl Notify for Irc {
   fn title_maxlen(&self) -> usize {
     0
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    0.02
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     if self.channels.is_empty() && self.users.is_empty() {
@@ -577,6 +590,7 @@ impl Notify for Irc {
     let fullname = if self.fullname.is_empty() { ctx.asset.app_desc.clone() } else { self.fullname.clone() };
     let message = if ctx.title.is_empty() { ctx.body.clone() } else { format!("{} {}", ctx.title, ctx.body).trim().to_string() };
 
+    crate::notify::throttle().await;
     match self.run(nickname.clone(), fullname, ctx, &message).await {
       Ok(()) => Ok(true),
       Err(e) => {
@@ -748,33 +762,43 @@ mod tests {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let handle = tokio::spawn(async move {
-      let (tcp, _) = listener.accept().await.unwrap();
-      let stream: Box<dyn IrcStream> = if tls {
-        match crate::utils::socket::test_tls_acceptor().accept(tcp).await {
-          Ok(s) => Box::new(s),
-          Err(_) => return vec![],
+      // Other local processes sometimes probe random ports; skip any
+      // connection that does not open with an IRC registration command
+      'connection: loop {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let stream: Box<dyn IrcStream> = if tls {
+          match crate::utils::socket::test_tls_acceptor().accept(tcp).await {
+            Ok(s) => Box::new(s),
+            // Plain bytes from a stray probe; a client that refuses our
+            // certificate ends the handshake with an alert instead
+            Err(e) if e.to_string().contains("InvalidContentType") => continue,
+            Err(_) => return vec![],
+          }
+        } else {
+          Box::new(tcp)
+        };
+        let (reader, mut writer) = tokio::io::split(stream);
+        let mut reader = BufReader::new(reader);
+        let mut lines = Vec::new();
+        let mut line = String::new();
+        while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+          let received = line.trim_end_matches(['\r', '\n']).to_string();
+          if lines.is_empty() && !["PASS ", "NICK ", "CAP ", "USER "].iter().any(|c| received.starts_with(c)) {
+            continue 'connection;
+          }
+          assert!(line.ends_with("\r\n"), "line without CRLF: {:?}", line);
+          line.clear();
+          for reply in respond(&received) {
+            writer.write_all(format!("{}\r\n", reply).as_bytes()).await.unwrap();
+          }
+          let quit = received.starts_with("QUIT");
+          lines.push(received);
+          if quit {
+            break;
+          }
         }
-      } else {
-        Box::new(tcp)
-      };
-      let (reader, mut writer) = tokio::io::split(stream);
-      let mut reader = BufReader::new(reader);
-      let mut lines = Vec::new();
-      let mut line = String::new();
-      while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
-        let received = line.trim_end_matches(['\r', '\n']).to_string();
-        assert!(line.ends_with("\r\n"), "line without CRLF: {:?}", line);
-        line.clear();
-        for reply in respond(&received) {
-          writer.write_all(format!("{}\r\n", reply).as_bytes()).await.unwrap();
-        }
-        let quit = received.starts_with("QUIT");
-        lines.push(received);
-        if quit {
-          break;
-        }
+        return lines;
       }
-      lines
     });
     (port, handle)
   }

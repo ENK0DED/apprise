@@ -66,6 +66,7 @@ impl GroupMe {
   async fn upload_image(&self, client: &reqwest::Client, token: &str, attachment: &Attachment) -> Option<String> {
     let url = format!("{}/pictures", service_base("https://image.groupme.com"));
     tracing::debug!("GroupMe image upload URL: {} (cert_verify={})", url, self.verify_certificate);
+    crate::notify::throttle().await;
     let resp = match client
       .post(&url)
       .header("User-Agent", APP_ID)
@@ -78,7 +79,7 @@ impl GroupMe {
       Ok(resp) => resp,
       Err(e) => {
         tracing::warn!("A Connection error occurred uploading GroupMe image.");
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return None;
       }
     };
@@ -165,6 +166,7 @@ impl Notify for GroupMe {
     let url = format!("{}/v3/bots/post", service_base("https://api.groupme.com"));
     tracing::debug!("GroupMe POST URL: {} (cert_verify={})", url, self.verify_certificate);
     tracing::debug!("GroupMe Payload: {}", payload);
+    crate::notify::throttle().await;
     let resp =
       client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/json; charset=utf-8").body(payload.to_string()).send().await?;
 
@@ -256,14 +258,14 @@ mod tests {
   async fn test_send_http_errors() {
     for code in [400u16, 401, 404, 429, 500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v3/bots/post")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let svc = from_url(&format!("groupme://{}", BOT_ID)).unwrap();
       let ctx = NotifyContext { body: "Test".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.is_err(), "code {}", code);
     }
     // 200 is accepted as well as 202
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v3/bots/post")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
     let svc = from_url(&format!("groupme://{}", BOT_ID)).unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&NotifyContext::default())).await.unwrap());
   }

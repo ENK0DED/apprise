@@ -94,7 +94,7 @@ impl Exotel {
     };
 
     // ?source= wins over ?from=, which wins over the host
-    let source = qsd("source").or_else(|| qsd("from")).map(str::to_string).unwrap_or_else(|| decode(url.host.as_deref().unwrap_or_default()));
+    let source = qsd("source").or_else(|| qsd("from")).map(str::to_string).unwrap_or_else(|| url.host.clone().unwrap_or_default());
     let Some(source) = parse_source(&source) else {
       tracing::warn!("The Account (From) Phone # / Sender ID specified ({}) is invalid.", source);
       return None;
@@ -172,14 +172,25 @@ impl Notify for Exotel {
 
     let mut ok = true;
     for targets in self.targets.chunks(batch_size) {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      let key = targets.join(",");
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
+
       let label = if self.batch { format!("{} targets", targets.len()) } else { targets[0].clone() };
       let mut form: Vec<(&str, &str)> = vec![("From", &self.source), ("Body", &ctx.body), ("EncodingType", encoding), ("Priority", self.priority)];
       form.extend(targets.iter().map(|t| ("To", t.as_str())));
 
       tracing::debug!("Exotel POST URL: {} (cert_verify={})", url, self.verify_certificate);
+      crate::notify::throttle().await;
       let resp = client.post(&url).header("User-Agent", APP_ID).basic_auth(&self.apikey, Some(&self.token)).form(&form).send().await;
       match resp {
-        Ok(r) if r.status().as_u16() == 200 => tracing::info!("Sent Exotel notification to {}.", label),
+        Ok(r) if r.status().as_u16() == 200 => {
+          tracing::info!("Sent Exotel notification to {}.", label);
+          crate::delivery::mark_delivered(&key, false);
+        }
         Ok(r) => {
           let status = r.status().as_u16();
           let reason = reqwest::StatusCode::from_u16(status).ok().and_then(|s| s.canonical_reason()).unwrap_or("");
@@ -189,7 +200,7 @@ impl Notify for Exotel {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Exotel:{} notification.", label);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           ok = false;
         }
       }
@@ -221,10 +232,6 @@ fn validate(value: &str) -> Option<String> {
   if value.is_empty() || value.starts_with(char::is_whitespace) { None } else { Some(value.trim().to_string()) }
 }
 
-fn decode(s: &str) -> String {
-  urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
 fn truncate(text: &str) -> &str {
   match text.char_indices().nth(2000) {
     Some((i, _)) => &text[..i],
@@ -236,7 +243,7 @@ fn truncate(text: &str) -> &str {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::matchers::{body_string, body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> Option<Exotel> {
@@ -356,6 +363,7 @@ mod tests {
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v1/Accounts/sid123/Sms/send"))
       .and(body_string("From=15550000000&Body=body&EncodingType=plain&Priority=high&To=15551234567"))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -383,11 +391,24 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/v1/Accounts/sid/Sms/send"));
+    send().and(body_string_contains("To=15551234567")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    send().and(body_string_contains("To=15551234568")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(body_string_contains("To=15551234568")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("exotel://sid:tok@15550000000/15551234567/15551234568?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("B"))).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_failures() {
     let svc = from_url("exotel://sid:tok@15550000000/15551234567/15551234568").unwrap();
     for status in [202, 400, 500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1/Accounts/sid/Sms/send")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap(), "status {}", status);
     }
 

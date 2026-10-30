@@ -69,6 +69,10 @@ impl Notify for Flowtriq {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
+    0.0
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let schema = if self.secure { "https" } else { "http" };
@@ -85,6 +89,7 @@ impl Notify for Flowtriq {
 
     tracing::debug!("Flowtriq POST URL: {} (cert_verify={})", url, self.verify_certificate);
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client
       .post(&url)
       .header("User-Agent", APP_ID)
@@ -205,7 +210,7 @@ mod tests {
   async fn test_send_accepted_codes() {
     for code in [201u16, 202, 204] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/hooks/abc")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let addr = server.address();
       let svc = from_url(&format!("flowtriq://key@{}:{}/hooks/abc", addr.ip(), addr.port())).unwrap();
       assert!(svc.send(&NotifyContext { body: "body".into(), ..Default::default() }).await.unwrap(), "code {}", code);
@@ -217,7 +222,7 @@ mod tests {
     // Only 200/201/202/204 count as success
     for code in [500u16, 203, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/hooks/abc")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let addr = server.address();
       let svc = from_url(&format!("flowtriq://key@{}:{}/hooks/abc", addr.ip(), addr.port())).unwrap();
       assert!(svc.send(&NotifyContext { body: "body".into(), ..Default::default() }).await.is_err(), "code {}", code);

@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{is_uuid4, split_path, unquote};
+use crate::utils::plugin_args::is_uuid4;
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -16,12 +16,12 @@ impl Kumulos {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // kumulos://{apikey}/{serverkey}: a UUID4 API key and a 36 character
     // server key
-    let apikey = url.host.as_deref().map(unquote).unwrap_or_default().trim().to_string();
+    let apikey = url.host.as_deref().unwrap_or_default().trim().to_string();
     if !is_uuid4(&apikey) {
       tracing::warn!("An invalid Kumulos API Key was specified.");
       return None;
     }
-    let serverkey = split_path(url).into_iter().next().unwrap_or_default().trim().to_string();
+    let serverkey = url.path_parts.first().map(|k| k.trim().to_string()).unwrap_or_default();
     if serverkey.len() != 36 || !serverkey.chars().all(|c| c.is_ascii_alphanumeric() || c == '+') {
       tracing::warn!("An invalid Kumulos Server Key was specified.");
       return None;
@@ -69,6 +69,7 @@ impl Notify for Kumulos {
     });
     let url = format!("{}/v2/notifications", service_base("https://messages.kumulos.com"));
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client
       .post(&url)
       .header("User-Agent", APP_ID)
@@ -148,7 +149,7 @@ mod tests {
   async fn test_send_failure() {
     for status in [400, 401, 422, 500, 999] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v2/notifications")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("kumulos://{}/{}/", UUID4, "w".repeat(36))).unwrap();
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.is_err());

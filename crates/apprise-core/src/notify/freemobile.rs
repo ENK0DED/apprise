@@ -1,7 +1,6 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::urlbase::{url_credentials, url_host};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -15,8 +14,8 @@ pub struct FreeMobile {
 impl FreeMobile {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // freemobile://{user}@{password}; a real password (or ?pass=) wins
-    let (user, password) = url_credentials(url);
-    let password = password.filter(|p| !p.is_empty()).unwrap_or_else(|| url_host(url));
+    let user = url.user.clone();
+    let password = url.password.clone().unwrap_or_else(|| url.host.clone().unwrap_or_default());
     let Some(user) = user.filter(|u| !u.is_empty()).filter(|_| !password.is_empty()) else {
       tracing::warn!("A FreeMobile user and password combination was not provided.");
       return None;
@@ -60,6 +59,7 @@ impl Notify for FreeMobile {
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let payload = json!({ "user": self.user, "pass": self.password, "msg": ctx.body });
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = match client
       .post(format!("{}/sendmsg", service_base("https://smsapi.free-mobile.fr")))
       .header("User-Agent", APP_ID)
@@ -71,7 +71,7 @@ impl Notify for FreeMobile {
       Ok(r) => r,
       Err(e) => {
         tracing::warn!("A Connection error occurred sending Free Mobile notification.");
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return Ok(false);
       }
     };
@@ -155,7 +155,7 @@ mod tests {
   async fn test_send_failure() {
     for status in [500, 201] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/sendmsg")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url("freemobile://user@password").unwrap();
       let ctx = NotifyContext { body: "body".into(), ..Default::default() };
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "{}", status);
