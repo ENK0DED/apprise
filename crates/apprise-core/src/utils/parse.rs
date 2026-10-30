@@ -217,6 +217,40 @@ pub fn parse_bool(s: &str) -> bool {
   matches!(lower.as_str(), "yes" | "y" | "true" | "t" | "on" | "1" | "enable" | "enabled" | "active" | "al" | "en" | "tr" | "ye")
 }
 
+/// Parse a boolean the way upstream `parse_bool(arg, default)` does: the
+/// first two characters decide (`no`, `of`, `fa`, `ne`, `di`, `de`, `f`, `n`,
+/// `0` are false; `ye`, `on`, `tr`, `al`, `en`, `t`, `y`, `1` are true) and
+/// anything else, including an empty value, returns `default`.
+pub fn parse_bool_with_default(s: &str, default: bool) -> bool {
+  let lower = s.to_lowercase();
+  let prefix: String = lower.chars().take(2).collect();
+  match prefix.as_str() {
+    "de" | "di" | "ne" | "f" | "n" | "no" | "of" | "0" | "fa" => false,
+    "en" | "al" | "t" | "y" | "ye" | "on" | "1" | "tr" => true,
+    _ => default,
+  }
+}
+
+/// Split URL path entries the way upstream `URLBase.split_path()` does: on
+/// `/` (already done by `ParsedUrl`) and also on whitespace, commas and
+/// backslashes. Empty entries are dropped.
+pub fn split_path(parts: &[String]) -> Vec<String> {
+  parts.iter().flat_map(|p| p.split(|c: char| c.is_whitespace() || c == ',' || c == '\\')).filter(|s| !s.is_empty()).map(str::to_string).collect()
+}
+
+/// Upstream `parse_list()`: split every entry on whitespace, commas,
+/// semicolons and square brackets, then return the unique values sorted.
+pub fn parse_list<S: AsRef<str>>(entries: &[S]) -> Vec<String> {
+  let mut out: Vec<String> = entries
+    .iter()
+    .flat_map(|e| e.as_ref().split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '[' | ']')).map(str::to_string).collect::<Vec<_>>())
+    .filter(|s| !s.is_empty())
+    .collect();
+  out.sort();
+  out.dedup();
+  out
+}
+
 /// Parse targets from path parts + optional query key
 pub fn parse_targets(path_parts: &[String], qsd: &HashMap<String, String>) -> Vec<String> {
   let mut targets: Vec<String> = path_parts.to_vec();
@@ -465,6 +499,28 @@ mod tests {
     for val in &["no", "No", "NO", "false", "False", "0", "off", "disable", "disabled", "inactive", "f", "n", "never", "NEVER", "OhYeah", "random", ""] {
       assert!(!parse_bool(val), "Expected false for '{}'", val);
     }
+  }
+
+  #[test]
+  fn test_parse_bool_with_default() {
+    for val in &["yes", "YES", "y", "true", "t", "on", "1", "enable", "always", "tr"] {
+      assert!(parse_bool_with_default(val, false), "Expected true for '{}'", val);
+    }
+    for val in &["no", "none", "n", "false", "f", "0", "off", "never", "disable", "deny"] {
+      assert!(!parse_bool_with_default(val, true), "Expected false for '{}'", val);
+    }
+    // Anything unrecognised returns the default
+    for val in &["", "random", "01", "fx", "yx"] {
+      assert!(parse_bool_with_default(val, true), "Expected default true for '{}'", val);
+      assert!(!parse_bool_with_default(val, false), "Expected default false for '{}'", val);
+    }
+  }
+
+  #[test]
+  fn test_split_path_and_parse_list() {
+    let parts = vec!["a b".to_string(), "c,d\\e".to_string(), "".to_string()];
+    assert_eq!(split_path(&parts), vec!["a", "b", "c", "d", "e"]);
+    assert_eq!(parse_list(&["b, a", "c;[a] d", ""]), vec!["a", "b", "c", "d"]);
   }
 
   #[test]
