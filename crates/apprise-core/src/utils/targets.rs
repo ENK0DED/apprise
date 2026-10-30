@@ -1,7 +1,10 @@
 //! Target list parsing that mirrors upstream `apprise.utils.parse`
-//! (`parse_list`, `parse_phone_no`, `is_phone_no`) and
-//! `URLBase.split_path`, so plugins split and validate their targets the
-//! same way the Python library does.
+//! (`parse_list`, `parse_phone_no`, `is_phone_no`), so plugins split and
+//! validate their targets the same way the Python library does.
+//!
+//! URL path entries need no extra splitting: upstream quotes the path before
+//! `split_path()`, so only `/` separates them, exactly like
+//! `ParsedUrl::path_parts`.
 
 /// A phone number broken apart the way upstream `is_phone_no()` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,12 +17,6 @@ pub struct PhoneNo {
   pub line: String,
   /// Every digit of the number, without markup.
   pub full: String,
-}
-
-/// Upstream `PATHSPLIT_LIST_DELIM` (`[ \t\r\n,\\/]+`): URL path entries are
-/// also split on whitespace, commas and backslashes.
-pub fn split_path(parts: &[String]) -> Vec<String> {
-  parts.iter().flat_map(|p| p.split([' ', '\t', '\r', '\n', ',', '\\'])).filter(|s| !s.is_empty()).map(str::to_string).collect()
 }
 
 fn is_list_delim(c: char, allow_whitespace: bool) -> bool {
@@ -166,12 +163,6 @@ fn phone_lookahead(chars: &[char], at: usize, prefix: bool) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  #[test]
-  fn test_split_path() {
-    let parts = vec!["a,b".to_string(), "c d".to_string(), "e\\f".to_string(), "g".to_string()];
-    assert_eq!(split_path(&parts), vec!["a", "b", "c", "d", "e", "f", "g"]);
-  }
 
   #[test]
   fn test_parse_list() {

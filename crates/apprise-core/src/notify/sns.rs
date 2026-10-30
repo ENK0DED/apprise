@@ -2,7 +2,7 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::aws::{AwsResponse, SigV4Request, flatten_response, sign};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::targets::{is_phone_no, parse_list, split_path};
+use crate::utils::targets::{is_phone_no, parse_list};
 use async_trait::async_trait;
 
 const CONTENT_TYPE: &str = "application/x-www-form-urlencoded; charset=utf-8";
@@ -101,7 +101,7 @@ impl Sns {
 
     // sns://[token@]access_key/secret/key/parts/region/targets
     // The secret key may hold '/' so everything before the region is it.
-    let entries = split_path(&url.path_parts);
+    let entries = &url.path_parts;
     let mut secret_from_path = None;
     let mut region_from_path = None;
     let mut index = 0;
