@@ -341,8 +341,10 @@ impl PlaceholderMap {
       out.password = decoded(p);
     }
 
+    // Upstream fills the path text as is, but fills the targets it already
+    // split, so a value with a `/` stays one target.
     out.path = self.fill(&parsed.path, values, false);
-    out.refresh_path_parts();
+    out.path_parts = parsed.path_parts.iter().map(|part| self.fill(part, values, false)).collect();
 
     let fill_map = |m: &IndexMap<String, String>| -> IndexMap<String, String> {
       m.iter().map(|(k, v)| (self.fill(k, values, false), self.fill(v, values, false))).collect()
@@ -613,8 +615,10 @@ mod tests {
     // A value in the query string can not add arguments
     assert_eq!(out.get("to"), Some("a/b?c=d"));
     assert_eq!(out.qsd.len(), 1);
-    // A path value is split like upstream's split_path()
-    assert_eq!(out.path_parts, vec!["path", "a", "b?c=d"]);
+    // The path text takes the value as is, but a value stays one target, as
+    // upstream fills the targets it split before substituting
+    assert_eq!(out.path, "path/a/b?c=d");
+    assert_eq!(out.path_parts, vec!["path", "a/b?c=d"]);
 
     // A whole-host marker may carry credentials
     let parsed = ParsedUrl::parse(&map.encode_url("json://${auth}/")).unwrap();
