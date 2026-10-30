@@ -83,6 +83,63 @@ where
   result
 }
 
+/// Upstream `is_email()`: returns the matched `full_email`
+/// (`label+user@domain`) when `address` starts with an email address.
+///
+/// Follows `GET_EMAIL_RE` without its optional display-name part: an
+/// optional `label+`, a user of `[a-z0-9_!#$%&*/=?%`{|}~^-]` runs joined by
+/// dots, and a domain of two or more dotted labels or one label of six or
+/// more characters. Like the `re.match()` upstream uses, trailing text after
+/// the address is ignored.
+pub(super) fn is_email(address: &str) -> Option<String> {
+  let address = address.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | ':'));
+  // The label can only end at the first '+'
+  if let Some((label, rest)) = address.split_once('+')
+    && (1..=128).contains(&label.chars().count())
+    && !label.chars().any(char::is_whitespace)
+    && let Some(len) = email_len(rest)
+  {
+    return Some(format!("{}+{}", label, &rest[..len]));
+  }
+  email_len(address).map(|len| address[..len].to_string())
+}
+
+/// Length of the `user@domain` match at the start of `s`.
+fn email_len(s: &str) -> Option<usize> {
+  let user_char = |c: char| c.is_ascii_alphanumeric() || "_!#$%&*/=?`{|}~^-".contains(c);
+  let at = s.find('@')?;
+  let user = &s[..at];
+  let mut parts = user.split('.');
+  let first = parts.next()?;
+  // Only the parts after a dot may also hold an apostrophe
+  if first.is_empty() || !first.chars().all(user_char) || !parts.all(|p| !p.is_empty() && p.chars().all(|c| user_char(c) || c == '\'')) {
+    return None;
+  }
+  domain_len(&s[at + 1..]).map(|len| at + 1 + len)
+}
+
+/// Length of the domain match at the start of `s`:
+/// `(?:label\.)+label` (longest) or else `[a-z0-9][a-z0-9_-]{5,}`.
+fn domain_len(s: &str) -> Option<usize> {
+  let run = s.find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))).unwrap_or(s.len());
+  let is_label = |l: &str| {
+    let b = l.as_bytes();
+    !b.is_empty()
+      && b[0].is_ascii_alphanumeric()
+      && b[b.len() - 1].is_ascii_alphanumeric()
+      && l.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+  };
+  let dotted = (1..=run).rev().find(|&end| {
+    let candidate = &s[..end];
+    candidate.contains('.') && candidate.split('.').all(is_label)
+  });
+  if dotted.is_some() {
+    return dotted;
+  }
+  let single = s.find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))).unwrap_or(s.len());
+  (s.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric) && single >= 6).then_some(single)
+}
+
 /// `findall()` of upstream `PHONE_NO_DETECTION_RE` (or
 /// `PHONE_NO_WPREFIX_DETECTION_RE` with `prefix`):
 /// `((?:[a-z]{1,32}:)?(?:[+(][+(\s]{0,32})?[0-9][0-9()\s-]{1,32}[0-9])`
@@ -186,6 +243,23 @@ mod tests {
     assert!(is_phone_no("", 0).is_none());
     let short = is_phone_no("4567", 3).unwrap();
     assert_eq!((short.country.as_str(), short.area.as_str(), short.line.as_str()), ("", "", "4567"));
+  }
+
+  #[test]
+  fn test_is_email() {
+    // Results captured from upstream is_email()["full_email"]
+    assert_eq!(is_email("user@example.com").as_deref(), Some("user@example.com"));
+    assert_eq!(is_email("label+user@example.com").as_deref(), Some("label+user@example.com"));
+    assert_eq!(is_email("first.last@sub.example.co.uk").as_deref(), Some("first.last@sub.example.co.uk"));
+    assert_eq!(is_email("user@localhost").as_deref(), Some("user@localhost"));
+    assert_eq!(is_email("user@example.com/extra").as_deref(), Some("user@example.com"));
+    assert_eq!(is_email("user@example.").as_deref(), Some("user@example"));
+    assert_eq!(is_email("user@host"), None);
+    assert_eq!(is_email("user@"), None);
+    assert_eq!(is_email("@example.com"), None);
+    assert_eq!(is_email(".user@example.com"), None);
+    assert_eq!(is_email("15551232000"), None);
+    assert_eq!(is_email("abcdefgh"), None);
   }
 
   #[test]
