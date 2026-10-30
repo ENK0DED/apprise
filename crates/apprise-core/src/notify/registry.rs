@@ -52,16 +52,21 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(fcm::Fcm::static_details());
   collect!(feishu::FeiShu::static_details());
   collect!(flock::Flock::static_details());
+  collect!(flowtriq::Flowtriq::static_details());
   collect!(fluxer::Fluxer::static_details());
   collect!(fortysixelks::FortySixElks::static_details());
   collect!(freemobile::FreeMobile::static_details());
+  collect!(github::GitHub::static_details());
   collect!(google_chat::GoogleChat::static_details());
+  collect!(gorush::Gorush::static_details());
   collect!(gotify::Gotify::static_details());
+  collect!(groupme::GroupMe::static_details());
   collect!(growl::Growl::static_details());
   collect!(guilded::Guilded::static_details());
   collect!(gupshup::Gupshup::static_details());
   collect!(home_assistant::HomeAssistant::static_details());
   collect!(httpsms::HttpSms::static_details());
+  collect!(humhub::HumHub::static_details());
   collect!(ifttt::Ifttt::static_details());
   collect!(infobip::Infobip::static_details());
   collect!(irc::Irc::static_details());
@@ -75,6 +80,8 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(kumulos::Kumulos::static_details());
   collect!(lametric::LaMetric::static_details());
   collect!(lark::Lark::static_details());
+  collect!(lauther::Lauther::static_details());
+  collect!(lfgalarm::LfgAlarm::static_details());
   collect!(line::Line::static_details());
   collect!(mailgun::Mailgun::static_details());
   collect!(mastodon::Mastodon::static_details());
@@ -98,10 +105,12 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(octopush::Octopush::static_details());
   collect!(office365::Office365::static_details());
   collect!(one_signal::OneSignal::static_details());
+  collect!(onebot::OneBot::static_details());
   collect!(opsgenie::OpsGenie::static_details());
   collect!(pagerduty::PagerDuty::static_details());
   collect!(pagertree::PagerTree::static_details());
   collect!(parseplatform::ParsePlatform::static_details());
+  collect!(pinglet::Pinglet::static_details());
   collect!(plivo::Plivo::static_details());
   collect!(popcorn_notify::PopcornNotify::static_details());
   collect!(prowl::Prowl::static_details());
@@ -113,6 +122,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(pushover::Pushover::static_details());
   collect!(pushplus::PushPlus::static_details());
   collect!(pushsafer::Pushsafer::static_details());
+  collect!(pushward::PushWard::static_details());
   collect!(pushy::Pushy::static_details());
   collect!(qq::Qq::static_details());
   collect!(reddit::Reddit::static_details());
@@ -212,16 +222,21 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(fcm::Fcm::from_url, "fcm");
   reg!(feishu::FeiShu::from_url, "feishu");
   reg!(flock::Flock::from_url, "flock");
+  reg!(flowtriq::Flowtriq::from_url, "flowtriq", "flowtriqs");
   reg!(fluxer::Fluxer::from_url, "fluxer", "fluxers");
   reg!(fortysixelks::FortySixElks::from_url, "46elks", "elks");
   reg!(freemobile::FreeMobile::from_url, "freemobile");
+  reg!(github::GitHub::from_url, "github");
   reg!(google_chat::GoogleChat::from_url, "gchat");
+  reg!(gorush::Gorush::from_url, "gorush", "gorushs");
   reg!(gotify::Gotify::from_url, "gotify", "gotifys");
+  reg!(groupme::GroupMe::from_url, "groupme");
   reg!(growl::Growl::from_url, "growl");
   reg!(guilded::Guilded::from_url, "guilded");
   reg!(gupshup::Gupshup::from_url, "gupshup");
   reg!(home_assistant::HomeAssistant::from_url, "hassio", "hassios");
   reg!(httpsms::HttpSms::from_url, "httpsms");
+  reg!(humhub::HumHub::from_url, "humhub", "humhubs");
   reg!(ifttt::Ifttt::from_url, "ifttt");
   reg!(infobip::Infobip::from_url, "infobip");
   reg!(irc::Irc::from_url, "irc", "ircs");
@@ -235,6 +250,8 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(kumulos::Kumulos::from_url, "kumulos");
   reg!(lametric::LaMetric::from_url, "lametric", "lametrics");
   reg!(lark::Lark::from_url, "lark");
+  reg!(lauther::Lauther::from_url, "lauther");
+  reg!(lfgalarm::LfgAlarm::from_url, "lfg");
   reg!(line::Line::from_url, "line");
   reg!(mailgun::Mailgun::from_url, "mailgun");
   reg!(mastodon::Mastodon::from_url, "mastodon", "toot", "mastodons", "toots");
@@ -258,10 +275,12 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(octopush::Octopush::from_url, "octopush");
   reg!(office365::Office365::from_url, "o365", "azure");
   reg!(one_signal::OneSignal::from_url, "onesignal");
+  reg!(onebot::OneBot::from_url, "onebot", "onebots");
   reg!(opsgenie::OpsGenie::from_url, "opsgenie");
   reg!(pagerduty::PagerDuty::from_url, "pagerduty");
   reg!(pagertree::PagerTree::from_url, "pagertree");
   reg!(parseplatform::ParsePlatform::from_url, "parsep", "parseps");
+  reg!(pinglet::Pinglet::from_url, "pinglet", "pinglets");
   reg!(plivo::Plivo::from_url, "plivo");
   reg!(popcorn_notify::PopcornNotify::from_url, "popcorn");
   reg!(prowl::Prowl::from_url, "prowl");
@@ -273,6 +292,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(pushover::Pushover::from_url, "pover");
   reg!(pushplus::PushPlus::from_url, "pushplus");
   reg!(pushsafer::Pushsafer::from_url, "psafer", "psafers");
+  reg!(pushward::PushWard::from_url, "pushward");
   reg!(pushy::Pushy::from_url, "pushy");
   reg!(qq::Qq::from_url, "qq");
   reg!(reddit::Reddit::from_url, "reddit");
@@ -396,6 +416,7 @@ fn instantiate(parsed: &ParsedUrl) -> Option<Box<dyn Notify>> {
         ("open.larksuite.com", "lark"),
         ("open.feishu.cn", "feishu"),
         ("webhooks.t2bot.io", "matrix"),
+        ("api.lfg.gm", "lfg"),
       ];
 
       for (pattern, schema_key) in host_patterns {
