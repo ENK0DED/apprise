@@ -351,6 +351,28 @@ mod tests {
   }
 
   #[test]
+  fn test_sign_matches_apprise_go_golden() {
+    // apprise-go parity fixtures (captured from Python 2.1.0) at 2024-01-01T00:00:00Z
+    let now = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let body = "Action=Publish&Message=hello&Version=2010-03-31&PhoneNumber=%2B15551234567";
+    let req = |token| SigV4Request {
+      method: "POST",
+      host: "sns.us-east-1.amazonaws.com",
+      uri: "/",
+      query: "",
+      body: body.as_bytes(),
+      content_type: "application/x-www-form-urlencoded; charset=utf-8",
+      access_key: "access123",
+      secret_key: "secret123",
+      session_token: token,
+      region: "us-east-1",
+      service: "sns",
+    };
+    assert!(sign(&req(None), now).authorization.ends_with("Signature=8ba0fc0a3ef88783a48f63f0c64171302b4338747414077c2725af66519c4dbb"));
+    assert!(sign(&req(Some("sessiontoken123")), now).authorization.ends_with("Signature=360ae1973288b294476017c06dc095341b0889c2383f5eee6d2becff68efa4aa"));
+  }
+
+  #[test]
   fn test_sigv4_legacy_wrapper() {
     let (auth, date) = sigv4(&SigV4Params {
       method: "POST",
