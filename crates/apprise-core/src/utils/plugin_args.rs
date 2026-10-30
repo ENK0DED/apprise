@@ -49,6 +49,26 @@ pub fn split_path(url: &ParsedUrl) -> Vec<String> {
   url.path.split(['/', ' ', '\t', '\r', '\n', ',', '\\']).filter(|s| !s.is_empty()).map(unquote).collect()
 }
 
+/// A query argument read the way upstream `parse_qsd()` reads it: the key
+/// matched case-insensitively and the value percent-decoded with `+` kept
+/// as a literal `+` (`ParsedUrl::qsd` decodes it as a space), then trimmed.
+/// The last occurrence wins.
+pub fn qsd_raw(url: &ParsedUrl, key: &str) -> Option<String> {
+  let (_, query) = url.raw.split_once('?')?;
+  let wanted = key.to_lowercase();
+  let mut found = None;
+  for pair in query.split(['&', ';']) {
+    let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else { continue };
+    let name = unquote(&format!("{}{}", first, chars.as_str().replace('+', " ")));
+    if name.trim().to_lowercase() == wanted {
+      found = Some(unquote(value).trim().to_string());
+    }
+  }
+  found
+}
+
 /// Percent-decode like Python's `urllib.parse.unquote` (invalid UTF-8 is
 /// replaced and `+` is left alone).
 pub fn unquote(s: &str) -> String {
@@ -79,6 +99,16 @@ mod tests {
     assert_eq!(parse_list(["c a,c"], true, false), vec!["c", "a", "c"]);
     assert_eq!(parse_list(["a b, c"], false, false), vec!["a b", "c"]);
     assert!(parse_list(Vec::<String>::new(), true, true).is_empty());
+  }
+
+  #[test]
+  fn test_qsd_raw() {
+    let url = ParsedUrl::parse("json://host?Key=a+b%2Bc&x=1&key=%20d+e%20&empty").unwrap();
+    assert_eq!(qsd_raw(&url, "key").as_deref(), Some("d+e"));
+    assert_eq!(qsd_raw(&url, "X").as_deref(), Some("1"));
+    assert_eq!(qsd_raw(&url, "empty").as_deref(), Some(""));
+    assert_eq!(qsd_raw(&url, "missing"), None);
+    assert_eq!(qsd_raw(&ParsedUrl::parse("json://host/a").unwrap(), "a"), None);
   }
 
   #[test]

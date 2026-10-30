@@ -1,61 +1,268 @@
+//! Bark (iOS) notifications through a Bark server.
+//!
+//! With `?key=` every request is encrypted with AES-GCM, as the Bark app
+//! expects: the parameters are sealed as compact JSON under a fresh
+//! 12-character IV and sent as `{device_key, ciphertext, iv}`.
+
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes128Gcm, Aes256Gcm, AesGcm};
+use async_trait::async_trait;
+use base64::Engine;
+use ring::rand::{SecureRandom, SystemRandom};
+use serde_json::{Value, json};
+
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::types::NotifyFormat;
 use crate::utils::parse::ParsedUrl;
-use async_trait::async_trait;
-use serde_json::json;
+use crate::utils::plugin_args::{parse_bool_or, parse_list, qsd_raw, split_path};
+
+type Aes192Gcm = AesGcm<aes_gcm::aes::Aes192, aes_gcm::aead::consts::U12>;
+
+/// Sounds shipped with the Bark app (`BARK_SOUNDS`).
+const BARK_SOUNDS: &[&str] = &[
+  "alarm.caf",
+  "anticipate.caf",
+  "bell.caf",
+  "birdsong.caf",
+  "bloom.caf",
+  "calypso.caf",
+  "chime.caf",
+  "choo.caf",
+  "descent.caf",
+  "electronic.caf",
+  "fanfare.caf",
+  "glass.caf",
+  "gotosleep.caf",
+  "healthnotification.caf",
+  "horn.caf",
+  "ladder.caf",
+  "mailsent.caf",
+  "minuet.caf",
+  "multiwayinvitation.caf",
+  "newmail.caf",
+  "newsflash.caf",
+  "noir.caf",
+  "paymentsuccess.caf",
+  "shake.caf",
+  "sherwoodforest.caf",
+  "silence.caf",
+  "spell.caf",
+  "suspense.caf",
+  "telegraph.caf",
+  "tiptoes.caf",
+  "typewriters.caf",
+  "update.caf",
+];
+
+/// Interruption levels (`BARK_LEVELS`), matched on their first character.
+const BARK_LEVELS: &[&str] = &["active", "timeSensitive", "passive", "critical"];
+
+/// Random bytes behind each IV; URL-safe base64 turns 9 into 12 characters.
+const BARK_GCM_IV_RANDOM_BYTES: usize = 9;
+
+/// The AES-GCM cipher for a 16, 24 or 32 byte key.
+enum BarkCipher {
+  Aes128(Box<Aes128Gcm>),
+  Aes192(Box<Aes192Gcm>),
+  Aes256(Box<Aes256Gcm>),
+}
+
+impl BarkCipher {
+  fn new(key: &[u8]) -> Option<Self> {
+    match key.len() {
+      16 => Aes128Gcm::new_from_slice(key).ok().map(|c| Self::Aes128(Box::new(c))),
+      24 => Aes192Gcm::new_from_slice(key).ok().map(|c| Self::Aes192(Box::new(c))),
+      32 => Aes256Gcm::new_from_slice(key).ok().map(|c| Self::Aes256(Box::new(c))),
+      _ => None,
+    }
+  }
+
+  /// Seal `plaintext`; the tag is appended to the ciphertext.
+  fn encrypt(&self, iv: &[u8; 12], plaintext: &[u8]) -> Option<Vec<u8>> {
+    let nonce = iv.into();
+    match self {
+      Self::Aes128(c) => c.encrypt(nonce, plaintext),
+      Self::Aes192(c) => c.encrypt(nonce, plaintext),
+      Self::Aes256(c) => c.encrypt(nonce, plaintext),
+    }
+    .ok()
+  }
+}
 
 pub struct Bark {
   host: String,
   port: Option<u16>,
-  device_keys: Vec<String>,
   secure: bool,
-  sound: Option<String>,
-  level: Option<String>,
+  user: Option<String>,
+  password: Option<String>,
+  targets: Vec<String>,
+  include_image: bool,
+  sound: Option<&'static str>,
+  category: Option<String>,
   group: Option<String>,
+  level: Option<&'static str>,
+  click: Option<String>,
+  badge: Option<u64>,
+  volume: Option<u8>,
   icon: Option<String>,
+  call: bool,
+  cipher: Option<BarkCipher>,
   verify_certificate: bool,
   tags: Vec<String>,
 }
+
+/// Compact JSON with keys in the given order, as upstream's `json.dumps()`
+/// of an insertion-ordered dict.
+fn ordered_json(entries: &[(&str, Value)]) -> String {
+  let body: Vec<String> = entries.iter().map(|(k, v)| format!("{}:{}", Value::String(k.to_string()), v)).collect();
+  format!("{{{}}}", body.join(","))
+}
+
 impl Bark {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.clone()?;
-    if host.is_empty() {
-      return None;
+    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let qsd = |k: &str| url.get(k).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+
+    let mut targets = split_path(url);
+    if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
+      targets.push(to.to_string());
     }
-    let mut device_keys: Vec<String> = url.path_parts.clone();
-    // Support ?to= query param for device keys
-    if let Some(to) = url.get("to") {
-      device_keys.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
-    }
-    // Python allows empty device_keys (will just use the host as endpoint)
-    let sound = url.get("sound").map(|s| s.to_string());
-    let level = url.get("level").map(|s| s.to_string());
-    let group = url.get("group").map(|s| s.to_string());
-    let icon = url.get("icon").map(|s| s.to_string());
+
+    let badge = qsd("badge").and_then(|b| match b.parse::<i64>() {
+      Ok(n) if n >= 0 => Some(n as u64),
+      _ => {
+        tracing::warn!("The specified Bark badge ({}) is not valid", b);
+        None
+      }
+    });
+
+    let sound = qsd("sound").and_then(|s| {
+      let s = s.to_lowercase();
+      let found = BARK_SOUNDS.iter().copied().find(|f| f.starts_with(&s));
+      if found.is_none() {
+        tracing::warn!("The specified Bark sound ({}) was not found", s);
+      }
+      found
+    });
+
+    let volume = qsd("volume").and_then(|v| match v.parse::<i64>() {
+      Ok(n) if (0..=10).contains(&n) => Some(n as u8),
+      _ => {
+        tracing::warn!("The specified Bark volume ({}) is not valid. Must be between 0 and 10", v);
+        None
+      }
+    });
+
+    let level = qsd("level").and_then(|l| {
+      let found = BARK_LEVELS.iter().copied().find(|f| f.chars().next() == l.chars().next());
+      if found.is_none() {
+        tracing::warn!("The specified Bark level ({}) is not valid", l);
+      }
+      found
+    });
+
+    // Encryption is off unless a key was explicitly given; a '+' in the key
+    // is kept literally, as upstream reads it
+    let cipher = match qsd_raw(url, "key").filter(|k| !k.is_empty()) {
+      None => None,
+      Some(key) => {
+        if !key.is_ascii() {
+          tracing::warn!("The Bark encryption key must contain only ASCII characters.");
+          return None;
+        }
+        let Some(cipher) = BarkCipher::new(key.as_bytes()) else {
+          tracing::warn!("The Bark encryption key must contain exactly 16, 24, or 32 ASCII characters.");
+          return None;
+        };
+        Some(cipher)
+      }
+    };
+
     Some(Self {
       host,
       port: url.port,
-      device_keys,
       secure: url.schema == "barks",
+      user: url.user.clone(),
+      password: url.password.clone(),
+      targets: parse_list(targets, true, true),
+      include_image: url.get("image").map(|v| parse_bool_or(Some(v), false)).unwrap_or(true),
       sound,
+      category: qsd("category"),
+      group: qsd("group"),
       level,
-      group,
-      icon,
+      click: qsd("click"),
+      badge,
+      volume,
+      icon: qsd("icon"),
+      call: parse_bool_or(url.get("call"), false),
+      cipher,
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
     })
   }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "Bark",
-      service_url: Some("https://bark.day.app"),
-      setup_url: None,
+      service_url: Some("https://github.com/Finb/Bark"),
+      setup_url: Some("https://appriseit.com/services/bark/"),
       protocols: vec!["bark", "barks"],
       description: "Send notifications to iOS devices via Bark.",
       attachment_support: false,
     }
   }
+
+  /// The parameters every device receives, in upstream's order.
+  fn parameters(&self, ctx: &NotifyContext) -> Vec<(&'static str, Value)> {
+    let title = if ctx.title.is_empty() { ctx.asset.app_desc.clone() } else { ctx.title.clone() };
+    let mut params: Vec<(&'static str, Value)> = vec![("title", json!(title))];
+    params.push((if ctx.body_format == NotifyFormat::Markdown { "markdown" } else { "body" }, json!(ctx.body)));
+
+    // A custom icon wins over the theme image
+    let icon = self.icon.clone().or_else(|| if self.include_image { ctx.asset.image_url(&ctx.notify_type, "128x128") } else { None });
+    if let Some(icon) = icon {
+      params.push(("icon", json!(icon)));
+    }
+    if let Some(sound) = self.sound {
+      params.push(("sound", json!(sound)));
+    }
+    if let Some(click) = &self.click {
+      params.push(("url", json!(click)));
+    }
+    if let Some(badge) = self.badge.filter(|b| *b > 0) {
+      params.push(("badge", json!(badge)));
+    }
+    if let Some(level) = self.level {
+      params.push(("level", json!(level)));
+    }
+    if let Some(category) = &self.category {
+      params.push(("category", json!(category)));
+    }
+    if let Some(group) = &self.group {
+      params.push(("group", json!(group)));
+    }
+    if let Some(volume) = self.volume.filter(|v| *v > 0) {
+      params.push(("volume", json!(volume)));
+    }
+    if self.call {
+      params.push(("call", json!(1)));
+    }
+    params
+  }
+
+  /// Encrypt the parameters with a fresh IV; returns (base64 ciphertext, IV).
+  fn encrypt(cipher: &BarkCipher, params: &[(&str, Value)]) -> Option<(String, String)> {
+    let mut random = [0u8; BARK_GCM_IV_RANDOM_BYTES];
+    SystemRandom::new().fill(&mut random).ok()?;
+    // Bark rebuilds the IV from these 12 ASCII characters
+    let iv = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random);
+    let iv_bytes: [u8; 12] = iv.as_bytes().try_into().ok()?;
+    let ciphertext = cipher.encrypt(&iv_bytes, ordered_json(params).as_bytes())?;
+    Some((base64::engine::general_purpose::STANDARD.encode(ciphertext), iv))
+  }
 }
+
 #[async_trait]
 impl Notify for Bark {
   fn schemas(&self) -> &[&str] {
@@ -70,42 +277,85 @@ impl Notify for Bark {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
-    let schema = if self.secure { "https" } else { "http" };
-    let port_str = self.port.map(|p| format!(":{}", p)).unwrap_or_default();
+    if self.targets.is_empty() {
+      tracing::warn!("There are no Bark devices to notify");
+      return Ok(false);
+    }
+
+    let url = format!("{}://{}{}/push", if self.secure { "https" } else { "http" }, self.host, self.port.map(|p| format!(":{}", p)).unwrap_or_default());
+    let params = self.parameters(ctx);
     let client = build_client(self.verify_certificate)?;
-    let mut all_ok = true;
-    for key in &self.device_keys {
-      let url = format!("{}://{}{}/push", schema, self.host, port_str);
-      let mut payload = json!({ "device_key": key, "title": ctx.title, "body": ctx.body });
-      if let Some(ref s) = self.sound {
-        payload["sound"] = json!(s);
+    let mut has_error = false;
+
+    // Upstream pops targets from the end of its sorted list
+    for target in self.targets.iter().rev() {
+      let device_key = ("device_key", json!(target));
+      let body = match &self.cipher {
+        Some(cipher) => {
+          // Fail closed; never fall back to plaintext
+          let Some((ciphertext, iv)) = Self::encrypt(cipher, &params) else {
+            tracing::warn!("Failed to encrypt Bark notification.");
+            has_error = true;
+            continue;
+          };
+          ordered_json(&[device_key, ("ciphertext", json!(ciphertext)), ("iv", json!(iv))])
+        }
+        None => {
+          let mut payload = vec![device_key];
+          payload.extend(params.iter().cloned());
+          ordered_json(&payload)
+        }
+      };
+
+      tracing::debug!("Bark POST URL: {} (cert_verify={}, encrypted={})", url, self.verify_certificate, self.cipher.is_some());
+      let mut request = client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/json; charset=utf-8").body(body);
+      if let Some(user) = &self.user {
+        request = request.basic_auth(user, Some(self.password.as_deref().unwrap_or("")));
       }
-      if let Some(ref l) = self.level {
-        payload["level"] = json!(l);
-      }
-      if let Some(ref g) = self.group {
-        payload["group"] = json!(g);
-      }
-      if let Some(ref i) = self.icon {
-        payload["icon"] = json!(i);
-      }
-      let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
-      if !resp.status().is_success() {
-        all_ok = false;
+
+      match request.send().await {
+        Ok(resp) if resp.status().as_u16() == 200 => tracing::info!("Sent Bark notification."),
+        Ok(resp) => {
+          let reason = resp.status().canonical_reason().unwrap_or("");
+          tracing::warn!("Failed to send Bark notification: {}{}error={}.", reason, if reason.is_empty() { "" } else { ", " }, resp.status().as_u16());
+          has_error = true;
+        }
+        Err(e) => {
+          tracing::warn!("A Connection error occurred sending Bark notification.");
+          // The error text may echo request fragments once encryption is on
+          if self.cipher.is_none() {
+            tracing::debug!("Socket Exception: {}", e);
+          }
+          has_error = true;
+        }
       }
     }
-    Ok(all_ok)
+    Ok(!has_error)
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::notify::NotifyContext;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{method, path};
+  use crate::types::NotifyType;
+  use wiremock::matchers::{header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
+
+  fn bark(url: &str) -> Bark {
+    Bark::from_url(&ParsedUrl::parse(url).unwrap()).unwrap()
+  }
+
+  fn mock_url(server: &MockServer, rest: &str) -> String {
+    let addr = server.address();
+    format!("bark://{}:{}/{}", addr.ip(), addr.port(), rest)
+  }
+
+  fn body_json(request: &wiremock::Request) -> Value {
+    serde_json::from_slice(&request.body).unwrap()
+  }
 
   #[test]
   fn test_valid_urls() {
@@ -133,6 +383,7 @@ mod tests {
       "bark://192.168.0.6:8081/device_key/?level=critical&volume=-1",
       "bark://192.168.0.6:8081/device_key/?level=critical&volume=",
       "bark://user:pass@192.168.0.5:8086/device_key/device_key2/",
+      "barks://192.168.0.7/device_key/",
       "bark://192.168.0.7/device_key",
       "bark://192.168.0.6:8081/device_key/?icon=https://example.com/icon.png",
       "bark://192.168.0.6:8081/device_key/?icon=https://example.com/icon.png&image=no",
@@ -140,6 +391,9 @@ mod tests {
       "bark://192.168.0.6:8081/device_key/?call=1&sound=alarm&level=critical",
       "bark://192.168.0.6:8081/device_key/?format=markdown",
       "bark://192.168.0.6:8081/device_key/?format=text",
+      "bark://localhost/device_key/?key=0123456789abcdef",
+      "bark://localhost/device_key/?key=0123456789abcdef01234567",
+      "bark://localhost/device_key/?key=0123456789abcdef0123456789abcdef",
     ];
     for url in &urls {
       assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -148,197 +402,172 @@ mod tests {
 
   #[test]
   fn test_invalid_urls() {
-    let urls = vec!["bark://", "bark://:@/"];
+    let urls = vec![
+      "bark://",
+      "bark://:@/",
+      // Encryption keys must be 16, 24 or 32 ASCII characters
+      "bark://localhost/device_key/?key=short",
+      "bark://localhost/device_key/?key=0123456789abcdef0",
+      "bark://localhost/device_key/?key=%C3%A9123456789abcde",
+    ];
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
   }
 
-  /// Helper: create a Bark instance pointing at the given mock server.
-  fn bark_for_mock(server: &MockServer, device_key: &str, extra_params: &str) -> Bark {
-    let addr = server.address();
-    let sep = if extra_params.is_empty() { "" } else { "?" };
-    let url_str = format!("bark://{}:{}/{}{}{}", addr.ip(), addr.port(), device_key, sep, extra_params);
-    let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
-    Bark::from_url(&parsed).unwrap()
-  }
+  #[test]
+  fn test_options() {
+    let b = bark("bark://h/k?sound=NOiR.cAf&badge=100&volume=10&level=critical&call=yes");
+    assert_eq!(b.sound, Some("noir.caf"));
+    assert_eq!(b.badge, Some(100));
+    assert_eq!(b.volume, Some(10));
+    assert_eq!(b.level, Some("critical"));
+    assert!(b.call);
+    assert!(b.include_image);
 
-  fn default_ctx() -> NotifyContext {
-    NotifyContext { title: "Test Title".into(), body: "Test Body".into(), ..Default::default() }
+    let b = bark("bark://h/k?sound=invalid&badge=-12&volume=11&level=invalid&image=no");
+    assert_eq!((b.sound, b.badge, b.volume, b.level, b.include_image), (None, None, None, None, false));
+    assert_eq!(bark("bark://h/k?sound=al").sound, Some("alarm.caf"));
+    assert_eq!(bark("bark://h/k?level=t").level, Some("timeSensitive"));
+    // Unrecognised image= values fall back to "no", as upstream parses them
+    assert!(!bark("bark://h/k?image=random").include_image);
+    // Targets are sorted and unique
+    assert_eq!(bark("bark://h/b/a?to=c,a").targets, vec!["a", "b", "c"]);
+    // A '+' in the key is kept
+    assert!(bark("bark://h/k?key=0123456789abcde+").cipher.is_some());
   }
 
   #[tokio::test]
-  async fn test_send_basic_success() {
+  async fn test_send_matches_upstream() {
+    // pycapture.py for bark://user@host:8080/k2/k1?sound=NOiR&badge=3&volume=5&level=critical&click=http://x&category=c&group=g&call=yes
     let server = MockServer::start().await;
-
     Mock::given(method("POST"))
       .and(path("/push"))
-      .and(wiremock::matchers::body_json(serde_json::json!({
-          "device_key": "mykey",
-          "title": "Test Title",
-          "body": "Test Body",
-      })))
+      .and(header("content-type", "application/json; charset=utf-8"))
+      .and(header("authorization", "Basic dXNlcjo="))
       .respond_with(ResponseTemplate::new(200))
-      .expect(1)
-      .mount(&server)
-      .await;
-
-    let bark = bark_for_mock(&server, "mykey", "");
-    let result = bark.send(&default_ctx()).await;
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), true);
-  }
-
-  #[tokio::test]
-  async fn test_send_with_sound_group_level() {
-    let server = MockServer::start().await;
-
-    Mock::given(method("POST"))
-      .and(path("/push"))
-      .and(wiremock::matchers::body_json(serde_json::json!({
-          "device_key": "mykey",
-          "title": "Test Title",
-          "body": "Test Body",
-          "sound": "alarm",
-          "group": "mygroup",
-          "level": "active",
-      })))
-      .respond_with(ResponseTemplate::new(200))
-      .expect(1)
-      .mount(&server)
-      .await;
-
-    let bark = bark_for_mock(&server, "mykey", "sound=alarm&group=mygroup&level=active");
-    let result = bark.send(&default_ctx()).await;
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), true);
-  }
-
-  #[tokio::test]
-  async fn test_send_with_icon() {
-    let server = MockServer::start().await;
-
-    Mock::given(method("POST"))
-      .and(path("/push"))
-      .and(wiremock::matchers::body_json(serde_json::json!({
-          "device_key": "mykey",
-          "title": "Test Title",
-          "body": "Test Body",
-          "icon": "https://example.com/icon.png",
-      })))
-      .respond_with(ResponseTemplate::new(200))
-      .expect(1)
-      .mount(&server)
-      .await;
-
-    let bark = bark_for_mock(&server, "mykey", "icon=https://example.com/icon.png");
-    let result = bark.send(&default_ctx()).await;
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), true);
-  }
-
-  #[tokio::test]
-  async fn test_send_multiple_device_keys() {
-    let server = MockServer::start().await;
-
-    // Expect two POST requests, one per device key
-    Mock::given(method("POST")).and(path("/push")).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
-
-    let addr = server.address();
-    let url_str = format!("bark://{}:{}/key1/key2/", addr.ip(), addr.port());
-    let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
-    let bark = Bark::from_url(&parsed).unwrap();
-
-    let result = bark.send(&default_ctx()).await;
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), true);
-  }
-
-  #[tokio::test]
-  async fn test_send_no_device_keys_returns_true() {
-    // When no device keys are specified, the loop body never executes
-    // and all_ok remains true
-    let server = MockServer::start().await;
-
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
-
-    let addr = server.address();
-    let url_str = format!("bark://{}:{}", addr.ip(), addr.port());
-    let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
-    let bark = Bark::from_url(&parsed).unwrap();
-
-    let result = bark.send(&default_ctx()).await;
-    assert!(result.is_ok());
-    // No keys means no requests, all_ok stays true
-    assert_eq!(result.unwrap(), true);
-  }
-
-  #[tokio::test]
-  async fn test_send_error_500() {
-    let server = MockServer::start().await;
-
-    Mock::given(method("POST")).and(path("/push")).respond_with(ResponseTemplate::new(500).set_body_string("Server Error")).expect(1).mount(&server).await;
-
-    let bark = bark_for_mock(&server, "mykey", "");
-    let result = bark.send(&default_ctx()).await;
-    // Bark returns Ok(false) on non-success status, not Err
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), false);
-  }
-
-  #[tokio::test]
-  async fn test_send_multiple_keys_partial_failure() {
-    let server = MockServer::start().await;
-
-    // First request succeeds, second fails
-    // wiremock serves all matching requests with the same response,
-    // so we use separate mounts with body matchers
-    Mock::given(method("POST"))
-      .and(path("/push"))
-      .and(wiremock::matchers::body_partial_json(serde_json::json!({
-          "device_key": "goodkey",
-      })))
-      .respond_with(ResponseTemplate::new(200))
-      .expect(1)
-      .mount(&server)
-      .await;
-
-    Mock::given(method("POST"))
-      .and(path("/push"))
-      .and(wiremock::matchers::body_partial_json(serde_json::json!({
-          "device_key": "badkey",
-      })))
-      .respond_with(ResponseTemplate::new(500))
-      .expect(1)
+      .expect(2)
       .mount(&server)
       .await;
 
     let addr = server.address();
-    let url_str = format!("bark://{}:{}/goodkey/badkey/", addr.ip(), addr.port());
-    let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
-    let bark = Bark::from_url(&parsed).unwrap();
+    let url = format!("bark://user@{}:{}/k2/k1?sound=NOiR&badge=3&volume=5&level=critical&click=http://x&category=c&group=g&call=yes", addr.ip(), addr.port());
+    let svc = from_url(&url).unwrap();
+    let ctx = NotifyContext { body: "B ü".into(), ..Default::default() };
+    assert!(svc.send(&ctx).await.unwrap());
 
-    let result = bark.send(&default_ctx()).await;
-    assert!(result.is_ok());
-    // One key failed, so all_ok should be false
-    assert_eq!(result.unwrap(), false);
+    let requests = server.received_requests().await.unwrap();
+    let expected = |key: &str| {
+      json!({
+        "device_key": key, "title": "Apprise Notifications", "body": "B ü",
+        "icon": "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/default/apprise-info-128x128.png",
+        "sound": "noir.caf", "url": "http://x", "badge": 3, "level": "critical", "category": "c", "group": "g", "volume": 5, "call": 1,
+      })
+    };
+    assert_eq!(body_json(&requests[0]), expected("k2"));
+    assert_eq!(body_json(&requests[1]), expected("k1"));
+    // Keys keep upstream's order
+    assert!(String::from_utf8_lossy(&requests[0].body).starts_with(r#"{"device_key":"k2","title":"Apprise Notifications","body":"#));
+  }
+
+  #[tokio::test]
+  async fn test_send_markdown_and_icon() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/push"))
+      .and(header("authorization", "Basic dXNlcjpwYXNz"))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let addr = server.address();
+    let svc = bark(&format!("bark://user:pass@{}:{}/k1?icon=http://i/x.png", addr.ip(), addr.port()));
+    let ctx =
+      NotifyContext { title: "T".into(), body: "**B**".into(), body_format: NotifyFormat::Markdown, notify_type: NotifyType::Failure, ..Default::default() };
+    assert!(svc.send(&ctx).await.unwrap());
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(body_json(&requests[0]), json!({"device_key": "k1", "title": "T", "markdown": "**B**", "icon": "http://i/x.png"}));
+  }
+
+  /// Decrypt a Bark request the way the app does.
+  fn decrypt(key: &str, request: &wiremock::Request) -> (String, Value) {
+    let payload = body_json(request);
+    let iv = payload["iv"].as_str().unwrap();
+    assert_eq!(iv.len(), 12);
+    let ciphertext = base64::engine::general_purpose::STANDARD.decode(payload["ciphertext"].as_str().unwrap()).unwrap();
+    let cipher = BarkCipher::new(key.as_bytes()).unwrap();
+    let iv_bytes: [u8; 12] = iv.as_bytes().try_into().unwrap();
+    let plain = match cipher {
+      BarkCipher::Aes128(c) => c.decrypt((&iv_bytes).into(), ciphertext.as_slice()),
+      BarkCipher::Aes192(c) => c.decrypt((&iv_bytes).into(), ciphertext.as_slice()),
+      BarkCipher::Aes256(c) => c.decrypt((&iv_bytes).into(), ciphertext.as_slice()),
+    }
+    .unwrap();
+    let plain = String::from_utf8(plain).unwrap();
+    (plain.clone(), serde_json::from_str(&plain).unwrap())
+  }
+
+  #[tokio::test]
+  async fn test_send_encrypted() {
+    for key in ["0123456789abcdef", "0123456789abcdef01234567", "0123456789abcdef0123456789abcde+"] {
+      let server = MockServer::start().await;
+      Mock::given(method("POST")).and(path("/push")).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
+      let svc = from_url(&mock_url(&server, &format!("k1/k2?icon=http://i/x.png&key={}", key))).unwrap();
+      let ctx = NotifyContext { title: "Secret".into(), body: "B ü".into(), ..Default::default() };
+      assert!(svc.send(&ctx).await.unwrap());
+
+      let requests = server.received_requests().await.unwrap();
+      let mut ivs = Vec::new();
+      for (request, device) in requests.iter().zip(["k2", "k1"]) {
+        let payload = body_json(request);
+        // Only the device key is readable
+        assert_eq!(payload.as_object().unwrap().keys().collect::<Vec<_>>(), vec!["ciphertext", "device_key", "iv"]);
+        assert_eq!(payload["device_key"], device);
+        let (plain, params) = decrypt(key, request);
+        assert_eq!(params, json!({"title": "Secret", "body": "B ü", "icon": "http://i/x.png"}));
+        // Compact JSON in upstream's order, non-ASCII kept
+        assert_eq!(plain, r#"{"title":"Secret","body":"B ü","icon":"http://i/x.png"}"#);
+        ivs.push(payload["iv"].as_str().unwrap().to_string());
+      }
+      // Every request gets a fresh IV
+      assert_ne!(ivs[0], ivs[1]);
+    }
   }
 
   #[test]
-  fn test_secure_flag() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("bark://host/key").unwrap();
-    let bark = Bark::from_url(&parsed).unwrap();
-    assert!(!bark.secure);
+  fn test_decrypts_upstream_ciphertext() {
+    // Produced by Apprise 2.1.0 for bark://host/k1?icon=http://i/x.png&key=0123456789abcdef
+    let cipher = BarkCipher::new(b"0123456789abcdef").unwrap();
+    let ciphertext = base64::engine::general_purpose::STANDARD
+      .decode("c7Gwape4PlmwcHxNvWV+Paole7y2xkcESMZbCUAG7Y0Z3tPfr5Hm+5N+NmDYpqcnkripXGpKwK+vkkl+zT4szpctb7tLzkAu4GUQ37A2HMejq9nLM71d")
+      .unwrap();
+    let BarkCipher::Aes128(c) = cipher else { panic!() };
+    let plain = c.decrypt(b"LutFoORuhIey".into(), ciphertext.as_slice()).unwrap();
+    assert_eq!(String::from_utf8(plain).unwrap(), r#"{"title":"Apprise Notifications","body":"B ü","icon":"http://i/x.png"}"#);
+    // Our encryption gives the same result for the same IV
+    let params = vec![("title", json!("Apprise Notifications")), ("body", json!("B ü")), ("icon", json!("http://i/x.png"))];
+    let ours = BarkCipher::new(b"0123456789abcdef").unwrap().encrypt(b"LutFoORuhIey", ordered_json(&params).as_bytes()).unwrap();
+    assert_eq!(ours, ciphertext);
+  }
 
-    let parsed = crate::utils::parse::ParsedUrl::parse("barks://host/key").unwrap();
-    let bark = Bark::from_url(&parsed).unwrap();
-    assert!(bark.secure);
+  #[tokio::test]
+  async fn test_send_failures() {
+    let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
+    // No device keys
+    assert!(!bark("bark://localhost").send(&ctx).await.unwrap());
+
+    for status in [500, 999, 201] {
+      let server = MockServer::start().await;
+      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
+      let svc = from_url(&mock_url(&server, "a/b")).unwrap();
+      assert!(!svc.send(&ctx).await.unwrap(), "status {}", status);
+    }
   }
 
   #[test]
-  fn test_to_query_param_adds_device_key() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("bark://host/?to=device_key").unwrap();
-    let bark = Bark::from_url(&parsed).unwrap();
-    assert!(bark.device_keys.contains(&"device_key".to_string()));
+  fn test_service_details() {
+    let details = Bark::static_details();
+    assert_eq!(details.service_name, "Bark");
+    assert_eq!(details.protocols, vec!["bark", "barks"]);
   }
 }

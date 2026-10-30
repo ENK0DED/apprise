@@ -59,6 +59,8 @@ hex = "0.4"
 # ECDH/ECDSA P-256, RSA signing, HKDF and AES-GCM (VAPID, FCM); already
 # linked through rustls, so it adds no code to the binary
 ring = { version = "0.17", default-features = false, features = ["alloc"] }
+# AES-GCM with 128/192/256-bit keys (Bark); ring has no AES-192
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
 
 # Platform socket options
 socket2 = { version = "0.6", features = ["all"] }
