@@ -311,7 +311,7 @@ mod tests {
   use super::*;
   use crate::notify::registry::from_url;
   use crate::notify::with_test_base;
-  use wiremock::matchers::{method, path};
+  use wiremock::matchers::method;
   use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
   const IMAGE: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/default/apprise-info-32x32.png";
