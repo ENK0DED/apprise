@@ -1,6 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{Notify, NotifyContext, ServiceDetails, service_base};
-use crate::utils::parse::{ParsedUrl, parse_list, split_path, url_credentials};
+use crate::utils::parse::ParsedUrl;
+use crate::utils::url_args::{parse_list, split_path, url_credentials};
 use async_trait::async_trait;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

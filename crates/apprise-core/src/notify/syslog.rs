@@ -1,7 +1,8 @@
 use crate::error::NotifyError;
 use crate::notify::rsyslog::{facility_name, resolve_facility, severity};
 use crate::notify::{Notify, NotifyContext, ServiceDetails};
-use crate::utils::parse::{ParsedUrl, parse_bool_with_default, split_path};
+use crate::utils::parse::ParsedUrl;
+use crate::utils::url_args::{parse_bool_with_default, split_path};
 use async_trait::async_trait;
 
 /// The local syslog socket, as `_PATH_LOG` in `<syslog.h>`.
