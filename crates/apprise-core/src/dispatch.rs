@@ -545,6 +545,10 @@ mod tests {
     Ok,
     Fail,
     Err,
+    /// Fail with an error whose text holds a URL with a token.
+    SecretErr,
+    /// Fail with an HTTP status and a response body.
+    Status,
     /// Sleep this many milliseconds, then succeed.
     Slow(u64),
   }
@@ -594,6 +598,8 @@ mod tests {
         Step::Ok => Ok(true),
         Step::Fail => Ok(false),
         Step::Err => Err(NotifyError::Other("boom".into())),
+        Step::SecretErr => Err(NotifyError::Other("request to https://api.example.com/botSECRETTOKEN0123456789/send failed".into())),
+        Step::Status => Err(NotifyError::ServiceError { status: 503, body: "upstream says no to https://h.example/k/SECRETTOKEN0123456789".into() }),
         Step::Slow(ms) => {
           tokio::time::sleep(Duration::from_millis(ms)).await;
           Ok(true)
@@ -1174,5 +1180,52 @@ mod tests {
     let r = a.notify(&c).await;
     assert_eq!(r.status, ResultStatus::Partial);
     assert_eq!((hw.calls(), hwo.calls()), (1, 0));
+  }
+
+  /// Collects formatted log lines.
+  #[derive(Clone, Default)]
+  struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+  impl std::io::Write for LogBuffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+      self.0.lock().unwrap().extend_from_slice(buf);
+      Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+      Ok(())
+    }
+  }
+
+  async fn logs_of(a: &Apprise) -> String {
+    let buffer = LogBuffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).with_ansi(false).with_writer(move || writer.clone()).finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    a.notify(&ctx()).await;
+    String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap()
+  }
+
+  #[tokio::test]
+  async fn test_send_errors_are_logged_without_secrets() {
+    let (svc, _) = scripted("Test", "test://a", &[Step::SecretErr]);
+    let logs = logs_of(&apprise(vec![svc])).await;
+    assert!(logs.contains("WARN") && logs.contains("Failed to send Test notification: request to https://api.example.com/"), "{logs}");
+    assert!(!logs.contains("SECRETTOKEN0123456789"), "{logs}");
+
+    let (svc, _) = scripted("Test", "test://a", &[Step::Status]);
+    let logs = logs_of(&apprise(vec![svc])).await;
+    assert!(logs.contains("Failed to send Test notification: error=503."), "{logs}");
+    // The response body is kept to debug output, masked.
+    assert!(logs.contains("Response details: upstream says no to https://h.example/"), "{logs}");
+    assert!(!logs.contains("SECRETTOKEN0123456789"), "{logs}");
+
+    let (svc, _) = scripted("Test", "test://a", &[Step::Fail]);
+    assert!(logs_of(&apprise(vec![svc])).await.contains("Failed to send Test notification."));
+
+    // With secure logging off the text is left alone.
+    let (svc, _) = scripted("Test", "test://a", &[Step::SecretErr]);
+    let mut a = apprise(vec![svc]);
+    a.asset.secure_logging = false;
+    assert!(logs_of(&a).await.contains("SECRETTOKEN0123456789"));
   }
 }
