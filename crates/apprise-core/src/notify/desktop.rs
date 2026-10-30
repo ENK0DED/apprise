@@ -91,6 +91,7 @@ mod tests {
         path_parts: vec![],
         qsd: std::collections::HashMap::new(),
         raw: "dbus://".to_string(),
+        ..Default::default()
       }
     });
     let d = Desktop::from_url(&parsed).unwrap();

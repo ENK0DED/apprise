@@ -51,6 +51,8 @@ async-trait = "0.1"
 # URL encoding
 urlencoding = "2"
 
+regex-lite = "0.1"
+
 # Cryptographic primitives
 hmac = "0.13"
 sha2 = "0.11"

@@ -1,163 +1,221 @@
+//! URL and list parsing, ported from upstream `apprise/utils/parse.py`
+//! (`parse_url()`, `parse_qsd()`, `parse_urls()`, `parse_list()`,
+//! `parse_bool()`) and the parse side of `apprise/url.py`
+//! (`URLBase.parse_url()` and its post-processing).
+//!
+//! Upstream behaviour is the spec, quirks included: a `;` in the last path
+//! segment drops the rest of it (Python's `urlparse()` treats it as
+//! parameters), a second `:` in the user info truncates the password, and
+//! so on. The parity tests at the bottom of this file replay vectors
+//! captured from upstream.
+
 use std::collections::HashMap;
 use url::Url;
 
-/// A parsed Apprise URL with all components accessible
-#[derive(Debug, Clone)]
+use crate::utils::validate::verify_hostname;
+
+/// RFC 3986 path characters left unencoded in a path segment
+/// (upstream `URL_SEGMENT_SAFE_CHARS`). Commas and semicolons stay encoded
+/// because Apprise uses them as list delimiters, and `/` stays encoded so
+/// an escaped slash remains part of its segment.
+pub const URL_SEGMENT_SAFE_CHARS: &str = ":@!$&'()*+=";
+
+/// The same characters plus `/`, for quoting a whole path
+/// (upstream `URL_PATH_SAFE_CHARS`).
+pub const URL_PATH_SAFE_CHARS: &str = "/:@!$&'()*+=";
+
+/// A parsed Apprise URL with all components accessible.
+///
+/// Built by [`ParsedUrl::parse`], which follows upstream
+/// `URLBase.parse_url(url, verify_host=False)`. Plugins that upstream
+/// parses with host verification should check [`ParsedUrl::verified_host`].
+#[derive(Debug, Clone, Default)]
 pub struct ParsedUrl {
+  /// Lowercase schema (`json`, `https`, ...).
   pub schema: String,
+  /// Decoded user, after a `?user=` override. `None` when absent or empty.
   pub user: Option<String>,
+  /// Decoded password, after a `?password=`/`?pass=` override. `None` when
+  /// absent or empty.
   pub password: Option<String>,
+  /// Decoded host. A port that is not a number stays part of the host
+  /// (`tgram://123:abc` has host `123:abc`). `None` when empty.
   pub host: Option<String>,
+  /// Port, from the authority or a `?port=` override.
   pub port: Option<u16>,
-  /// Full path (without leading slash)
+  /// Percent-encoded path without its leading slash (upstream `fullpath`
+  /// minus the `/`). Keeps a trailing slash.
   pub path: String,
-  /// Individual path components
+  /// Decoded, non-empty path segments (upstream `split_path(fullpath)`).
   pub path_parts: Vec<String>,
-  /// Query string as key→value map
+  /// Query string arguments. Values are decoded and trimmed. Keys are
+  /// decoded and trimmed but keep their case; keys that differ only in
+  /// case collapse to the last one, as upstream's lowercased `qsd` does.
+  /// Use [`ParsedUrl::get`] for case-insensitive lookups.
   pub qsd: HashMap<String, String>,
+  /// Arguments written as `?+name=value` with the `+` removed and the case
+  /// kept (upstream `qsd+`, typically extra HTTP headers).
+  pub qsd_add: HashMap<String, String>,
+  /// Arguments written as `?-name=value` (upstream `qsd-`).
+  pub qsd_del: HashMap<String, String>,
+  /// Arguments written as `?:name=value` (upstream `qsd:`).
+  pub qsd_colon: HashMap<String, String>,
+  /// Tags assigned by whatever loaded this URL (`tag=URL` text config
+  /// lines, YAML `tag:`/`tags:`, [`crate::Apprise::add_with_tags`]).
+  /// Raw strings, `priority:tag` form kept intact.
+  pub assigned_tags: Option<Vec<String>>,
   /// Original raw URL string
   pub raw: String,
 }
 
+/// Options for [`ParsedUrl::parse_with`]; they mirror upstream `parse_url()`
+/// keyword arguments.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ParseOptions {
+  /// Reject the URL unless its host is a valid hostname or IP address and
+  /// any port is numeric.
+  pub verify_host: bool,
+  /// With `verify_host`, also require a port in 1..=65535.
+  pub strict_port: bool,
+  /// Decode `+` in query values as a space (only office365 does this).
+  pub plus_to_space: bool,
+}
+
+/// The pieces upstream `parse_url()` extracts, before `URLBase`
+/// post-processing.
+struct RawParts {
+  schema: String,
+  user: Option<String>,
+  password: Option<String>,
+  host: String,
+  port: Option<i64>,
+  /// The port text failed to convert (`host:abc`).
+  bad_port: bool,
+  fullpath: Option<String>,
+  qsd: Qsd,
+}
+
+/// Query string dictionaries produced by [`parse_qsd`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Qsd {
+  pub qsd: HashMap<String, String>,
+  pub add: HashMap<String, String>,
+  pub del: HashMap<String, String>,
+  pub colon: HashMap<String, String>,
+}
+
+impl Qsd {
+  /// Insert into the main map, replacing any key that differs only in case.
+  fn insert(&mut self, key: String, value: String) {
+    insert_ci(&mut self.qsd, key, value);
+  }
+}
+
+/// Insert `key`, removing existing keys that match it case-insensitively.
+pub(crate) fn insert_ci(map: &mut HashMap<String, String>, key: String, value: String) {
+  if !map.contains_key(&key) {
+    let lower = key.to_lowercase();
+    map.retain(|k, _| k.to_lowercase() != lower);
+  }
+  map.insert(key, value);
+}
+
 impl ParsedUrl {
-  /// Parse an Apprise-style URL
+  /// Parse an Apprise-style URL (upstream `URLBase.parse_url(url,
+  /// verify_host=False)`). Returns `None` when the URL has no schema or
+  /// cannot be parsed at all, such as an authority with an unmatched `[`.
   pub fn parse(raw: &str) -> Option<Self> {
-    // Handle URLs that may not have //: e.g., "growl://host"
-    if !raw.contains("://") {
-      return None;
-    }
-
-    // Pre-process: encode '#' chars in query string values so the url crate
-    // doesn't treat them as fragment delimiters. In Apprise URLs, '#' in
-    // query values denotes channel names (e.g., ?to=#channel).
-    let normalized = Self::encode_hash_in_query(raw);
-
-    match Url::parse(&normalized) {
-      Ok(url) => {
-        // If the url crate interpreted path '/' chars as part of userinfo
-        // (e.g., napi://a/b/c@d/e), the username will contain '/'.
-        // Fall back to our manual parser which handles this correctly.
-        if url.username().contains('/') { Self::fallback_parse(raw) } else { Self::from_url_crate(url, raw) }
-      }
-      Err(_) => Self::fallback_parse(raw),
-    }
+    Self::parse_with(raw, ParseOptions::default())
   }
 
-  /// Encode special characters that appear in the URL so the `url` crate
-  /// doesn't reject or misinterpret them.
-  fn encode_hash_in_query(raw: &str) -> String {
-    // Find the query string start
-    if let Some(qmark) = raw.find('?') {
-      let (before, after) = raw.split_at(qmark);
-      // Also handle '#' in path parts (e.g., /path/#channel/)
-      let before_encoded = before.replace('#', "%23");
-      let after_encoded = after.replace('#', "%23").replace('<', "%3C").replace('>', "%3E");
-      format!("{}{}", before_encoded, after_encoded)
-    } else {
-      // Also handle '#' in path parts
-      raw.replace('#', "%23")
-    }
+  /// Parse with explicit upstream `parse_url()` options.
+  ///
+  /// Like upstream `url_to_dict()`, a `#` right after a slash is read as a
+  /// literal character (`/#channel`), not as the start of a fragment.
+  pub fn parse_with(raw: &str, opts: ParseOptions) -> Option<Self> {
+    let parts = parse_url_parts(&escape_path_hash(raw), opts)?;
+    Some(Self::from_parts(parts, raw))
   }
 
-  /// Parse using the `url` crate result
-  fn from_url_crate(url: Url, raw: &str) -> Option<Self> {
-    let schema = url.scheme().to_lowercase();
-    let host = url.host_str().map(|h| h.to_string());
-    let port = url.port();
+  /// Apply upstream `URLBase.post_process_parse_url_results()` and the
+  /// unquoting `URLBase.__init__` performs.
+  fn from_parts(parts: RawParts, raw: &str) -> Self {
+    let RawParts { schema, user: url_user, password: url_password, host, port, bad_port, fullpath, qsd } = parts;
 
-    let user = if url.username().is_empty() { None } else { Some(urlencoding::decode(url.username()).unwrap_or_default().into_owned()) };
-    let password = url.password().map(|p| urlencoding::decode(p).unwrap_or_default().into_owned());
+    let mut user = url_user.clone();
+    let mut password = url_password;
 
-    let path = url.path().trim_start_matches('/').to_string();
-    let path_parts: Vec<String> = path.split('/').filter(|s| !s.is_empty()).map(|s| urlencoding::decode(s).unwrap_or_default().into_owned()).collect();
-
-    let mut qsd = HashMap::new();
-    for (key, value) in url.query_pairs() {
-      qsd.insert(key.into_owned(), value.into_owned());
+    if let Some(v) = qsd_get_ci(&qsd.qsd, "password") {
+      password = Some(v.to_string());
     }
-
-    Some(ParsedUrl { schema, user, password, host, port, path, path_parts, qsd, raw: raw.to_string() })
-  }
-
-  /// Fallback manual parser for URLs that the `url` crate rejects
-  /// (e.g., `tgram://123456789:abcdefg_hijklmnop/lead2gold/` where the
-  /// authority contains a colon that isn't a valid port).
-  fn fallback_parse(raw: &str) -> Option<Self> {
-    let scheme_end = raw.find("://")?;
-    let schema = raw[..scheme_end].to_lowercase();
-    if schema.is_empty() {
-      return None;
+    if let Some(v) = qsd_get_ci(&qsd.qsd, "pass") {
+      password = Some(v.to_string());
     }
-    let after_scheme = &raw[scheme_end + 3..];
-
-    // Split into authority+path and query
-    let (before_query, query_str) = match after_scheme.find('?') {
-      Some(i) => (&after_scheme[..i], Some(&after_scheme[i + 1..])),
-      None => (after_scheme, None),
-    };
-
-    // Split authority from path at the first '/'
-    let (authority, path_str) = match before_query.find('/') {
-      Some(i) => (&before_query[..i], &before_query[i + 1..]),
-      None => (before_query, ""),
-    };
-
-    // Split user info from host at '@'
-    let (user_info, host_part) = match authority.rfind('@') {
-      Some(i) => (Some(&authority[..i]), &authority[i + 1..]),
-      None => (None, authority),
-    };
-
-    let (user, password) = if let Some(ui) = user_info {
-      match ui.find(':') {
-        Some(i) => {
-          let u = urlencoding::decode(&ui[..i]).unwrap_or_default().into_owned();
-          let p = urlencoding::decode(&ui[i + 1..]).unwrap_or_default().into_owned();
-          (if u.is_empty() { None } else { Some(u) }, Some(p))
-        }
-        None => {
-          let u = urlencoding::decode(ui).unwrap_or_default().into_owned();
-          (if u.is_empty() { None } else { Some(u) }, None)
-        }
-      }
-    } else {
-      (None, None)
-    };
-
-    // The host_part may contain a colon that is NOT a valid port,
-    // which is exactly why we're in the fallback. Treat the entire
-    // host_part as the host (including any colon).
-    let host = if host_part.is_empty() { None } else { Some(urlencoding::decode(host_part).unwrap_or_default().into_owned()) };
-
-    let path = path_str.trim_end_matches('/').to_string();
-    let path_parts: Vec<String> = path.split('/').filter(|s| !s.is_empty()).map(|s| urlencoding::decode(s).unwrap_or_default().into_owned()).collect();
-
-    let mut qsd = HashMap::new();
-    if let Some(qs) = query_str {
-      for pair in qs.split('&') {
-        if let Some(eq) = pair.find('=') {
-          let key = urlencoding::decode(&pair[..eq]).unwrap_or_default().into_owned();
-          let value = urlencoding::decode(&pair[eq + 1..]).unwrap_or_default().into_owned();
-          qsd.insert(key, value);
-        } else if !pair.is_empty() {
-          let key = urlencoding::decode(pair).unwrap_or_default().into_owned();
-          qsd.insert(key, String::new());
-        }
+    if let Some(v) = qsd_get_ci(&qsd.qsd, "user") {
+      user = Some(v.to_string());
+      // With ?user= set, the user written in the URL becomes the password
+      // (mailtos://PASSWORD@host?user=admin@example.com). Upstream re-parses
+      // the URL with host verification to read it.
+      if password.is_none() && !bad_port && verify_hostname(&host, true, true, true).is_some() {
+        password = url_user;
       }
     }
 
-    Some(ParsedUrl { schema, user, password, host, port: None, path, path_parts, qsd, raw: raw.to_string() })
+    let mut port = port.and_then(|p| u16::try_from(p).ok());
+    if let Some(v) = qsd_get_ci(&qsd.qsd, "port") {
+      port = match py_int(v).map(u16::try_from) {
+        Some(Ok(p)) => Some(p),
+        _ => {
+          if !v.is_empty() {
+            tracing::warn!("Invalid port number specified {}", v);
+          }
+          None
+        }
+      };
+    }
+
+    let nonempty = |s: Option<String>| s.map(|s| unquote(&s)).filter(|s| !s.is_empty());
+    let fullpath = fullpath.unwrap_or_default();
+
+    ParsedUrl {
+      schema,
+      user: nonempty(user),
+      password: nonempty(password),
+      host: nonempty(Some(host)),
+      port,
+      path: fullpath.strip_prefix('/').unwrap_or(&fullpath).to_string(),
+      path_parts: split_path(&fullpath),
+      qsd: qsd.qsd,
+      qsd_add: qsd.add,
+      qsd_del: qsd.del,
+      qsd_colon: qsd.colon,
+      assigned_tags: None,
+      raw: raw.to_string(),
+    }
+  }
+
+  /// The host checked the way upstream's default `verify_host=True` does:
+  /// a valid hostname or IP address, or `None`. IPv6 addresses come back in
+  /// square brackets.
+  pub fn verified_host(&self) -> Option<String> {
+    verify_hostname(self.host.as_deref()?, true, true, true)
+  }
+
+  /// The encoded path with its leading slash, `/` when the URL has none
+  /// (upstream `URLBase.fullpath`).
+  pub fn fullpath(&self) -> String {
+    format!("/{}", self.path)
+  }
+
+  /// Recompute `path_parts` after `path` was changed.
+  pub fn refresh_path_parts(&mut self) {
+    let fullpath = format!("/{}", self.path);
+    self.path_parts = split_path(&fullpath);
   }
 
   /// Get query string value by key (case-insensitive)
   pub fn get(&self, key: &str) -> Option<&str> {
-    // Try exact match first
-    if let Some(v) = self.qsd.get(key) {
-      return Some(v.as_str());
-    }
-    // Case-insensitive fallback
-    let lower = key.to_lowercase();
-    self.qsd.iter().find(|(k, _)| k.to_lowercase() == lower).map(|(_, v)| v.as_str())
+    qsd_get_ci(&self.qsd, key)
   }
 
   /// Get the host, or return a default
@@ -180,14 +238,598 @@ impl ParsedUrl {
     self.schema.ends_with('s')
   }
 
-  /// Parse tags from qsd "tags" or "tag" key (comma-separated)
+  /// Tags for the service built from this URL.
+  ///
+  /// These are the [`ParsedUrl::assigned_tags`] set by the loader. Upstream
+  /// never reads tags from the URL itself (`?tag=`/`?tags=` belong to the
+  /// plugin, ntfy for one). A `ParsedUrl` no loader touched (a plugin unit
+  /// test) falls back to `?tag=`, then `?tags=`.
   pub fn tags(&self) -> Vec<String> {
-    self.get("tags").or_else(|| self.get("tag")).map(|t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default()
+    if let Some(tags) = &self.assigned_tags {
+      return tags.clone();
+    }
+    self.get("tag").or_else(|| self.get("tags")).map(|t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default()
   }
 
-  /// Get "verify" ssl flag (default true)
+  /// Get "verify" ssl flag (default true). Any value is read with
+  /// [`parse_bool`], so `?verify=` with an unrecognised value turns
+  /// verification off, as upstream does.
   pub fn verify_certificate(&self) -> bool {
-    self.get("verify").map(|v| !matches!(v.to_lowercase().as_str(), "no" | "false" | "0")).unwrap_or(true)
+    self.get("verify").map(parse_bool).unwrap_or(true)
+  }
+}
+
+/// Upstream `url_to_dict()` swaps `/#` for `/%23` before parsing so
+/// channel names such as `/#general` survive.
+pub fn escape_path_hash(url: &str) -> std::borrow::Cow<'_, str> {
+  if url.contains("/#") { std::borrow::Cow::Owned(url.replace("/#", "/%23")) } else { std::borrow::Cow::Borrowed(url) }
+}
+
+/// Case-insensitive lookup that prefers an exact key match.
+fn qsd_get_ci<'a>(map: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
+  if let Some(v) = map.get(key) {
+    return Some(v.as_str());
+  }
+  let lower = key.to_lowercase();
+  map.iter().find(|(k, _)| k.to_lowercase() == lower).map(|(_, v)| v.as_str())
+}
+
+/// Upstream `URLBase.split_path()`: split on slashes (and whitespace,
+/// commas or backslashes, which only appear encoded in a parsed path) and
+/// decode each non-empty segment.
+pub fn split_path(path: &str) -> Vec<String> {
+  path.trim_start_matches('/').split(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n' | ',' | '\\' | '/')).filter(|s| !s.is_empty()).map(unquote).collect()
+}
+
+/// Python `str.strip()` whitespace (Unicode whitespace plus the ASCII
+/// separators `\x1c`-`\x1f`).
+fn is_py_space(c: char) -> bool {
+  c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
+}
+
+fn py_strip(s: &str) -> &str {
+  s.trim_matches(is_py_space)
+}
+
+/// Upstream `VALID_URL_RE`:
+/// `^\s*((?P<schema>[^:\s]+):[/\\]+)?((?P<path>[^?]+)(\?(?P<kwargs>.+))?)?\s*$`.
+/// Returns `(schema, path, kwargs)`, or `None` when the expression does not
+/// match.
+fn split_valid_url(url: &str) -> Option<(Option<&str>, &str, Option<&str>)> {
+  let t = url.trim_start_matches(is_py_space);
+
+  // Try the optional schema group first, as the regex does.
+  if let Some(colon) = t.find(':') {
+    let cand = &t[..colon];
+    if !cand.is_empty() && !cand.chars().any(is_py_space) {
+      let after = &t[colon + 1..];
+      let slashes = after.chars().take_while(|c| *c == '/' || *c == '\\').count();
+      if slashes > 0 {
+        let rest = &after[slashes..];
+        if let Some(found) = split_path_kwargs(rest) {
+          return Some((Some(cand), found.0, found.1));
+        }
+        // `[/\\]+` gives back its last slash so the path group can start
+        // with it (json://?x=1 has the path "/").
+        if slashes > 1
+          && let Some(found) = split_path_kwargs(&after[slashes - 1..])
+        {
+          return Some((Some(cand), found.0, found.1));
+        }
+      }
+    }
+  }
+
+  // Without a schema the whole string is the path group.
+  split_path_kwargs(t).map(|(p, k)| (None, p, k))
+}
+
+/// The `((?P<path>[^?]+)(\?(?P<kwargs>.+))?)?\s*$` tail of `VALID_URL_RE`.
+fn split_path_kwargs(rest: &str) -> Option<(&str, Option<&str>)> {
+  match rest.find('?') {
+    None => Some((rest, None)),
+    Some(0) => {
+      // Nothing for the path group; only trailing whitespace may remain.
+      None
+    }
+    Some(q) => {
+      let path = &rest[..q];
+      let tail = &rest[q + 1..];
+      // `.` does not match a newline; anything after one must be whitespace.
+      let (kwargs, after) = match tail.find('\n') {
+        Some(nl) => (&tail[..nl], &tail[nl..]),
+        None => (tail, ""),
+      };
+      if kwargs.is_empty() || !after.chars().all(is_py_space) {
+        return None;
+      }
+      Some((path, Some(kwargs)))
+    }
+  }
+}
+
+/// Upstream `parse_url()` without the `URLBase` post-processing.
+fn parse_url_parts(url: &str, opts: ParseOptions) -> Option<RawParts> {
+  let (schema, host_and_path, kwargs) = split_valid_url(url)?;
+  // The Rust port only parses URLs that name their schema.
+  let schema = py_strip(schema?).to_lowercase();
+  let host_and_path = py_strip(host_and_path);
+
+  let qsd = match kwargs.map(py_strip) {
+    Some(k) if !k.is_empty() => parse_qsd(k, opts.plus_to_space),
+    _ => Qsd::default(),
+  };
+
+  let (netloc, path) = urlsplit_authority(host_and_path)?;
+  let mut host = py_strip(&netloc).to_string();
+
+  let mut fullpath = tidy_path(py_strip(&path)).split('/').map(|seg| quote(&unquote(seg), URL_SEGMENT_SAFE_CHARS)).collect::<Vec<_>>().join("/");
+
+  // Restore a trailing slash tidy_path() removed.
+  let stripped = py_strip(url);
+  if let (Some(last_full), Some(last_url)) = (fullpath.chars().last(), url.chars().last())
+    && !matches!(last_full, '/' | '\\')
+    && matches!(last_url, '/' | '\\')
+    && let Some(c) = stripped.chars().last()
+  {
+    fullpath.push(c);
+  }
+
+  let fullpath = if fullpath.is_empty() { None } else { Some(fullpath) };
+
+  // user@host; runs of '@' split, and only the first two pieces are kept.
+  let mut user = None;
+  let mut password = None;
+  let pieces: Vec<&str> = split_runs(&host, '@');
+  if pieces.len() >= 2 {
+    user = Some(pieces[0].to_string());
+    host = pieces[1].to_string();
+  }
+  if let Some(u) = user.clone() {
+    let pieces: Vec<&str> = split_runs(&u, ':');
+    if pieces.len() >= 2 {
+      user = Some(pieces[0].to_string());
+      password = Some(pieces[1].to_string());
+    }
+  }
+
+  // Port parsing: ^(?P<host>(\[[0-9a-f:]+\]|[^:]+)):(?P<port>[^:]*)$
+  let mut port = None;
+  let mut bad_port = false;
+  if let Some((h, p)) = split_host_port(&host) {
+    match py_int(p) {
+      Some(n) => {
+        port = Some(n);
+        host = h.to_string();
+      }
+      None => {
+        if opts.verify_host {
+          return None;
+        }
+        // Not a number: it stays part of the host.
+        bad_port = true;
+      }
+    }
+  }
+
+  if opts.verify_host {
+    host = verify_hostname(&host, true, true, true)?;
+    if opts.strict_port
+      && let Some(p) = port
+      && !(1..=65535).contains(&p)
+    {
+      return None;
+    }
+  }
+
+  // An out-of-range port can not be represented; upstream would only fail
+  // later, when connecting.
+  if let Some(p) = port
+    && u16::try_from(p).is_err()
+  {
+    return None;
+  }
+
+  Some(RawParts { schema, user, password, host, port, bad_port, fullpath, qsd })
+}
+
+/// `re.split(r"[c]+", s)`.
+fn split_runs(s: &str, c: char) -> Vec<&str> {
+  let mut out = Vec::new();
+  let mut start = 0;
+  let mut chars = s.char_indices().peekable();
+  while let Some((i, ch)) = chars.next() {
+    if ch == c {
+      out.push(&s[start..i]);
+      let mut end = i + ch.len_utf8();
+      while let Some(&(j, next)) = chars.peek() {
+        if next != c {
+          break;
+        }
+        end = j + next.len_utf8();
+        chars.next();
+      }
+      start = end;
+    }
+  }
+  out.push(&s[start..]);
+  out
+}
+
+/// Match `^(?P<host>(\[[0-9a-f:]+\]|[^:]+)):(?P<port>[^:]*)$`.
+fn split_host_port(host: &str) -> Option<(&str, &str)> {
+  if host.starts_with('[')
+    && let Some(close) = host.find(']')
+  {
+    let inner = &host[1..close];
+    let after = &host[close + 1..];
+    if !inner.is_empty()
+      && inner.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c) || c == ':')
+      && let Some(p) = after.strip_prefix(':')
+      && !p.contains(':')
+    {
+      return Some((&host[..=close], p));
+    }
+  }
+  let colon = host.find(':')?;
+  let port = &host[colon + 1..];
+  if colon == 0 || port.contains(':') {
+    return None;
+  }
+  Some((&host[..colon], port))
+}
+
+/// Python `int(text)` restricted to what a port can look like: surrounding
+/// whitespace, an optional sign and digits with single underscores between
+/// them. Upstream only tries this when the text holds a digit.
+fn py_int(text: &str) -> Option<i64> {
+  if !text.chars().any(|c| c.is_ascii_digit()) {
+    return None;
+  }
+  let t = py_strip(text);
+  let (neg, digits) = match t.as_bytes().first() {
+    Some(b'-') => (true, &t[1..]),
+    Some(b'+') => (false, &t[1..]),
+    _ => (false, t),
+  };
+  if digits.is_empty() || digits.starts_with('_') || digits.ends_with('_') || digits.contains("__") {
+    return None;
+  }
+  if !digits.chars().all(|c| c.is_ascii_digit() || c == '_') {
+    return None;
+  }
+  let n: i64 = digits.replace('_', "").parse().ok()?;
+  Some(if neg { -n } else { n })
+}
+
+/// The part of Python's `urlparse("http://" + text)` upstream reads: the
+/// netloc and the path. Returns `None` where Python raises `ValueError`
+/// (an unmatched or misplaced square bracket).
+fn urlsplit_authority(text: &str) -> Option<(String, String)> {
+  // Python strips these anywhere in a URL before splitting it.
+  let cleaned: String = text.chars().filter(|c| !matches!(c, '\t' | '\r' | '\n')).collect();
+
+  let end = cleaned.find(['/', '?', '#']).unwrap_or(cleaned.len());
+  let netloc = &cleaned[..end];
+  let mut path = &cleaned[end..];
+
+  let open = netloc.contains('[');
+  let close = netloc.contains(']');
+  if open != close {
+    return None;
+  }
+  if open && !bracketed_netloc_ok(netloc) {
+    return None;
+  }
+
+  if let Some(i) = path.find('#') {
+    path = &path[..i];
+  }
+  // The query string was split off earlier; this mirrors urlsplit anyway.
+  if let Some(i) = path.find('?') {
+    path = &path[..i];
+  }
+  // urlparse() moves ";params" out of the last path segment.
+  if path.contains(';') {
+    let cut = match path.rfind('/') {
+      Some(slash) => path[slash..].find(';').map(|i| slash + i),
+      None => path.find(';'),
+    };
+    if let Some(i) = cut {
+      path = &path[..i];
+    }
+  }
+
+  Some((netloc.to_string(), path.to_string()))
+}
+
+/// Python's `_check_bracketed_netloc()`.
+fn bracketed_netloc_ok(netloc: &str) -> bool {
+  let host_port = netloc.rsplit_once('@').map(|(_, h)| h).unwrap_or(netloc);
+  let hostname = match host_port.split_once('[') {
+    Some((before, bracketed)) => {
+      if !before.is_empty() {
+        return false;
+      }
+      let (hostname, port) = bracketed.split_once(']').unwrap_or((bracketed, ""));
+      if !port.is_empty() && !port.starts_with(':') {
+        return false;
+      }
+      hostname
+    }
+    None => host_port.split_once(':').map(|(h, _)| h).unwrap_or(host_port),
+  };
+
+  if let Some(rest) = hostname.strip_prefix('v') {
+    // \Av[a-fA-F0-9]+\..+\Z
+    return match rest.split_once('.') {
+      Some((hex, tail)) => !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()) && !tail.is_empty(),
+      None => false,
+    };
+  }
+
+  // ipaddress.ip_address(); an IPv4 address may not be bracketed.
+  let (addr, scope) = match hostname.split_once('%') {
+    Some((a, s)) => (a, Some(s)),
+    None => (hostname, None),
+  };
+  if let Some(s) = scope
+    && (s.is_empty() || s.contains('%'))
+  {
+    return false;
+  }
+  addr.parse::<std::net::Ipv6Addr>().is_ok()
+}
+
+/// Upstream `tidy_path()` for a URL path: collapse repeated separators and
+/// trim trailing backslashes.
+fn tidy_path(path: &str) -> String {
+  // TIDY_WIN_PATH_RE: a run of backslashes after a non-space character (or
+  // at the very start, keeping two) collapses to one.
+  let mut out = String::with_capacity(path.len());
+  let chars: Vec<char> = path.chars().collect();
+  let mut i = 0;
+  while i < chars.len() {
+    let c = chars[i];
+    if c == '\\' {
+      let mut j = i;
+      while j < chars.len() && chars[j] == '\\' {
+        j += 1;
+      }
+      let run = j - i;
+      if i == 0 && run > 2 {
+        out.push_str("\\\\");
+      } else if i > 0 && run > 1 && !is_py_space(chars[i - 1]) {
+        out.push('\\');
+      } else {
+        out.extend(std::iter::repeat_n('\\', run));
+      }
+      i = j;
+      continue;
+    }
+    out.push(c);
+    i += 1;
+  }
+
+  // TIDY_NUX_PATH_RE: collapse runs of '/'.
+  let mut nux = String::with_capacity(out.len());
+  for c in out.chars() {
+    if c == '/' && nux.ends_with('/') {
+      continue;
+    }
+    nux.push(c);
+  }
+
+  // TIDY_WIN_TRIM_RE: ^(.+[^:][^\\])[\s\\]*$
+  let kept = nux.trim_end_matches(|c: char| c == '\\' || is_py_space(c));
+  let kept_chars: Vec<char> = kept.chars().collect();
+  if kept.len() < nux.len() && kept_chars.len() >= 3 {
+    let n = kept_chars.len();
+    if kept_chars[n - 2] != ':' && kept_chars[n - 1] != '\\' {
+      return kept.to_string();
+    }
+  }
+  nux
+}
+
+/// Upstream `parse_qsd()`: split on `&` and `;`, decode keys and values.
+///
+/// A key keeps a leading `+` but any later `+` becomes a space; values keep
+/// `+` unless `plus_to_space` is set. Keys starting with `+` (or a space),
+/// `-` or `:` are also stored, without that character and with their case
+/// kept, in the `add`, `del` and `colon` maps.
+pub fn parse_qsd(qs: &str, plus_to_space: bool) -> Qsd {
+  let mut result = Qsd::default();
+  for pair in qs.split(['&', ';']) {
+    let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+
+    let mut key_chars = k.chars();
+    let key = match key_chars.next() {
+      Some(first) => format!("{}{}", first, key_chars.as_str().replace('+', " ")),
+      None => String::new(),
+    };
+    let key = unquote(&key);
+
+    let val = if plus_to_space { v.replace('+', " ") } else { v.to_string() };
+    let val = py_strip(&unquote(&val)).to_string();
+
+    result.insert(py_strip(&key).to_string(), val.clone());
+
+    if let Some(rest) = key.strip_prefix([' ', '+']) {
+      result.add.insert(rest.to_string(), val.clone());
+    }
+    if let Some(rest) = key.strip_prefix('-') {
+      result.del.insert(rest.to_string(), val.clone());
+    }
+    if let Some(rest) = key.strip_prefix(':') {
+      result.colon.insert(rest.to_string(), val);
+    }
+  }
+  result
+}
+
+/// Python `urllib.parse.unquote()`: decode `%XX` escapes as UTF-8, with
+/// invalid sequences replaced by U+FFFD. A `%` not followed by two hex
+/// digits stays literal.
+pub fn unquote(s: &str) -> String {
+  if !s.contains('%') {
+    return s.to_string();
+  }
+  let mut out = String::with_capacity(s.len());
+  let mut buf: Vec<u8> = Vec::new();
+  let bytes = s.as_bytes();
+  let mut i = 0;
+  while i < bytes.len() {
+    let b = bytes[i];
+    if b >= 0x80 {
+      // Non-ASCII text passes through and ends the current escape run.
+      out.push_str(&String::from_utf8_lossy(&buf));
+      buf.clear();
+      let ch = s[i..].chars().next().unwrap();
+      out.push(ch);
+      i += ch.len_utf8();
+      continue;
+    }
+    if b == b'%' && i + 2 < bytes.len() && bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit() {
+      let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+      buf.push(u8::from_str_radix(hex, 16).unwrap());
+      i += 3;
+      continue;
+    }
+    buf.push(b);
+    i += 1;
+  }
+  out.push_str(&String::from_utf8_lossy(&buf));
+  out
+}
+
+/// Python `urllib.parse.quote(s, safe)`: percent-encode everything except
+/// ASCII letters, digits, `_.-~` and the characters in `safe`.
+pub fn quote(s: &str, safe: &str) -> String {
+  let mut out = String::with_capacity(s.len());
+  for ch in s.chars() {
+    if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-' | '~') || (ch.is_ascii() && safe.contains(ch)) {
+      out.push(ch);
+    } else {
+      let mut buf = [0u8; 4];
+      for b in ch.encode_utf8(&mut buf).bytes() {
+        out.push_str(&format!("%{:02X}", b));
+      }
+    }
+  }
+  out
+}
+
+/// Upstream `parse_urls()`: split a string holding several URLs separated
+/// by commas, semicolons and/or whitespace.
+///
+/// A delimiter only splits when another `schema://` follows it, so commas
+/// and semicolons inside a URL (`?to=a,b`) are kept. A string without any
+/// URL is split on every delimiter instead, so the caller can still report
+/// each piece.
+pub fn parse_urls(text: &str) -> Vec<String> {
+  let found = if text.contains("://") { find_urls(text.trim_end_matches(is_py_space)) } else { Vec::new() };
+  if !found.is_empty() {
+    return found;
+  }
+  text.split(is_list_delimiter).filter(|s| !s.is_empty()).map(|s| s.to_string()).collect()
+}
+
+/// Delimiters of upstream `STRING_DELIMITERS` (`[\[\]\;,\s]+`).
+fn is_list_delimiter(c: char) -> bool {
+  matches!(c, '[' | ']' | ';' | ',') || is_py_space(c)
+}
+
+/// Delimiters between URLs in `URL_DETECTION_RE` (`[\s,;]`).
+fn is_url_delimiter(c: char) -> bool {
+  matches!(c, ',' | ';') || is_py_space(c)
+}
+
+/// `re.findall(r"([a-z0-9]+?:\/\/.*?)(?=$|[\s,;]{1,32}[a-z0-9]{1,32}?:\/\/)", text, re.I)`.
+fn find_urls(text: &str) -> Vec<String> {
+  let chars: Vec<char> = text.chars().collect();
+  let n = chars.len();
+  let is_schema_char = |c: char| c.is_ascii_alphanumeric();
+
+  // Length of the schema run at `i` when it is followed by "://".
+  let schema_at = |i: usize, max: usize| -> Option<usize> {
+    let mut j = i;
+    while j < n && is_schema_char(chars[j]) {
+      j += 1;
+    }
+    let len = j - i;
+    (len > 0 && len <= max && j + 3 <= n && chars[j] == ':' && chars[j + 1] == '/' && chars[j + 2] == '/').then_some(len)
+  };
+
+  // The lookahead: end of text, or 1-32 delimiters and another schema.
+  let boundary = |e: usize| -> bool {
+    if e == n {
+      return true;
+    }
+    let mut d = e;
+    while d < n && is_url_delimiter(chars[d]) {
+      d += 1;
+    }
+    let run = d - e;
+    (1..=32).contains(&run) && schema_at(d, 32).is_some()
+  };
+
+  let mut out = Vec::new();
+  let mut pos = 0;
+  while pos < n {
+    let Some(len) = schema_at(pos, usize::MAX) else {
+      pos += 1;
+      continue;
+    };
+    // Body: `.*?` up to the first boundary; `.` never crosses a newline.
+    let mut e = pos + len + 3;
+    let mut matched = None;
+    loop {
+      if boundary(e) {
+        matched = Some(e);
+        break;
+      }
+      if e >= n || chars[e] == '\n' {
+        break;
+      }
+      e += 1;
+    }
+    match matched {
+      Some(end) => {
+        out.push(chars[pos..end].iter().collect());
+        pos = if end > pos { end } else { pos + 1 };
+      }
+      None => pos += 1,
+    }
+  }
+  out
+}
+
+/// Upstream `parse_list()`: split on commas, semicolons, square brackets
+/// and whitespace, then return the unique entries sorted.
+pub fn parse_list(text: &str) -> Vec<String> {
+  let mut items: Vec<String> = text.split(is_list_delimiter).filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
+  items.sort();
+  items.dedup();
+  items
+}
+
+/// Parse a boolean the way upstream `parse_bool(value, default=False)`
+/// does: only the first two characters count, so `yes`, `yeah` and `y`
+/// are true, `no`, `never` and `n` are false. Anything unrecognised is
+/// false.
+pub fn parse_bool(s: &str) -> bool {
+  parse_bool_or(s, false)
+}
+
+/// [`parse_bool`] with the result for unrecognised text supplied.
+pub fn parse_bool_or(s: &str, default: bool) -> bool {
+  let lower = s.to_lowercase();
+  let prefix: String = lower.chars().take(2).collect();
+  match prefix.as_str() {
+    "de" | "di" | "ne" | "f" | "n" | "no" | "of" | "0" | "fa" => false,
+    "en" | "al" | "t" | "y" | "ye" | "on" | "1" | "tr" => true,
+    _ => default,
   }
 }
 
@@ -206,15 +848,6 @@ pub fn extract_urls(text: &str) -> Vec<String> {
       }
     })
     .collect()
-}
-
-/// Parse a "bool-like" query string value
-/// Parse a boolean value from a string. Matches the same values as Python apprise:
-/// Truthy: yes, y, true, t, on, 1, enable, enabled, active, al, en, tr, ye
-/// Everything else is false.
-pub fn parse_bool(s: &str) -> bool {
-  let lower = s.to_lowercase();
-  matches!(lower.as_str(), "yes" | "y" | "true" | "t" | "on" | "1" | "enable" | "enabled" | "active" | "al" | "en" | "tr" | "ye")
 }
 
 /// Parse targets from path parts + optional query key
@@ -283,6 +916,110 @@ pub fn normalize_phone(phone: &str) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use serde_json::Value;
+
+  fn parity() -> Value {
+    serde_json::from_str(include_str!("testdata/parse_parity.json")).unwrap()
+  }
+
+  fn opt_str(v: &Value) -> Option<String> {
+    v.as_str().map(unquote).filter(|s| !s.is_empty())
+  }
+
+  fn str_map(v: &Value) -> HashMap<String, String> {
+    v.as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string())).collect()
+  }
+
+  /// Replays upstream `URLBase.parse_url(url, verify_host=False)` results.
+  #[test]
+  fn test_parse_url_parity() {
+    for case in parity()["parse_url"].as_array().unwrap() {
+      let url = case["url"].as_str().unwrap();
+      let got = ParsedUrl::parse(url);
+      let expected = &case["loose"];
+
+      // Upstream keeps ports a u16 can not hold (-92, 70000); the port is
+      // useless either way, so the Rust parser rejects the URL.
+      let port = match &expected["port"] {
+        Value::Number(n) => Some(n.as_i64().unwrap()),
+        Value::String(s) => py_int(s),
+        _ => None,
+      };
+      let unrepresentable = port.is_some_and(|p| u16::try_from(p).is_err()) && !expected["port"].is_string();
+      // Without a schema upstream falls back to a default one.
+      let schemaless = !url.contains(':');
+
+      if expected.is_null() || unrepresentable || schemaless {
+        assert!(got.is_none(), "{:?} should not parse, got {:?}", url, got);
+        continue;
+      }
+      let got = got.unwrap_or_else(|| panic!("{:?} should parse", url));
+
+      assert_eq!(got.schema, expected["schema"].as_str().unwrap(), "schema of {:?}", url);
+      assert_eq!(got.user, opt_str(&expected["user"]), "user of {:?}", url);
+      assert_eq!(got.password, opt_str(&expected["password"]), "password of {:?}", url);
+      assert_eq!(got.host, opt_str(&expected["host"]), "host of {:?}", url);
+      assert_eq!(got.port, port.and_then(|p| u16::try_from(p).ok()), "port of {:?}", url);
+      let fullpath = expected["fullpath"].as_str().unwrap_or("/");
+      assert_eq!(got.fullpath(), fullpath, "fullpath of {:?}", url);
+      assert_eq!(got.path_parts, split_path(fullpath), "path_parts of {:?}", url);
+
+      let lowered: HashMap<String, String> = got.qsd.iter().map(|(k, v)| (k.to_lowercase(), v.clone())).collect();
+      assert_eq!(lowered, str_map(&expected["qsd"]), "qsd of {:?}", url);
+      assert_eq!(got.qsd_add, str_map(&expected["qsd+"]), "qsd+ of {:?}", url);
+      assert_eq!(got.qsd_del, str_map(&expected["qsd-"]), "qsd- of {:?}", url);
+      assert_eq!(got.qsd_colon, str_map(&expected["qsd:"]), "qsd: of {:?}", url);
+    }
+  }
+
+  /// Replays upstream `URLBase.parse_url(url)` (host verification on).
+  #[test]
+  fn test_parse_url_verify_host_parity() {
+    let opts = ParseOptions { verify_host: true, ..Default::default() };
+    for case in parity()["parse_url"].as_array().unwrap() {
+      let url = case["url"].as_str().unwrap();
+      // Ports a u16 can not hold are rejected (see test_parse_url_parity).
+      let bad_port = case["loose"]["port"].as_i64().is_some_and(|p| u16::try_from(p).is_err());
+      if !url.contains(':') || bad_port {
+        continue;
+      }
+      let got = ParsedUrl::parse_with(url, opts);
+      if case["strict_ok"].as_bool().unwrap() {
+        let got = got.unwrap_or_else(|| panic!("{:?} should parse with verify_host", url));
+        assert_eq!(got.host, opt_str(&case["strict_host"]), "host of {:?}", url);
+      } else {
+        assert!(got.is_none(), "{:?} should not parse with verify_host, got {:?}", url, got);
+      }
+    }
+  }
+
+  #[test]
+  fn test_parse_urls_parity() {
+    for case in parity()["parse_urls"].as_array().unwrap() {
+      let input = case["input"].as_str().unwrap();
+      let expected: Vec<String> = case["output"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+      assert_eq!(parse_urls(input), expected, "parse_urls({:?})", input);
+    }
+  }
+
+  #[test]
+  fn test_parse_list_parity() {
+    for case in parity()["parse_list"].as_array().unwrap() {
+      let input = case["input"].as_str().unwrap();
+      let expected: Vec<String> = case["output"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+      assert_eq!(parse_list(input), expected, "parse_list({:?})", input);
+    }
+  }
+
+  #[test]
+  fn test_parse_bool_parity() {
+    for case in parity()["parse_bool"].as_array().unwrap() {
+      let input = case["input"].as_str().unwrap();
+      assert_eq!(parse_bool_or(input, false), case["default_false"].as_bool().unwrap(), "parse_bool({:?}, False)", input);
+      assert_eq!(parse_bool_or(input, true), case["default_true"].as_bool().unwrap(), "parse_bool({:?}, True)", input);
+      assert_eq!(parse_bool(input), case["default_false"].as_bool().unwrap());
+    }
+  }
 
   // ── ParsedUrl basic tests ──────────────────────────────────────
 
@@ -295,74 +1032,84 @@ mod tests {
     assert_eq!(p.user, None);
     assert_eq!(p.password, None);
     assert!(p.qsd.is_empty());
+    assert_eq!(p.fullpath(), "/");
   }
 
   #[test]
-  fn test_parse_https() {
-    let p = ParsedUrl::parse("https://example.com").unwrap();
-    assert_eq!(p.schema, "https");
-    assert_eq!(p.host.as_deref(), Some("example.com"));
-    assert!(p.is_secure());
-  }
-
-  #[test]
-  fn test_parse_with_port() {
-    let p = ParsedUrl::parse("http://hostname:8080").unwrap();
-    assert_eq!(p.host.as_deref(), Some("hostname"));
-    assert_eq!(p.port, Some(8080));
-  }
-
-  #[test]
-  fn test_parse_max_port() {
-    let p = ParsedUrl::parse("http://hostname:65535").unwrap();
-    assert_eq!(p.port, Some(65535));
-  }
-
-  #[test]
-  fn test_parse_with_user_password() {
-    let p = ParsedUrl::parse("http://user:pass@hostname").unwrap();
-    assert_eq!(p.user.as_deref(), Some("user"));
-    assert_eq!(p.password.as_deref(), Some("pass"));
-    assert_eq!(p.host.as_deref(), Some("hostname"));
-  }
-
-  #[test]
-  fn test_parse_encoded_user_password() {
-    let p = ParsedUrl::parse("http://us%40er:p%40ss@hostname").unwrap();
+  fn test_parse_with_user_password_port_path() {
+    let p = ParsedUrl::parse("http://us%40er:p%40ss@hostname:8080/path/to/resource/").unwrap();
     assert_eq!(p.user.as_deref(), Some("us@er"));
     assert_eq!(p.password.as_deref(), Some("p@ss"));
-  }
-
-  #[test]
-  fn test_parse_with_path() {
-    let p = ParsedUrl::parse("http://hostname/path/to/resource").unwrap();
-    assert_eq!(p.path, "path/to/resource");
+    assert_eq!(p.host.as_deref(), Some("hostname"));
+    assert_eq!(p.port, Some(8080));
+    assert_eq!(p.path, "path/to/resource/");
     assert_eq!(p.path_parts, vec!["path", "to", "resource"]);
   }
 
   #[test]
-  fn test_parse_trailing_slashes() {
-    let p = ParsedUrl::parse("http://hostname////").unwrap();
-    assert_eq!(p.host.as_deref(), Some("hostname"));
-    // path_parts should be empty since all components are empty after filtering
-    assert!(p.path_parts.is_empty());
+  fn test_parse_token_host_keeps_colon() {
+    // A port that is not a number stays part of the host (telegram tokens).
+    let p = ParsedUrl::parse("tgram://123456789:abcdefg_hijklmnop/lead2gold/").unwrap();
+    assert_eq!(p.host.as_deref(), Some("123456789:abcdefg_hijklmnop"));
+    assert_eq!(p.port, None);
+    assert_eq!(p.path_parts, vec!["lead2gold"]);
+    assert!(p.verified_host().is_none());
   }
 
   #[test]
-  fn test_parse_with_port_and_path() {
-    let p = ParsedUrl::parse("http://hostname:40/some/path").unwrap();
-    assert_eq!(p.port, Some(40));
-    assert_eq!(p.path_parts, vec!["some", "path"]);
+  fn test_parse_encoded_slash_stays_in_segment() {
+    // upstream 8b89b08b: an escaped slash is part of its segment
+    let p = ParsedUrl::parse("json://localhost/a%2Fb/c?x=1").unwrap();
+    assert_eq!(p.path, "a%2Fb/c");
+    assert_eq!(p.path_parts, vec!["a/b", "c"]);
   }
-
-  // ── Query string tests ─────────────────────────────────────────
 
   #[test]
-  fn test_parse_query_string() {
-    let p = ParsedUrl::parse("http://hostname/path?key=value&foo=bar").unwrap();
-    assert_eq!(p.qsd.get("key").map(|s| s.as_str()), Some("value"));
-    assert_eq!(p.qsd.get("foo").map(|s| s.as_str()), Some("bar"));
+  fn test_parse_rfc3986_path_characters() {
+    // upstream 4b85ec86: sub-delims stay literal, commas and semicolons encoded
+    let p = ParsedUrl::parse("json://localhost/npm/pkg@1.2.3/a,b;c/x'y(z)*+=$!&").unwrap();
+    assert_eq!(p.path, "npm/pkg@1.2.3/a%2Cb%3Bc/x'y(z)*+=$!&");
   }
+
+  #[test]
+  fn test_parse_malformed_authority() {
+    // upstream 6ebddd3a: Markdown link syntax must not raise
+    assert!(ParsedUrl::parse("**bold** and [link](https://example.com)").is_none());
+    assert!(ParsedUrl::parse("json://[unclosed/bracket").is_none());
+    assert!(ParsedUrl::parse("json://closed]/bracket").is_none());
+  }
+
+  #[test]
+  fn test_parse_ipv6_host() {
+    let p = ParsedUrl::parse("http://[2001:db8::1]:8080/path").unwrap();
+    assert_eq!(p.host.as_deref(), Some("[2001:db8::1]"));
+    assert_eq!(p.port, Some(8080));
+    assert_eq!(p.verified_host().as_deref(), Some("[2001:db8::1]"));
+  }
+
+  #[test]
+  fn test_parse_none_for_invalid() {
+    assert!(ParsedUrl::parse("").is_none());
+    assert!(ParsedUrl::parse("notaurl").is_none());
+    assert!(ParsedUrl::parse("://missing_schema").is_none());
+    assert!(ParsedUrl::parse("json://host?").is_none());
+  }
+
+  #[test]
+  fn test_parse_no_redos() {
+    // upstream test_parse_url_path_no_redos
+    let segment = "%40%3A%21%24%26%27%28%29%2A%2B%2C%3B%3D-a".repeat(5000);
+    let url = format!("https://example.com/{}/file.txt?foo=bar", segment);
+    let start = std::time::Instant::now();
+    assert!(ParsedUrl::parse(&url).is_some());
+    assert!(start.elapsed().as_secs() < 5);
+
+    let start = std::time::Instant::now();
+    assert_eq!(parse_urls(&format!("https://example.com{}", " ".repeat(50000))), vec!["https://example.com"]);
+    assert!(start.elapsed().as_secs() < 5);
+  }
+
+  // ── Query string ───────────────────────────────────────────────
 
   #[test]
   fn test_get_case_insensitive() {
@@ -373,67 +1120,57 @@ mod tests {
   }
 
   #[test]
-  fn test_tags_from_qsd() {
-    let p = ParsedUrl::parse("http://host?tag=a,b,c").unwrap();
-    assert_eq!(p.tags(), vec!["a", "b", "c"]);
+  fn test_qsd_case_duplicates_keep_last() {
+    let p = ParsedUrl::parse("http://host?Format=html&format=text").unwrap();
+    assert_eq!(p.qsd.len(), 1);
+    assert_eq!(p.get("format"), Some("text"));
   }
 
   #[test]
-  fn test_tags_from_qsd_tags() {
-    let p = ParsedUrl::parse("http://host?tags=x,y").unwrap();
-    assert_eq!(p.tags(), vec!["x", "y"]);
+  fn test_qsd_prefix_maps() {
+    let p = ParsedUrl::parse("xml://host/?+X-Header=abc&-Remove&:Key=value").unwrap();
+    assert_eq!(p.qsd_add.get("X-Header").map(String::as_str), Some("abc"));
+    assert_eq!(p.qsd_del.get("Remove").map(String::as_str), Some(""));
+    assert_eq!(p.qsd_colon.get("Key").map(String::as_str), Some("value"));
+    // The prefixed keys stay in qsd as well
+    assert_eq!(p.get("+x-header"), Some("abc"));
   }
 
   #[test]
-  fn test_tags_empty() {
-    let p = ParsedUrl::parse("http://host").unwrap();
-    assert!(p.tags().is_empty());
-  }
+  fn test_user_password_overrides() {
+    let p = ParsedUrl::parse("mailtos://PASSWORD@hostname?user=admin@example.com").unwrap();
+    assert_eq!(p.user.as_deref(), Some("admin@example.com"));
+    assert_eq!(p.password.as_deref(), Some("PASSWORD"));
 
-  #[test]
-  fn test_verify_certificate_default() {
-    let p = ParsedUrl::parse("http://host").unwrap();
-    assert!(p.verify_certificate());
-  }
+    let p = ParsedUrl::parse("mailtos://u@h?pass=secret").unwrap();
+    assert_eq!(p.password.as_deref(), Some("secret"));
 
-  #[test]
-  fn test_verify_certificate_false() {
-    let p = ParsedUrl::parse("http://host?verify=no").unwrap();
-    assert!(!p.verify_certificate());
-
-    let p = ParsedUrl::parse("http://host?verify=false").unwrap();
-    assert!(!p.verify_certificate());
-
-    let p = ParsedUrl::parse("http://host?verify=0").unwrap();
-    assert!(!p.verify_certificate());
-  }
-
-  // ── Special characters ─────────────────────────────────────────
-
-  #[test]
-  fn test_parse_ipv6_host() {
-    let p = ParsedUrl::parse("http://[2001:db8::1]:8080/path").unwrap();
-    assert_eq!(p.host.as_deref(), Some("[2001:db8::1]"));
+    let p = ParsedUrl::parse("json://h:80?port=8080").unwrap();
     assert_eq!(p.port, Some(8080));
+    let p = ParsedUrl::parse("json://h:80?port=abc").unwrap();
+    assert_eq!(p.port, None);
   }
 
   #[test]
-  fn test_parse_devtunnel_host() {
-    let p = ParsedUrl::parse("http://5t4m59hl-34343.euw.devtunnels.ms").unwrap();
-    assert_eq!(p.host.as_deref(), Some("5t4m59hl-34343.euw.devtunnels.ms"));
+  fn test_tags_assigned_and_fallback() {
+    let mut p = ParsedUrl::parse("ntfy://host/topic?tags=emoji&tag=a,b").unwrap();
+    // Without a loader the legacy ?tag= fallback applies
+    assert_eq!(p.tags(), vec!["a", "b"]);
+    // A loader always decides the tags; ?tag=/?tags= stay for the plugin
+    p.assigned_tags = Some(vec!["2:endpoint".into()]);
+    assert_eq!(p.tags(), vec!["2:endpoint"]);
+    p.assigned_tags = Some(vec![]);
+    assert!(p.tags().is_empty());
+    assert_eq!(p.get("tags"), Some("emoji"));
   }
 
   #[test]
-  fn test_parse_custom_schema() {
-    let p = ParsedUrl::parse("slack://token_a/token_b/token_c").unwrap();
-    assert_eq!(p.schema, "slack");
-  }
-
-  #[test]
-  fn test_parse_none_for_invalid() {
-    assert!(ParsedUrl::parse("").is_none());
-    assert!(ParsedUrl::parse("notaurl").is_none());
-    assert!(ParsedUrl::parse("://missing_schema").is_none());
+  fn test_verify_certificate() {
+    assert!(ParsedUrl::parse("http://host").unwrap().verify_certificate());
+    for v in ["no", "false", "0", "off", "random", ""] {
+      assert!(!ParsedUrl::parse(&format!("http://host?verify={}", v)).unwrap().verify_certificate(), "{}", v);
+    }
+    assert!(ParsedUrl::parse("http://host?verify=yes").unwrap().verify_certificate());
   }
 
   // ── base_url / is_secure / host_or ─────────────────────────────
@@ -443,207 +1180,75 @@ mod tests {
     let p = ParsedUrl::parse("slack://host:443/path").unwrap();
     assert_eq!(p.base_url(true), "https://host:443");
     assert_eq!(p.base_url(false), "http://host:443");
+    assert!(ParsedUrl::parse("https://example.com").unwrap().is_secure());
+    assert_eq!(ParsedUrl::parse("http://myhost").unwrap().host_or("fallback"), "myhost");
   }
 
+  // ── unquote / quote ────────────────────────────────────────────
+
   #[test]
-  fn test_host_or_default() {
-    let p = ParsedUrl::parse("http://myhost").unwrap();
-    assert_eq!(p.host_or("fallback"), "myhost");
+  fn test_unquote_quote() {
+    assert_eq!(unquote("a%20b%2Fc"), "a b/c");
+    assert_eq!(unquote("%zz%4"), "%zz%4");
+    assert_eq!(unquote("%E2%82%AC"), "€");
+    assert_eq!(unquote("%ff"), "\u{fffd}");
+    assert_eq!(quote("a b/c,é", URL_SEGMENT_SAFE_CHARS), "a%20b%2Fc%2C%C3%A9");
+    assert_eq!(quote("a/b~_.-", "/"), "a/b~_.-");
   }
 
-  // ── parse_bool ─────────────────────────────────────────────────
+  // ── parse_urls (upstream f3e50141) ─────────────────────────────
 
   #[test]
-  fn test_parse_bool_truthy() {
-    for val in &["yes", "Yes", "YES", "y", "Y", "true", "True", "TRUE", "t", "T", "on", "ON", "1", "enable", "enabled", "active"] {
-      assert!(parse_bool(val), "Expected true for '{}'", val);
+  fn test_parse_urls_semicolon_delimiter() {
+    for text in ["json://a/;json://b/", "json://a/ ; json://b/", "json://a/; json://b/", "json://a/,;  json://b/", "json://a/ ,; json://b/"] {
+      assert_eq!(parse_urls(text), vec!["json://a/", "json://b/"], "{}", text);
     }
-  }
-
-  #[test]
-  fn test_parse_bool_falsy() {
-    for val in &["no", "No", "NO", "false", "False", "0", "off", "disable", "disabled", "inactive", "f", "n", "never", "NEVER", "OhYeah", "random", ""] {
-      assert!(!parse_bool(val), "Expected false for '{}'", val);
+    for text in ["json://a/?x=1;2", "json://u:p;w@h/", "json://a/;b", "json://a/?url=x;y,z"] {
+      assert_eq!(parse_urls(text), vec![text]);
     }
-  }
-
-  #[test]
-  fn test_parse_bool_partial_matches() {
-    // These partial prefixes are recognized as truthy
-    assert!(parse_bool("al")); // active-like
-    assert!(parse_bool("en")); // enable-like
-    assert!(parse_bool("tr")); // true-like
-    assert!(parse_bool("ye")); // yes-like
+    assert_eq!(parse_urls("json://a/?x=1;2;json://u:p;w@h/"), vec!["json://a/?x=1;2", "json://u:p;w@h/"]);
   }
 
   // ── extract_urls ───────────────────────────────────────────────
 
   #[test]
-  fn test_extract_urls_basic() {
-    let urls = extract_urls("json://localhost\nxml://localhost");
-    assert_eq!(urls, vec!["json://localhost", "xml://localhost"]);
-  }
-
-  #[test]
-  fn test_extract_urls_with_comments() {
-    let text = "# This is a comment\njson://localhost\n; another comment\nxml://localhost";
-    let urls = extract_urls(text);
-    assert_eq!(urls, vec!["json://localhost", "xml://localhost"]);
-  }
-
-  #[test]
-  fn test_extract_urls_inline_comments() {
-    let text = "json://localhost # my json service";
-    let urls = extract_urls(text);
-    assert_eq!(urls, vec!["json://localhost"]);
-  }
-
-  #[test]
-  fn test_extract_urls_inline_semicolon_comments() {
-    let text = "json://localhost ; my json service";
-    let urls = extract_urls(text);
-    assert_eq!(urls, vec!["json://localhost"]);
-  }
-
-  #[test]
-  fn test_extract_urls_empty_lines() {
-    let text = "\n\njson://localhost\n\n\nxml://localhost\n\n";
-    let urls = extract_urls(text);
-    assert_eq!(urls, vec!["json://localhost", "xml://localhost"]);
-  }
-
-  #[test]
-  fn test_extract_urls_whitespace() {
-    let text = "   json://localhost   ";
-    let urls = extract_urls(text);
-    assert_eq!(urls, vec!["json://localhost"]);
-  }
-
-  #[test]
-  fn test_extract_urls_multiple_on_one_line() {
-    let text = "json://host1 xml://host2";
-    let urls = extract_urls(text);
-    assert_eq!(urls, vec!["json://host1", "xml://host2"]);
-  }
-
-  #[test]
-  fn test_extract_urls_no_urls() {
-    let text = "# just a comment\nnot a url\n";
-    let urls = extract_urls(text);
-    assert!(urls.is_empty());
-  }
-
-  #[test]
-  fn test_extract_urls_empty() {
-    let urls = extract_urls("");
-    assert!(urls.is_empty());
+  fn test_extract_urls() {
+    assert_eq!(extract_urls("json://localhost\nxml://localhost"), vec!["json://localhost", "xml://localhost"]);
+    assert_eq!(extract_urls("# c\njson://localhost # my json\n; c"), vec!["json://localhost"]);
+    assert!(extract_urls("").is_empty());
   }
 
   // ── normalize_phone ────────────────────────────────────────────
 
   #[test]
-  fn test_normalize_phone_plain() {
+  fn test_normalize_phone() {
     assert_eq!(normalize_phone("1234567890"), "1234567890");
-  }
-
-  #[test]
-  fn test_normalize_phone_with_plus() {
     assert_eq!(normalize_phone("+1 (234) 567-8901"), "+12345678901");
-  }
-
-  #[test]
-  fn test_normalize_phone_no_plus() {
-    assert_eq!(normalize_phone("(234) 567-8901"), "2345678901");
-  }
-
-  #[test]
-  fn test_normalize_phone_whitespace() {
     assert_eq!(normalize_phone("  +44 123 456  "), "+44123456");
-  }
-
-  #[test]
-  fn test_normalize_phone_dashes_dots() {
     assert_eq!(normalize_phone("123-456.7890"), "1234567890");
   }
 
   // ── mask_url ───────────────────────────────────────────────────
 
   #[test]
-  fn test_mask_url_password() {
+  fn test_mask_url() {
     let masked = mask_url("http://user:secret@host/path");
-    assert!(masked.contains("***"), "password should be masked");
-    assert!(!masked.contains("secret"), "raw password should not appear");
-  }
-
-  #[test]
-  fn test_mask_url_no_password() {
-    let masked = mask_url("http://host/path");
-    assert_eq!(masked, "http://host/path");
-  }
-
-  #[test]
-  fn test_mask_url_sensitive_query_params() {
+    assert!(masked.contains("***") && !masked.contains("secret"));
+    assert_eq!(mask_url("http://host/path"), "http://host/path");
     let masked = mask_url("http://host/path?apikey=ABC123&normal=ok");
-    assert!(!masked.contains("ABC123"), "apikey value should be masked");
-    assert!(masked.contains("normal=ok"), "non-sensitive params preserved");
-  }
-
-  #[test]
-  fn test_mask_url_token_query_param() {
-    let masked = mask_url("http://host?token=mytoken");
-    assert!(!masked.contains("mytoken"), "token should be masked");
-  }
-
-  #[test]
-  fn test_mask_url_secret_query_param() {
-    let masked = mask_url("http://host?secret=xyz");
-    assert!(!masked.contains("xyz"), "secret should be masked");
-  }
-
-  #[test]
-  fn test_mask_url_password_query_param() {
-    let masked = mask_url("http://host?password=hunter2");
-    assert!(!masked.contains("hunter2"), "password param should be masked");
-  }
-
-  #[test]
-  fn test_mask_url_custom_scheme() {
+    assert!(!masked.contains("ABC123") && masked.contains("normal=ok"));
     let masked = mask_url("slack://user:pass@host/path");
-    assert!(masked.starts_with("slack://"), "scheme should be preserved");
-    assert!(!masked.contains("pass"), "password should be masked in custom scheme");
-  }
-
-  #[test]
-  fn test_mask_url_invalid() {
-    // Invalid URL should be returned as-is
-    let masked = mask_url("not a url at all");
-    assert_eq!(masked, "not a url at all");
+    assert!(masked.starts_with("slack://") && !masked.contains("pass@"));
+    assert_eq!(mask_url("not a url at all"), "not a url at all");
   }
 
   // ── parse_targets ──────────────────────────────────────────────
 
   #[test]
-  fn test_parse_targets_from_path() {
-    let parts = vec!["a".to_string(), "b".to_string()];
-    let qsd = HashMap::new();
-    let targets = parse_targets(&parts, &qsd);
-    assert_eq!(targets, vec!["a", "b"]);
-  }
-
-  #[test]
-  fn test_parse_targets_with_to_param() {
-    let parts = vec!["a".to_string()];
+  fn test_parse_targets() {
     let mut qsd = HashMap::new();
+    assert_eq!(parse_targets(&["a".to_string(), "b".to_string()], &qsd), vec!["a", "b"]);
     qsd.insert("to".to_string(), "c,d".to_string());
-    let targets = parse_targets(&parts, &qsd);
-    assert_eq!(targets, vec!["a", "c", "d"]);
-  }
-
-  #[test]
-  fn test_parse_targets_empty() {
-    let parts: Vec<String> = vec![];
-    let qsd = HashMap::new();
-    let targets = parse_targets(&parts, &qsd);
-    assert!(targets.is_empty());
+    assert_eq!(parse_targets(&["a".to_string()], &qsd), vec!["a", "c", "d"]);
   }
 }

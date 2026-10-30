@@ -44,8 +44,8 @@ impl Splunk {
       .or_else(|| url.path_parts.first().cloned())
       .unwrap_or_else(|| "everyone".to_string());
 
-    // Validate routing key — reject if empty
-    if routing_key.trim().is_empty() {
+    // Validate routing key (upstream regex ^[A-Z0-9_-]+$)
+    if routing_key.trim().is_empty() || !routing_key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
       return None;
     }
     let decoded_route = routing_key.clone();
