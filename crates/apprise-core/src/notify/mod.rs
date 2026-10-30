@@ -78,6 +78,7 @@ pub mod join;
 pub mod kaleyra;
 pub mod kavenegar;
 pub mod kodi;
+pub mod kook;
 pub mod kumulos;
 pub mod lametric;
 pub mod lark;
