@@ -27,6 +27,11 @@
 
 use std::collections::HashMap;
 
+use crate::asset::AppriseAsset;
+use crate::attachment::{AttachSource, parse_attachment};
+use crate::error::AttachError;
+use crate::types::NotifyType;
+
 /// Defines the different template types we can perform parsing on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemplateType {
@@ -40,35 +45,40 @@ pub enum TemplateType {
 
 /// Escape a string value for safe embedding in a JSON string.
 /// This produces the inner content (without surrounding quotes),
-/// matching Python's `json.dumps(content)[1:-1]`.
+/// matching Python's `json.dumps(content)[1:-1]`, which also escapes
+/// every non-ASCII character (`ensure_ascii`).
 fn escape_json(content: &str) -> String {
-  let serialized = serde_json::to_string(content).unwrap_or_else(|_| {
-    // Fallback: manual escaping
-    let mut s = String::with_capacity(content.len());
-    for ch in content.chars() {
-      match ch {
-        '"' => s.push_str("\\\""),
-        '\\' => s.push_str("\\\\"),
-        '\n' => s.push_str("\\n"),
-        '\r' => s.push_str("\\r"),
-        '\t' => s.push_str("\\t"),
-        c if (c as u32) < 0x20 => {
-          s.push_str(&format!("\\u{:04x}", c as u32));
+  let mut s = String::with_capacity(content.len());
+  for ch in content.chars() {
+    match ch {
+      '"' => s.push_str("\\\""),
+      '\\' => s.push_str("\\\\"),
+      '\n' => s.push_str("\\n"),
+      '\r' => s.push_str("\\r"),
+      '\t' => s.push_str("\\t"),
+      '\u{08}' => s.push_str("\\b"),
+      '\u{0c}' => s.push_str("\\f"),
+      // Everything outside ' '..='~' (json.dumps' ESCAPE_ASCII)
+      c if !(' '..='~').contains(&c) => {
+        let mut units = [0u16; 2];
+        for unit in c.encode_utf16(&mut units) {
+          s.push_str(&format!("\\u{:04x}", unit));
         }
-        c => s.push(c),
       }
+      c => s.push(c),
     }
-    s
-  });
-  // Remove surrounding quotes from serde_json output
-  if serialized.len() >= 2 { serialized[1..serialized.len() - 1].to_string() } else { serialized }
+  }
+  s
 }
 
-/// Takes a template string and applies keyword substitutions.
+/// Takes a template string and applies keyword substitutions (upstream
+/// `apply_template()`).
 ///
 /// The template uses double curly braces `{{keyword}}` for placeholders.
 /// Whitespace inside the braces is allowed (e.g., `{{ keyword }}`).
-/// Matching is case-insensitive on the keyword names.
+/// Matching is case-insensitive on the keyword names; an exact match is
+/// preferred when two keys differ only in case. (Upstream matches without
+/// case too, then fails looking the name up when its case differs.)
 ///
 /// The `app_mode` parameter controls escaping:
 /// - `TemplateType::Raw` - no escaping, values inserted as-is
@@ -81,7 +91,13 @@ pub fn apply_template(template: &str, app_mode: TemplateType, kwargs: &HashMap<S
   }
 
   // Build a lowercase lookup map for case-insensitive matching
-  let lower_map: HashMap<String, &str> = kwargs.iter().map(|(k, v)| (k.to_lowercase(), v.as_str())).collect();
+  let mut lower_map: HashMap<String, &str> = HashMap::with_capacity(kwargs.len());
+  for (k, v) in kwargs {
+    let lower = k.to_lowercase();
+    if *k == lower || !lower_map.contains_key(&lower) {
+      lower_map.insert(lower, v.as_str());
+    }
+  }
 
   let escape_fn: fn(&str) -> String = match app_mode {
     TemplateType::Raw => |s: &str| s.to_string(),
@@ -89,47 +105,30 @@ pub fn apply_template(template: &str, app_mode: TemplateType, kwargs: &HashMap<S
   };
 
   let mut result = String::with_capacity(template.len());
-  let bytes = template.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
+  let mut rest = template;
 
-  while i < len {
-    // Look for opening `{{`
-    if i + 1 < len && bytes[i] == b'{' && bytes[i + 1] == b'{' {
-      // Find the closing `}}`
-      if let Some(close_pos) = find_closing_braces(template, i + 2) {
-        let inner = &template[i + 2..close_pos];
-        let key = inner.trim().to_lowercase();
-
-        if let Some(val) = lower_map.get(&key) {
-          result.push_str(&escape_fn(val));
-          i = close_pos + 2; // skip past `}}`
-          continue;
-        }
+  while let Some(open) = rest.find("{{") {
+    // Find the closing `}}`
+    let Some(close) = rest[open + 2..].find("}}") else { break };
+    let inner = &rest[open + 2..open + 2 + close];
+    let key = inner.trim();
+    let value = kwargs.get(key).map(String::as_str).or_else(|| lower_map.get(&key.to_lowercase()).copied());
+    match value {
+      Some(val) => {
+        result.push_str(&rest[..open]);
+        result.push_str(&escape_fn(val));
+        rest = &rest[open + 2 + close + 2..];
+      }
+      None => {
+        // No match; emit the first brace and look again from the next one
+        result.push_str(&rest[..open + 1]);
+        rest = &rest[open + 1..];
       }
     }
-
-    // No match or no closing braces found; emit the character as-is
-    result.push(bytes[i] as char);
-    i += 1;
   }
 
+  result.push_str(rest);
   result
-}
-
-/// Find the position of the first `}}` starting from `start` in the template.
-/// Returns the index of the first `}` of the `}}` pair, or None.
-fn find_closing_braces(template: &str, start: usize) -> Option<usize> {
-  let bytes = template.as_bytes();
-  let len = bytes.len();
-  let mut i = start;
-  while i + 1 < len {
-    if bytes[i] == b'}' && bytes[i + 1] == b'}' {
-      return Some(i);
-    }
-    i += 1;
-  }
-  None
 }
 
 /// Build the standard template variables from a notification context.
@@ -148,6 +147,82 @@ pub fn build_template_vars(title: &str, body: &str, notify_type: &str, app_id: &
   vars.insert("app_desc".to_string(), app_desc.to_string());
   vars.insert("app_url".to_string(), app_url.to_string());
   vars
+}
+
+/// The tokens upstream's JSON payload templates (Slack, Discord,
+/// Workflows, Telegram) are filled with: the user's own `?:name=value`
+/// tokens, overridden by `app_body`, `app_title`, `app_type`, `app_id`,
+/// `app_desc`, `app_color`, `app_color_hex`, `app_image_url` (empty when
+/// there is no image) and `app_url`.
+pub fn app_tokens<'a, I>(user: I, asset: &AppriseAsset, notify_type: &NotifyType, title: &str, body: &str, image_url: Option<&str>) -> HashMap<String, String>
+where
+  I: IntoIterator<Item = (&'a String, &'a String)>,
+{
+  let mut tokens: HashMap<String, String> = user.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+  let color = asset.color(notify_type);
+  tokens.insert("app_body".into(), body.to_string());
+  tokens.insert("app_title".into(), title.to_string());
+  tokens.insert("app_type".into(), notify_type.as_str().to_string());
+  tokens.insert("app_id".into(), asset.app_id.clone());
+  tokens.insert("app_desc".into(), asset.app_desc.clone());
+  tokens.insert("app_color".into(), color.clone());
+  tokens.insert("app_color_hex".into(), color);
+  tokens.insert("app_image_url".into(), image_url.unwrap_or_default().to_string());
+  tokens.insert("app_url".into(), asset.app_url.clone());
+  tokens
+}
+
+/// A payload template given with `?template=` (upstream keeps it in an
+/// `AppriseAttachment` with a `max_file_size`): a local path, a
+/// `file://` URL or an `http(s)://` URL.
+#[derive(Debug, Clone)]
+pub struct TemplateFile {
+  source: AttachSource,
+  max_size: usize,
+}
+
+impl TemplateFile {
+  /// Parse a `?template=` value. `None`, after a warning, where upstream's
+  /// `AppriseAttachment.add()` fails (an unsupported schema, an
+  /// unparseable URL); the plugin must then refuse the URL.
+  pub fn parse(value: &str, max_size: usize) -> Option<Self> {
+    match parse_attachment(value) {
+      Ok(source) => Some(Self { source, max_size }),
+      Err(e) => {
+        tracing::warn!("The template specified could not be loaded: {}", e);
+        None
+      }
+    }
+  }
+
+  /// The source with secrets masked, for logs.
+  pub fn loggable(&self) -> &str {
+    self.source.loggable()
+  }
+
+  /// Read the template text. A missing or oversized template logs
+  /// "Could not access {service} template ..." and one that cannot be
+  /// read logs "{service} template ... could not be read.", as upstream.
+  pub async fn read(&self, service: &str) -> Option<String> {
+    let loaded = match self.source.load().await {
+      Ok(a) if a.data.len() <= self.max_size => a,
+      Ok(_) | Err(AttachError::NotFound(_)) | Err(AttachError::TooLarge { .. }) | Err(AttachError::Disallowed(_)) => {
+        tracing::error!("Could not access {} template {}.", service, self.loggable());
+        return None;
+      }
+      Err(_) => {
+        tracing::error!("{} template {} could not be read.", service, self.loggable());
+        return None;
+      }
+    };
+    match String::from_utf8(loaded.data) {
+      Ok(text) => Some(text),
+      Err(_) => {
+        tracing::error!("{} template {} could not be read.", service, self.loggable());
+        None
+      }
+    }
+  }
 }
 
 #[cfg(test)]
@@ -304,5 +379,76 @@ mod tests {
     // Then it emits '{' and advances. Next {{ at pos 1, inner is "x",
     // which matches -> "val", then remaining "}".
     assert_eq!(result, "{val}");
+  }
+
+  #[test]
+  fn test_apply_template_keeps_unicode() {
+    let mut vars = HashMap::new();
+    vars.insert("name".to_string(), "Wörld".to_string());
+
+    // Text around placeholders is copied as-is, multi-byte characters included
+    let result = apply_template("Héllo {{name}} — ☃ {{missing}} ü", TemplateType::Raw, &vars);
+    assert_eq!(result, "Héllo Wörld — ☃ {{missing}} ü");
+  }
+
+  #[test]
+  fn test_apply_template_json_ensure_ascii() {
+    let mut vars = HashMap::new();
+    vars.insert("body".to_string(), "é 👉 \u{7f}\u{1}\u{8}\u{c}/".to_string());
+
+    // json.dumps() escapes everything outside printable ASCII, astral
+    // characters as surrogate pairs
+    let result = apply_template(r#"{"text": "{{body}}"}"#, TemplateType::Json, &vars);
+    assert_eq!(result, r#"{"text": "\u00e9 \ud83d\udc49 \u007f\u0001\b\f/"}"#);
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["text"], "é 👉 \u{7f}\u{1}\u{8}\u{c}/");
+  }
+
+  #[test]
+  fn test_apply_template_prefers_exact_case() {
+    let mut vars = HashMap::new();
+    vars.insert("Key".to_string(), "upper".to_string());
+    vars.insert("key".to_string(), "lower".to_string());
+
+    assert_eq!(apply_template("{{Key}} {{key}} {{KEY}}", TemplateType::Raw, &vars), "upper lower lower");
+  }
+
+  #[test]
+  fn test_app_tokens() {
+    let asset = AppriseAsset::default();
+    let user = indexmap::IndexMap::from([("app_body".to_string(), "user".to_string()), ("mine".to_string(), "x".to_string())]);
+    let tokens = app_tokens(&user, &asset, &NotifyType::Warning, "T", "B", None);
+    // app_* tokens win over the user's own
+    assert_eq!(tokens["app_body"], "B");
+    assert_eq!(tokens["app_title"], "T");
+    assert_eq!(tokens["app_type"], "warning");
+    assert_eq!(tokens["app_id"], "Apprise");
+    assert_eq!(tokens["app_desc"], "Apprise Notifications");
+    assert_eq!(tokens["app_color"], asset.color(&NotifyType::Warning));
+    assert_eq!(tokens["app_color_hex"], tokens["app_color"]);
+    assert_eq!(tokens["app_image_url"], "");
+    assert_eq!(tokens["app_url"], "https://github.com/caronc/apprise");
+    assert_eq!(tokens["mine"], "x");
+  }
+
+  #[tokio::test]
+  async fn test_template_file() {
+    let dir = std::env::temp_dir().join(format!("apprise-template-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("t.json");
+    std::fs::write(&path, "{\"a\": \"{{app_body}}\"}").unwrap();
+
+    let file = TemplateFile::parse(path.to_str().unwrap(), 100).unwrap();
+    assert_eq!(file.read("Test").await.as_deref(), Some("{\"a\": \"{{app_body}}\"}"));
+
+    // Too large, missing and unreadable templates are refused
+    assert!(TemplateFile::parse(path.to_str().unwrap(), 5).unwrap().read("Test").await.is_none());
+    assert!(TemplateFile::parse(dir.join("missing.json").to_str().unwrap(), 100).unwrap().read("Test").await.is_none());
+    std::fs::write(&path, [0xff, 0xfe]).unwrap();
+    assert!(file.read("Test").await.is_none());
+
+    // An unsupported schema cannot be loaded at all
+    assert!(TemplateFile::parse("invalid://template", 100).is_none());
+    std::fs::remove_dir_all(&dir).ok();
   }
 }
