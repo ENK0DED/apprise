@@ -457,6 +457,17 @@ pub trait Notify: Send + Sync {
     false
   }
 
+  /// Whether `send()` takes the converted title and body whole (upstream
+  /// plugins that override `_build_send_calls`, such as Telegram's Rich
+  /// Message templates). When true, the orchestrator still interprets
+  /// escapes and emojis and converts the body (and a title blended into
+  /// the body) to the send format, but does not fold the title into the
+  /// body, apply limits, split, run [`dialect_convert`](Self::dialect_convert)
+  /// or drop attachments: one context carries everything. Default false.
+  fn bypass_overflow(&self) -> bool {
+    false
+  }
+
   /// Common URL options parsed for this instance (`?retry=`, `?format=`, ...).
   /// Only `ConfiguredService` returns `Some`.
   fn service_options(&self) -> Option<&ServiceOptions> {

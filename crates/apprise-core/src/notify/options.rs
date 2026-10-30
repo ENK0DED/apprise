@@ -231,6 +231,9 @@ impl Notify for ConfiguredService {
   fn has_dialect(&self) -> bool {
     self.inner.has_dialect()
   }
+  fn bypass_overflow(&self) -> bool {
+    self.inner.bypass_overflow()
+  }
   fn service_options(&self) -> Option<&ServiceOptions> {
     Some(&self.options)
   }
@@ -321,6 +324,9 @@ mod tests {
     fn has_dialect(&self) -> bool {
       true
     }
+    fn bypass_overflow(&self) -> bool {
+      true
+    }
   }
 
   /// Every overridable method of `wrapped` must return what `direct` returns.
@@ -345,6 +351,7 @@ mod tests {
       assert_eq!(wrapped.dialect_convert("**x** & y", &format), direct.dialect_convert("**x** & y", &format));
     }
     assert_eq!(wrapped.has_dialect(), direct.has_dialect());
+    assert_eq!(wrapped.bypass_overflow(), direct.bypass_overflow());
   }
 
   #[test]

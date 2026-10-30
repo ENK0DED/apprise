@@ -122,6 +122,16 @@ pub(crate) fn prepare_contexts(svc: &dyn Notify, ctx: &NotifyContext) -> Result<
   }
   body = convert_between(&ctx.body_format, &target, &body);
 
+  if svc.bypass_overflow() {
+    // The plugin takes the converted message whole (upstream plugins that
+    // override `_build_send_calls`).
+    let mut c = ctx.clone();
+    c.title = title;
+    c.body = body;
+    c.body_format = target;
+    return Ok(vec![c]);
+  }
+
   if body.is_empty() && ctx.attachments.is_empty() {
     tracing::warn!("No message body or attachment was specified.");
     return Err(NotifyError::MissingParam("body".into()));
