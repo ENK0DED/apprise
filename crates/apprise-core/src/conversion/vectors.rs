@@ -213,7 +213,7 @@ fn evaluate(group: &str, a: &Value) -> Option<Value> {
     "markdown_adjust" => markdown_adjust(&chars(&a["text"]), idx(&a["window_start"]), idx(&a["split_at"])).into(),
     "html_tag_end" => {
       let end = a["end"].as_u64().map(|v| v as usize);
-      html_tag_end(&chars(&a["text"]), idx(&a["start"]), end).map(|v| Value::from(v as i64)).unwrap_or(Value::from(-1)).into()
+      html_tag_end(&chars(&a["text"]), idx(&a["start"]), end).map(|v| Value::from(v as i64)).unwrap_or(Value::from(-1))
     }
     _ => return None,
   })

@@ -138,10 +138,7 @@ fn quote_search(block: &str) -> Option<usize> {
     if lead <= 3 && rest[lead..].starts_with('>') {
       return Some(if line_start == 0 { 0 } else { line_start - 1 });
     }
-    match rest.find('\n') {
-      Some(p) => line_start += p + 1,
-      None => return None,
-    }
+    line_start += rest.find('\n')? + 1;
   }
 }
 
@@ -278,10 +275,7 @@ fn reference_search(block: &str) -> Option<RefMatch> {
     if let Some(m) = reference_at(block, line_start) {
       return Some(m);
     }
-    match block[line_start..].find('\n') {
-      Some(p) => line_start += p + 1,
-      None => return None,
-    }
+    line_start += block[line_start..].find('\n')? + 1;
     if line_start > b.len() {
       return None;
     }
@@ -333,7 +327,7 @@ fn reference_at(s: &str, start: usize) -> Option<RefMatch> {
       // starts with a newline, quote, paren or the end of the line.
       for title_start in optional_newline(s, after_link) {
         if let Some((end, title)) = reference_title(s, title_start) {
-          return Some(RefMatch { start: start, end, id, link: s[link_start..link_end].to_string(), title });
+          return Some(RefMatch { start, end, id, link: s[link_start..link_end].to_string(), title });
         }
       }
     }
@@ -394,10 +388,8 @@ impl BlockParser<'_> {
         if proc == Proc::Table && !self.tables {
           continue;
         }
-        if let Some(handled) = self.try_proc(proc, parent, &first, &mut blocks) {
-          if handled {
-            break;
-          }
+        if let Some(true) = self.try_proc(proc, parent, &first, &mut blocks) {
+          break;
         }
       }
     }

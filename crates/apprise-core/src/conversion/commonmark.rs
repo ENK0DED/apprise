@@ -296,14 +296,7 @@ fn find_seq(text: &[char], pat: &str, from: usize, end: usize) -> Option<usize> 
 }
 
 fn starts_with(text: &[char], at: usize, pat: &str) -> bool {
-  let mut i = at;
-  for c in pat.chars() {
-    if text.get(i) != Some(&c) {
-      return false;
-    }
-    i += 1;
-  }
-  true
+  (at..).zip(pat.chars()).all(|(i, c)| text.get(i) == Some(&c))
 }
 
 fn next_line(text: &[char], pos: usize, end: usize) -> (&[char], usize) {
@@ -1186,7 +1179,7 @@ pub fn commonmark_scan_angle_dest(body: &[char], i: usize, n: usize, mut budget:
     }
     k += 1;
   }
-  if let Some(b) = budget.as_deref_mut() {
+  if let Some(b) = budget {
     b.0 -= k.saturating_sub(start) as i64;
   }
   None
@@ -1486,7 +1479,8 @@ pub fn commonmark_match_emphasis(delimiters: &mut [EmphasisDelimiter]) {
     while opener_index != NONE && opener_index as isize > bound {
       let opener = &delimiters[opener_index];
       if opener.ch == closer.ch && opener.can_open {
-        let ambiguous = (closer.can_open || opener.can_close) && closer.origdelims % 3 != 0 && (opener.origdelims + closer.origdelims).is_multiple_of(3);
+        let ambiguous =
+          (closer.can_open || opener.can_close) && !closer.origdelims.is_multiple_of(3) && (opener.origdelims + closer.origdelims).is_multiple_of(3);
         if !ambiguous {
           found = Some(opener_index);
           break;

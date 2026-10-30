@@ -23,6 +23,8 @@ pub(crate) mod pyhtml;
 pub mod pystr;
 mod unicode_tables;
 #[cfg(test)]
+mod upstream_tests;
+#[cfg(test)]
 mod vectors;
 
 pub use commonmark::*;

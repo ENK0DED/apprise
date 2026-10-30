@@ -293,14 +293,9 @@ pub(crate) fn tagfind_tolerant(b: &[u8], start: usize) -> (usize, usize) {
     i += 1;
   }
   let name_end = i;
-  loop {
-    if i < b.len() && is_tag_ws(b[i]) {
-      i += 1;
-    } else if i < b.len() && b[i] == b'/' && b.get(i + 1) != Some(&b'>') {
-      i += 1;
-    } else {
-      break;
-    }
+  // (?:[\t\n\r\f ]|/(?!>))*
+  while i < b.len() && (is_tag_ws(b[i]) || (b[i] == b'/' && b.get(i + 1) != Some(&b'>'))) {
+    i += 1;
   }
   (name_end, i)
 }
@@ -377,14 +372,9 @@ pub(crate) fn attrfind_tolerant(b: &[u8], k: usize, md: bool) -> Option<AttrMatc
   let name_end = attr_name(b, k, md)?;
   let value = attr_value(b, name_end, !md);
   let mut i = value.map(|(_, e)| e).unwrap_or(name_end);
-  loop {
-    if i < b.len() && is_tag_ws(b[i]) {
-      i += 1;
-    } else if i < b.len() && b[i] == b'/' && b.get(i + 1) != Some(&b'>') {
-      i += 1;
-    } else {
-      break;
-    }
+  // (?:[\t\n\r\f ]|/(?!>))*
+  while i < b.len() && (is_tag_ws(b[i]) || (b[i] == b'/' && b.get(i + 1) != Some(&b'>'))) {
+    i += 1;
   }
   Some(AttrMatch { name: (k, name_end), value, end: i })
 }

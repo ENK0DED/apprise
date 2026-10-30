@@ -645,7 +645,9 @@ impl Inline<'_> {
     };
     let after_paren = skip_ws(index + 1);
     // (<[^<>]*>)\s*(?:('[^']*'|"[^"]*")\s*)?\)
-    let mut angle: Option<(usize, usize, Option<(usize, usize)>, usize)> = None;
+    // (href start, href end, title span, end of the link)
+    type Angle = (usize, usize, Option<(usize, usize)>, usize);
+    let mut angle: Option<Angle> = None;
     if b.get(after_paren) == Some(&b'<')
       && let Some(close) = data[after_paren + 1..].find(['<', '>'])
       && b[after_paren + 1 + close] == b'>'
@@ -726,12 +728,12 @@ impl Inline<'_> {
         }
         index = pos + c.len_utf8();
         if bracket_count == 0 {
-          if exit_quote.is_some() && quote == last {
+          if let Some(exit) = exit_quote.filter(|_| quote == last) {
             href = data[start_index..start_quote - 1].to_string();
-            title = Some(data[start_quote..exit_quote.unwrap() - 1].to_string());
-          } else if exit_alt_quote.is_some() && alt_quote == last {
+            title = Some(data[start_quote..exit - 1].to_string());
+          } else if let Some(exit) = exit_alt_quote.filter(|_| alt_quote == last) {
             href = data[start_index..start_alt_quote - 1].to_string();
-            title = Some(data[start_alt_quote..exit_alt_quote.unwrap() - 1].to_string());
+            title = Some(data[start_alt_quote..exit - 1].to_string());
           } else {
             href = data[start_index..index - 1].to_string();
           }

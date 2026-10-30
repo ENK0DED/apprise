@@ -338,9 +338,9 @@ impl Extractor<'_> {
             i = n;
           }
         }
-      } else if rest.starts_with("&#") {
+      } else if let Some(after) = rest.strip_prefix("&#") {
         // &#(?:[0-9]+|[xX][0-9a-fA-F]+)[^0-9a-fA-F]
-        let digits = rest[2..].bytes().take_while(|c| c.is_ascii_digit()).count();
+        let digits = after.bytes().take_while(|c| c.is_ascii_digit()).count();
         let hex = if matches!(b.get(i + 2), Some(b'x' | b'X')) { rest[3..].bytes().take_while(|c| c.is_ascii_hexdigit()).count() } else { 0 };
         let full = if digits > 0 && b.get(i + 2 + digits).is_some_and(|c| !c.is_ascii_hexdigit()) {
           Some(i + 2 + digits)
