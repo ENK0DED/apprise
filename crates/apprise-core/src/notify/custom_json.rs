@@ -171,6 +171,10 @@ impl Notify for Json {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
+    0.0
+  }
   fn attachment_support(&self) -> bool {
     true
   }

@@ -96,6 +96,10 @@ impl Notify for Gotify {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
+    0.0
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let schema = if self.secure { "https" } else { "http" };

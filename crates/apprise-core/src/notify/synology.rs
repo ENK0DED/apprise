@@ -88,6 +88,10 @@ impl Notify for Synology {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
+    0.0
+  }
   fn title_maxlen(&self) -> usize {
     0
   }
