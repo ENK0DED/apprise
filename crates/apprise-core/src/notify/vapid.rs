@@ -26,6 +26,7 @@ use tokio::sync::Mutex;
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
+use crate::utils::keyfile::{pem_blocks, read_source};
 use crate::utils::parse::ParsedUrl;
 use crate::utils::plugin_args::{parse_list, split_path, unquote};
 
@@ -270,28 +271,6 @@ fn domain_len(s: &str) -> Option<usize> {
 
 // ── Keys and encryption ──────────────────────────────────────────────────────
 
-/// Every PEM block in `data` as (label, DER bytes).
-fn pem_blocks(data: &str) -> Vec<(String, Vec<u8>)> {
-  let mut blocks = Vec::new();
-  let mut current: Option<(String, String)> = None;
-  for line in data.lines().map(str::trim) {
-    if let Some(label) = line.strip_prefix("-----BEGIN ").and_then(|l| l.strip_suffix("-----")) {
-      current = Some((label.to_string(), String::new()));
-    } else if line.starts_with("-----END ") {
-      if let Some((label, body)) = current.take()
-        && let Ok(der) = base64::engine::general_purpose::STANDARD.decode(body)
-      {
-        blocks.push((label, der));
-      }
-    } else if let Some((_, body)) = current.as_mut()
-      && !line.contains(':')
-    {
-      body.push_str(line);
-    }
-  }
-  blocks
-}
-
 /// DER tag-length-value.
 fn der_tlv(tag: u8, content: &[u8]) -> Vec<u8> {
   let mut out = vec![tag];
@@ -405,23 +384,6 @@ fn jwt_token(key: &EcdsaKeyPair, audience: &str, subscriber: &str) -> Option<Str
 }
 
 // ── Files ────────────────────────────────────────────────────────────────────
-
-/// Read a local file or remote URL, refusing anything over `max_size`.
-/// Returns the content and, for a local file, its path.
-async fn read_source(source: &str, max_size: usize) -> Option<(Vec<u8>, Option<PathBuf>)> {
-  if source.starts_with("http://") || source.starts_with("https://") {
-    let attachment = crate::attachment::http::load_from_http(source).await.ok()?;
-    return (attachment.data.len() <= max_size).then_some((attachment.data, None));
-  }
-  let path = PathBuf::from(source.strip_prefix("file://").unwrap_or(source));
-  let size = tokio::fs::metadata(&path).await.ok()?.len();
-  if size > max_size as u64 {
-    tracing::warn!("Vapid file exceeds the {} byte limit", max_size);
-    return None;
-  }
-  let data = tokio::fs::read(&path).await.ok()?;
-  Some((data, Some(path)))
-}
 
 /// A JSON object read with its top-level entries in file order.
 struct OrderedObject(Vec<(String, Value)>);

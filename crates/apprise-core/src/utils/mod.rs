@@ -5,6 +5,7 @@ pub mod disk;
 pub mod emoji;
 pub mod escape;
 pub mod format;
+pub mod keyfile;
 pub mod locale;
 pub mod parse;
 pub mod pem;
