@@ -1,51 +1,46 @@
 use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
+use crate::utils::plugin_args::{is_uuid4, split_path, unquote};
 use async_trait::async_trait;
 use serde_json::json;
-#[allow(dead_code)]
+
 pub struct Kumulos {
   apikey: String,
-  server_key: String,
-  targets: Vec<String>,
+  serverkey: String,
   verify_certificate: bool,
   tags: Vec<String>,
 }
+
 impl Kumulos {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // kumulos://UUID/server_key  (UUID is host, server_key is first path part)
-    // or kumulos://user:pass@host format
-    let (apikey, server_key) = if url.password.is_some() {
-      (url.user.clone()?, url.password.clone()?)
-    } else {
-      let apikey = url.host.clone()?;
-      let server_key = url.path_parts.first()?.clone();
-      if server_key.is_empty() {
-        return None;
-      }
-      (apikey, server_key)
-    };
-    if apikey.is_empty() || server_key.is_empty() {
+    // kumulos://{apikey}/{serverkey}: a UUID4 API key and a 36 character
+    // server key
+    let apikey = url.host.as_deref().map(unquote).unwrap_or_default().trim().to_string();
+    if !is_uuid4(&apikey) {
+      tracing::warn!("An invalid Kumulos API Key was specified.");
       return None;
     }
-    // Server key should be at least 36 chars
-    if server_key.len() < 36 {
+    let serverkey = split_path(url).into_iter().next().unwrap_or_default().trim().to_string();
+    if serverkey.len() != 36 || !serverkey.chars().all(|c| c.is_ascii_alphanumeric() || c == '+') {
+      tracing::warn!("An invalid Kumulos Server Key was specified.");
       return None;
     }
-    let targets = if url.password.is_some() { url.path_parts.clone() } else { url.path_parts.get(1..).unwrap_or(&[]).to_vec() };
-    Some(Self { apikey, server_key, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
+    Some(Self { apikey, serverkey, verify_certificate: url.verify_certificate(), tags: url.tags() })
   }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "Kumulos",
-      service_url: Some("https://kumulos.com"),
-      setup_url: None,
+      service_url: Some("https://kumulos.com/"),
+      setup_url: Some("https://appriseit.com/services/kumulos/"),
       protocols: vec!["kumulos"],
       description: "Send push notifications via Kumulos.",
       attachment_support: false,
     }
   }
 }
+
 #[async_trait]
 impl Notify for Kumulos {
   fn schemas(&self) -> &[&str] {
@@ -60,21 +55,42 @@ impl Notify for Kumulos {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn title_maxlen(&self) -> usize {
+    64
+  }
+  fn body_maxlen(&self) -> usize {
+    240
+  }
+
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
-    let payload = json!({ "target": { "broadcast": true }, "content": { "title": ctx.title, "message": ctx.body } });
+    let payload = json!({
+      "target": { "broadcast": true },
+      "content": { "title": ctx.title, "message": ctx.body },
+    });
+    let url = format!("{}/v2/notifications", service_base("https://messages.kumulos.com"));
     let client = build_client(self.verify_certificate)?;
     let resp = client
-      .post("https://messages.kumulos.com/v2/notifications")
+      .post(&url)
       .header("User-Agent", APP_ID)
-      .basic_auth(&self.apikey, Some(&self.server_key))
-      .json(&payload)
+      .header("Content-Type", "application/json")
+      .header("Accept", "application/json")
+      .basic_auth(&self.apikey, Some(&self.serverkey))
+      .body(serde_json::to_vec(&payload)?)
       .send()
       .await?;
-    if resp.status().is_success() {
-      Ok(true)
-    } else {
-      Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() })
+    let status = resp.status();
+    if status.as_u16() == 200 {
+      tracing::info!("Sent Kumulos notification.");
+      return Ok(true);
     }
+    let reason = match status.as_u16() {
+      401 => "Unauthorized - Invalid API and/or Server Key.",
+      422 => "Unprocessable Entity - The request was unparsable.",
+      400 => "Bad Request - Targeted users do not exist or have unsubscribed.",
+      _ => status.canonical_reason().unwrap_or(""),
+    };
+    tracing::warn!("Failed to send Kumulos notification: {}{}error={}.", reason, if reason.is_empty() { "" } else { ", " }, status.as_u16());
+    Err(NotifyError::ServiceError { status: status.as_u16(), body: resp.text().await.unwrap_or_default() })
   }
 }
 
@@ -82,49 +98,61 @@ impl Notify for Kumulos {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use crate::utils::parse::ParsedUrl;
+  use base64::Engine;
+  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
 
   const UUID4: &str = "8b799edf-6f98-4d3a-9be7-2862fb4e5752";
 
-  fn parse_kumulos(url: &str) -> Option<Kumulos> {
-    ParsedUrl::parse(url).and_then(|p| Kumulos::from_url(&p))
-  }
-
   #[test]
-  fn test_invalid_urls() {
-    let urls = vec![
-      "kumulos://".to_string(),
-      "kumulos://:@/".to_string(),
-      // No server key
-      format!("kumulos://{}/", UUID4),
-    ];
-    for url in &urls {
-      assert!(from_url(&url).is_none(), "Should not parse: {}", url);
-    }
-  }
-
-  #[test]
-  fn test_valid_urls() {
-    let server_key = "w".repeat(36);
-    let urls = vec![format!("kumulos://{}/{}/", UUID4, server_key)];
-    for url in &urls {
+  fn test_urls() {
+    for key in ["w", "x", "y", "z"] {
+      let url = format!("kumulos://{}/{}/", UUID4, key.repeat(36));
       assert!(from_url(&url).is_some(), "Should parse: {}", url);
     }
+    assert!(from_url(&format!("kumulos://{}/{}+/", UUID4, "a".repeat(35))).is_some());
+    let invalid = [
+      "kumulos://".to_string(),
+      "kumulos://:@/".to_string(),
+      "kumulos://abcd/".to_string(),
+      format!("kumulos://{}/", UUID4),
+      format!("kumulos://{}/short/", UUID4),
+      format!("kumulos://abcd/{}/", "w".repeat(36)),
+    ];
+    for url in &invalid {
+      assert!(from_url(url).is_none(), "Should not parse: {}", url);
+    }
   }
 
-  #[test]
-  fn test_from_url_fields() {
-    let server_key = "w".repeat(36);
-    let obj = parse_kumulos(&format!("kumulos://{}/{}/", UUID4, server_key)).unwrap();
-    assert_eq!(obj.apikey, UUID4);
-    assert_eq!(obj.server_key, server_key);
+  #[tokio::test]
+  async fn test_send() {
+    let serverkey = "w".repeat(36);
+    let auth = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", UUID4, serverkey)));
+    let server = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+      .and(path("/v2/notifications"))
+      .and(header("authorization", auth.as_str()))
+      .and(header("accept", "application/json"))
+      .and(body_json(json!({"target": {"broadcast": true}, "content": {"title": "T", "message": "B"}})))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let svc = from_url(&format!("kumulos://{}/{}/", UUID4, serverkey)).unwrap();
+    assert_eq!((svc.title_maxlen(), svc.body_maxlen()), (64, 240));
+    let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
   }
 
-  #[test]
-  fn test_server_key_too_short() {
-    // Server key must be at least 36 chars
-    let obj = parse_kumulos(&format!("kumulos://{}/short/", UUID4));
-    assert!(obj.is_none());
+  #[tokio::test]
+  async fn test_send_failure() {
+    for status in [400, 401, 422, 500, 999] {
+      let server = MockServer::builder().start().await;
+      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      let svc = from_url(&format!("kumulos://{}/{}/", UUID4, "w".repeat(36))).unwrap();
+      let ctx = NotifyContext { body: "B".into(), ..Default::default() };
+      assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.is_err());
+    }
   }
 
   #[test]

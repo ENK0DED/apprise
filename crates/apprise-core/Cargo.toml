@@ -36,6 +36,13 @@ sha1.workspace = true
 hex.workspace = true
 ed25519-dalek.workspace = true
 blake2.workspace = true
+ring.workspace = true
+aes-gcm.workspace = true
+argon2 = { workspace = true, optional = true }
+chacha20poly1305 = { workspace = true, optional = true }
+x25519-dalek = { workspace = true, optional = true }
+salsa20 = { workspace = true, optional = true }
+poly1305 = { workspace = true, optional = true }
 socket2.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true
@@ -46,7 +53,7 @@ fe2o3-amqp = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
 
 [features]
-default = ["mqtt", "amqp", "email", "yaml", "images"]
+default = ["mqtt", "amqp", "email", "yaml", "images", "simplepush-encryption"]
 mqtt = []
 amqp = ["dep:fe2o3-amqp"]
 email = ["dep:lettre"]
@@ -55,6 +62,7 @@ desktop = ["dep:png", "dep:zbus", "dep:windows-sys"]
 blink1 = ["dep:hidapi"]
 # Bundle the default theme's PNG icons for AppriseAsset::image_raw() (~280 KB).
 images = []
+simplepush-encryption = ["dep:argon2", "dep:chacha20poly1305", "dep:x25519-dalek", "dep:salsa20", "dep:poly1305"]
 
 [target.'cfg(unix)'.dependencies]
 # p2p lets the tests talk to a fake notification service

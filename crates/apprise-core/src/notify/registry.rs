@@ -323,12 +323,12 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(postmark::Postmark::from_url, "postmark");
   reg!(prowl::Prowl::from_url, "prowl");
   reg!(pushbullet::Pushbullet::from_url, "pbul");
-  reg!(pushdeer::PushDeer::from_url, "pushdeer", "pushdeers", "push");
+  reg!(pushdeer::PushDeer::from_url, "pushdeer", "pushdeers");
   reg!(pushed::Pushed::from_url, "pushed");
   reg!(pushjet::PushJet::from_url, "pjet", "pjets");
   reg!(pushme::PushMe::from_url, "pushme");
   reg!(pushover::Pushover::from_url, "pover");
-  reg!(pushplus::PushPlus::from_url, "pushplus");
+  reg!(pushplus::PushPlus::from_url, "pushplus", "wecom");
   reg!(pushsafer::Pushsafer::from_url, "psafer", "psafers");
   reg!(pushward::PushWard::from_url, "pushward");
   reg!(pushy::Pushy::from_url, "pushy");
@@ -350,7 +350,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(signal_api::SignalApi::from_url, "signal", "signals");
   reg!(signalgrid::Signalgrid::from_url, "signalgrid");
   reg!(signl4::Signl4::from_url, "signl4");
-  reg!(simplepush::SimplePush::from_url, "spush");
+  reg!(simplepush::SimplePush::from_url, "spush", "simplepush");
   reg!(sinch::Sinch::from_url, "sinch");
   reg!(slack::Slack::from_url, "slack");
   reg!(smpp::Smpp::from_url, "smpp", "smpps");
@@ -368,7 +368,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(streamlabs::Streamlabs::from_url, "strmlabs");
   reg!(synology::Synology::from_url, "synology", "synologys");
   reg!(syslog::Syslog::from_url, "syslog");
-  reg!(techuluspush::TechulusPush::from_url, "techulus");
+  reg!(techuluspush::TechulusPush::from_url, "push", "techulus");
   reg!(telegram::Telegram::from_url, "tgram");
   reg!(telesign::Telesign::from_url, "telesign");
   reg!(telnyx::Telnyx::from_url, "telnyx");

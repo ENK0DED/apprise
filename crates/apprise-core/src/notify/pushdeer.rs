@@ -1,39 +1,57 @@
 use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
+use crate::utils::plugin_args::{split_path, unquote};
 use async_trait::async_trait;
+
+/// The public PushDeer server, used when the URL names no host.
+const DEFAULT_HOSTNAME: &str = "api2.pushdeer.com";
+
 pub struct PushDeer {
-  token: String,
+  push_key: String,
+  host: Option<String>,
+  port: Option<u16>,
+  secure: bool,
   verify_certificate: bool,
   tags: Vec<String>,
 }
+
 impl PushDeer {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let token = url.host.clone()?;
-    if token.is_empty() {
+    // pushdeer://{pushkey} or pushdeer://{host}[:{port}]/{pushkey}; the
+    // last path entry is the key
+    let mut paths = split_path(url);
+    let (push_key, host) = match paths.pop() {
+      Some(key) => (key, url.host.clone().filter(|h| !h.is_empty())),
+      None => (url.host.as_deref().map(unquote).unwrap_or_default(), None),
+    };
+    let push_key = push_key.trim().to_string();
+    if push_key.is_empty() || !push_key.chars().all(|c| c.is_ascii_alphanumeric()) {
+      tracing::warn!("An invalid PushDeer API Pushkey was specified.");
       return None;
     }
-    // Reject if token is all whitespace/non-alphanumeric after decoding
-    let decoded = urlencoding::decode(&token).unwrap_or_default();
-    if decoded.trim().is_empty() {
-      return None;
-    }
-    if !decoded.chars().any(|c| c.is_ascii_alphanumeric() || c == '-') {
-      return None;
-    }
-    Some(Self { token, verify_certificate: url.verify_certificate(), tags: url.tags() })
+    Some(Self {
+      push_key,
+      port: host.as_ref().and(url.port),
+      host,
+      secure: url.schema == "pushdeers",
+      verify_certificate: url.verify_certificate(),
+      tags: url.tags(),
+    })
   }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "PushDeer",
-      service_url: Some("https://www.pushdeer.com"),
-      setup_url: None,
+      service_url: Some("https://www.pushdeer.com/"),
+      setup_url: Some("https://appriseit.com/services/pushdeer/"),
       protocols: vec!["pushdeer", "pushdeers"],
       description: "Send notifications via PushDeer.",
       attachment_support: false,
     }
   }
 }
+
 #[async_trait]
 impl Notify for PushDeer {
   fn schemas(&self) -> &[&str] {
@@ -48,16 +66,29 @@ impl Notify for PushDeer {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
-    let text = if ctx.title.is_empty() { ctx.body.clone() } else { format!("{}\n{}", ctx.title, ctx.body) };
-    let url = format!("https://api2.pushdeer.com/message/push?pushkey={}&text={}", self.token, urlencoding::encode(&text));
+    let schema = if self.secure { "https" } else { "http" };
+    let port = self.port.unwrap_or(if self.secure { 443 } else { 80 });
+    let base = match &self.host {
+      Some(host) => format!("{}://{}:{}", schema, host, port),
+      None => service_base(&format!("{}://{}:{}", schema, DEFAULT_HOSTNAME, port)),
+    };
+    let url = format!("{}/message/push?pushkey={}", base, self.push_key);
+
+    let has_title = !ctx.title.is_empty();
+    let form =
+      [("text", if has_title { ctx.title.as_str() } else { ctx.body.as_str() }), ("type", "text"), ("desp", if has_title { ctx.body.as_str() } else { "" })];
     let client = build_client(self.verify_certificate)?;
-    let resp = client.get(&url).header("User-Agent", APP_ID).send().await?;
-    if resp.status().is_success() {
-      Ok(true)
-    } else {
-      Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() })
+    let resp = client.post(&url).header("User-Agent", APP_ID).form(&form).send().await?;
+    let status = resp.status();
+    if status.as_u16() == 200 {
+      tracing::info!("Sent PushDeer notification.");
+      return Ok(true);
     }
+    let reason = status.canonical_reason().unwrap_or("");
+    tracing::warn!("Failed to send PushDeer notification: {}{}error={}.", reason, if reason.is_empty() { "" } else { ", " }, status.as_u16());
+    Err(NotifyError::ServiceError { status: status.as_u16(), body: resp.text().await.unwrap_or_default() })
   }
 }
 
@@ -65,47 +96,75 @@ impl Notify for PushDeer {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
+  use wiremock::matchers::{body_string, method, path, query_param};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
 
-  #[test]
-  fn test_valid_urls() {
-    let a8 = "a".repeat(8);
-    let urls = vec![format!("pushdeer://localhost/{}", a8), format!("pushdeer://localhost:80/{}", a8), format!("pushdeer://{}", a8)];
-    for url in &urls {
-      assert!(from_url(url).is_some(), "Should parse: {}", url);
-    }
+  fn pushdeer(url: &str) -> PushDeer {
+    PushDeer::from_url(&ParsedUrl::parse(url).unwrap()).unwrap()
   }
 
   #[test]
-  fn test_invalid_urls() {
-    let urls = vec!["pushdeer://", "pushdeers://"];
-    for url in &urls {
+  fn test_urls() {
+    let a8 = "a".repeat(8);
+    for url in [format!("pushdeer://localhost/{}", a8), format!("pushdeer://localhost:80/{}", a8), format!("pushdeer://{}", a8), format!("pushdeers://{}", a8)]
+    {
+      assert!(from_url(&url).is_some(), "Should parse: {}", url);
+    }
+    for url in ["pushdeer://", "pushdeers://", "pushdeer://bad-key", "pushdeer://host/bad_key"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+    let obj = pushdeer("pushdeers://h.example:8443/x/abc123");
+    assert_eq!((obj.push_key.as_str(), obj.host.as_deref(), obj.port, obj.secure), ("abc123", Some("h.example"), Some(8443), true));
+    let obj = pushdeer("pushdeer://abc123");
+    assert_eq!((obj.push_key.as_str(), obj.host.as_deref()), ("abc123", None));
   }
 
-  #[test]
-  fn test_from_url_basic_fields() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("pushdeer://mytoken").unwrap();
-    let obj = PushDeer::from_url(&parsed).unwrap();
-    assert_eq!(obj.token, "mytoken");
+  #[tokio::test]
+  async fn test_send() {
+    // Matches pycapture.py for pushdeer://abc123
+    let server = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+      .and(path("/message/push"))
+      .and(query_param("pushkey", "abc123"))
+      .and(body_string("text=T&type=text&desp=B"))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), from_url("pushdeer://abc123").unwrap().send(&ctx)).await.unwrap());
   }
 
-  #[test]
-  fn test_from_url_with_host() {
-    // When host is specified, the token is the host (default API)
-    let a8 = "a".repeat(8);
-    let url = format!("pushdeer://{}", a8);
-    let parsed = crate::utils::parse::ParsedUrl::parse(&url).unwrap();
-    let obj = PushDeer::from_url(&parsed).unwrap();
-    assert_eq!(obj.token, a8);
+  #[tokio::test]
+  async fn test_send_own_host_without_title() {
+    let server = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+      .and(path("/message/push"))
+      .and(body_string("text=B&type=text&desp="))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let addr = server.address();
+    let svc = from_url(&format!("pushdeer://{}:{}/abc123", addr.ip(), addr.port())).unwrap();
+    let ctx = NotifyContext { body: "B".into(), ..Default::default() };
+    assert!(svc.send(&ctx).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_send_failure() {
+    for status in [500, 999] {
+      let server = MockServer::builder().start().await;
+      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      let ctx = NotifyContext { body: "B".into(), ..Default::default() };
+      assert!(crate::notify::with_test_base(server.uri(), from_url("pushdeer://abc123").unwrap().send(&ctx)).await.is_err());
+    }
   }
 
   #[test]
   fn test_service_details() {
     let details = PushDeer::static_details();
     assert_eq!(details.service_name, "PushDeer");
-    assert!(details.protocols.contains(&"pushdeer"));
-    assert!(details.protocols.contains(&"pushdeers"));
-    assert_eq!(details.service_url, Some("https://www.pushdeer.com"));
+    assert_eq!(details.protocols, vec!["pushdeer", "pushdeers"]);
   }
 }

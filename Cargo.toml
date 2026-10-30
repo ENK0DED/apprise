@@ -67,6 +67,18 @@ md-5 = "0.11"
 sha2 = "0.11"
 sha1 = "0.11"
 hex = "0.4"
+# ECDH/ECDSA P-256, RSA signing, HKDF and AES-GCM (VAPID, FCM); already
+# linked through rustls, so it adds no code to the binary
+ring = { version = "0.17", default-features = false, features = ["alloc"] }
+# AES-GCM with 128/192/256-bit keys (Bark); ring has no AES-192
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
+# Simplepush end-to-end encryption (libsodium-compatible: Argon2id key
+# derivation, XChaCha20-Poly1305 fields, crypto_box organization key wraps)
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+x25519-dalek = { version = "3", default-features = false, features = ["static_secrets"] }
+salsa20 = { version = "0.11", default-features = false }
+poly1305 = { version = "0.9", default-features = false }
 
 # Ed25519 signing and BLAKE2b hashing (Session Open Group Server)
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
