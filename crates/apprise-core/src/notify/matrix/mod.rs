@@ -54,7 +54,7 @@ use crate::delivery::{is_delivered, mark_delivered, recall, remember};
 use crate::error::{NotifyError, loggable_http_error};
 use crate::notify::{APP_ID, Attachment, ClientDefaults, Notify, NotifyContext, ServiceDetails, client_builder, service_base, throttle, throttle_for};
 use crate::types::NotifyFormat;
-use crate::utils::parse::{ParsedUrl, parse_bool, parse_bool_or, parse_list, quote};
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list, quote};
 
 const MATRIX_V1_WEBHOOK_PATH: &str = "/api/v1/matrix/hook";
 const MATRIX_V2_API_PATH: &str = "/_matrix/client/r0";
@@ -339,8 +339,9 @@ impl Matrix {
       targets.extend(parse_list(to));
     }
     let include_image = url.get("image").map(parse_bool).unwrap_or(false);
-    let mut discovery = url.get("discovery").map(|v| parse_bool_or(v, true)).unwrap_or(true);
-    let hsreq = url.get("hsreq").map(|v| parse_bool_or(v, true)).unwrap_or(true);
+    // Unrecognized values read as false, as upstream's parse_bool() does.
+    let mut discovery = url.get("discovery").map(parse_bool).unwrap_or(true);
+    let hsreq = url.get("hsreq").map(parse_bool).unwrap_or(true);
     let e2ee_arg = url.get("e2ee").map(parse_bool);
     let autoverify = url.get("autoverify").map(parse_bool).unwrap_or(false);
 

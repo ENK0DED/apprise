@@ -251,6 +251,21 @@ async fn test_rotated_session_is_shared_again() {
 }
 
 #[tokio::test]
+async fn test_oversized_encrypted_event_is_not_sent() {
+  // A device ID learned after sizing can push the event past the limit.
+  let server = MockServer::start().await;
+  mock(&server, "POST", "/_matrix/client/v3/login", 200, json!({"access_token": "t", "user_id": "@apprise:localhost", "device_id": "D".repeat(30000)})).await;
+  Mock::given(method("POST")).and(path_regex("/join/")).respond_with(JoinEcho).mount(&server).await;
+  mock(&server, "POST", "/_matrix/client/v3/keys/upload", 200, json!({})).await;
+  mock(&server, "GET", &format!("/_matrix/client/v3/rooms/{ROOM_PATH}/state/m.room.encryption"), 200, json!({"algorithm": "m.megolm.v1.aes-sha2"})).await;
+  mock(&server, "GET", &format!("/_matrix/client/v3/rooms/{ROOM_PATH}/joined_members"), 200, json!({"joined": {}})).await;
+  mock_re(&server, "PUT", "/send/", 200, json!({})).await;
+  let m = load(URL);
+  assert!(!send(&m, &server, &ctx("", &"x".repeat(30000))).await);
+  assert!(find(&seen(&server).await, "/send/").is_empty());
+}
+
+#[tokio::test]
 async fn test_unknown_encryption_state_fails_closed() {
   // apprise-go 04d2c71: only a 404 confirms a plaintext room.
   for (status, state) in [(500, json!({"errcode": "M_UNKNOWN"})), (200, json!({})), (403, json!({"errcode": "M_FORBIDDEN"}))] {
@@ -428,7 +443,12 @@ impl Phone {
   /// The next `/sync` batch.
   fn sync(&mut self) -> Value {
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let request = |txn: &str| {
+      Self::event("m.key.verification.request", json!({"transaction_id": txn, "from_device": "PHONE", "methods": ["m.sas.v1"], "timestamp": now_ms}))
+    };
     let events = match self.step {
+      // The same device asks twice: both requests are cancelled.
+      100 => vec![request("first"), request("first"), request("second")],
       0 => vec![
         // Someone else's request and a stale one are ignored.
         json!({"type": "m.key.verification.request", "sender": "@mallory:localhost", "content": {"transaction_id": "evil", "from_device": "X", "methods": ["m.sas.v1"], "timestamp": now_ms}}),
@@ -459,7 +479,10 @@ impl Phone {
   }
 
   fn received(&mut self, event_type: &str, content: &Value) {
-    let name = event_type.trim_start_matches("m.key.verification.").to_string();
+    let mut name = event_type.trim_start_matches("m.key.verification.").to_string();
+    if name == "cancel" {
+      name = format!("cancel:{}", content["transaction_id"].as_str().unwrap_or_default());
+    }
     match name.as_str() {
       "accept" => self.accept = Some(content.clone()),
       "key" => self.apprise_key = content["key"].as_str().map(str::to_string),
@@ -521,26 +544,26 @@ async fn test_autoverify_completes_a_same_user_verification() {
   m.autoverify_timeout = Duration::from_secs(20);
   assert!(send(&m, &server, &ctx("", "hello")).await);
 
-  let phone = phone.lock().unwrap();
-  // Ignored strangers and stale requests got no answer.
-  assert_eq!(phone.sent, vec!["ready", "accept", "key", "mac", "done"]);
-  // The commitment binds Apprise's key to the start event.
-  let accept = phone.accept.as_ref().unwrap();
-  let mut digest = <sha2::Sha256 as sha2::Digest>::new();
-  sha2::Digest::update(&mut digest, phone.apprise_key.as_ref().unwrap().as_bytes());
-  sha2::Digest::update(&mut digest, canonical_json(&phone.start).as_bytes());
-  assert_eq!(accept["commitment"], STANDARD_NO_PAD.encode(sha2::Digest::finalize(digest)));
-  assert_eq!(accept["short_authentication_string"], json!(["decimal"]));
-  // Apprise proved its own device signing key.
-  let session = m.session.try_lock().unwrap();
-  let signing_key = session.account.as_ref().unwrap().signing_key();
-  let secret = phone.shared();
-  let info = |key_id: &str| format!("MATRIX_KEY_VERIFICATION_MAC{ME}DEVICE{ME}PHONEtxn1{key_id}");
-  let apprise_mac = phone.apprise_mac.as_ref().unwrap();
-  assert_eq!(apprise_mac["mac"]["ed25519:DEVICE"], mac(&secret, &info("ed25519:DEVICE"), &signing_key));
-  assert_eq!(apprise_mac["keys"], mac(&secret, &info("KEY_IDS"), "ed25519:DEVICE"));
-  drop(session);
-  drop(phone);
+  {
+    let phone = phone.lock().unwrap();
+    // Ignored strangers and stale requests got no answer.
+    assert_eq!(phone.sent, vec!["ready", "accept", "key", "mac", "done"]);
+    // The commitment binds Apprise's key to the start event.
+    let accept = phone.accept.as_ref().unwrap();
+    let mut digest = <sha2::Sha256 as sha2::Digest>::new();
+    sha2::Digest::update(&mut digest, phone.apprise_key.as_ref().unwrap().as_bytes());
+    sha2::Digest::update(&mut digest, canonical_json(&phone.start).as_bytes());
+    assert_eq!(accept["commitment"], STANDARD_NO_PAD.encode(sha2::Digest::finalize(digest)));
+    assert_eq!(accept["short_authentication_string"], json!(["decimal"]));
+    // Apprise proved its own device signing key.
+    let session = m.session.try_lock().unwrap();
+    let signing_key = session.account.as_ref().unwrap().signing_key();
+    let secret = phone.shared();
+    let info = |key_id: &str| format!("MATRIX_KEY_VERIFICATION_MAC{ME}DEVICE{ME}PHONEtxn1{key_id}");
+    let apprise_mac = phone.apprise_mac.as_ref().unwrap();
+    assert_eq!(apprise_mac["mac"]["ed25519:DEVICE"], mac(&secret, &info("ed25519:DEVICE"), &signing_key));
+    assert_eq!(apprise_mac["keys"], mac(&secret, &info("KEY_IDS"), "ed25519:DEVICE"));
+  }
 
   // Trust is stored for this identity; the message went out after.
   {
@@ -555,7 +578,7 @@ async fn test_autoverify_completes_a_same_user_verification() {
   let query: std::collections::HashMap<String, String> = sync[0].url.query_pairs().into_owned().collect();
   assert_eq!(query["set_presence"], "offline");
   assert_eq!(query["filter"], SYNC_FILTER_FOR_TESTS);
-  assert!(query.get("since").is_none());
+  assert!(!query.contains_key("since"));
   assert_eq!(sync[1].url.query_pairs().find(|(k, _)| k == "since").unwrap().1, "b1");
 
   // Verified: the next send does not poll again.
@@ -609,7 +632,20 @@ async fn test_autoverify_rejects_a_bad_mac() {
   m.autoverify_timeout = Duration::from_secs(20);
   // Delivery still succeeds; trust is not granted.
   assert!(send(&m, &server, &ctx("", "hello")).await);
-  assert_eq!(phone.lock().unwrap().sent, vec!["ready", "accept", "key", "mac", "cancel"]);
+  assert_eq!(phone.lock().unwrap().sent, vec!["ready", "accept", "key", "mac", "cancel:txn1"]);
   let mut session = m.session.lock().await;
   assert!(session.get_str("e2ee_verified_binding").is_none());
+}
+
+#[tokio::test]
+async fn test_autoverify_cancels_a_superseded_request() {
+  let server = MockServer::start().await;
+  let phone = Arc::new(Mutex::new(Phone::new()));
+  phone.lock().unwrap().step = 100;
+  verification_homeserver(&server, &phone).await;
+  let mut m = load("matrixs://user:pass@localhost/!room:localhost?discovery=no&autoverify=yes");
+  m.autoverify_timeout = Duration::from_millis(300);
+  assert!(send(&m, &server, &ctx("", "hello")).await);
+  // A replay is ignored; a newer request ends both transactions.
+  assert_eq!(phone.lock().unwrap().sent, vec!["ready", "cancel:first", "cancel:second"]);
 }

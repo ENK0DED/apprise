@@ -202,14 +202,14 @@ impl Run<'_> {
         }
         // The first signed_curve25519 key object, with a valid signature.
         let mut otk = None;
-        if let Some(entries) = otks.get(user_id).and_then(|u| u.get(device_id)).and_then(Value::as_object) {
-          if let Some((key_id, object)) = entries.iter().find(|(k, _)| k.starts_with("signed_curve25519:")) {
-            if object.is_object() && !keys.ed25519.is_empty() && e2ee::verify_signed_otk(object, user_id, device_id, &keys.ed25519) {
-              otk = object.get("key").and_then(Value::as_str).map(str::to_string);
-              tracing::trace!("Matrix E2EE: OTK accepted for {} / {} (key_id={}).", user_id, device_id, key_id);
-            } else {
-              tracing::debug!("Matrix E2EE: OTK signature invalid for {} / {}; skipped.", user_id, device_id);
-            }
+        if let Some(entries) = otks.get(user_id).and_then(|u| u.get(device_id)).and_then(Value::as_object)
+          && let Some((key_id, object)) = entries.iter().find(|(k, _)| k.starts_with("signed_curve25519:"))
+        {
+          if object.is_object() && !keys.ed25519.is_empty() && e2ee::verify_signed_otk(object, user_id, device_id, &keys.ed25519) {
+            otk = object.get("key").and_then(Value::as_str).map(str::to_string);
+            tracing::trace!("Matrix E2EE: OTK accepted for {} / {} (key_id={}).", user_id, device_id, key_id);
+          } else {
+            tracing::debug!("Matrix E2EE: OTK signature invalid for {} / {}; skipped.", user_id, device_id);
           }
         }
         let Some(otk) = otk else {

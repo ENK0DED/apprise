@@ -145,6 +145,9 @@ fn test_targets_and_options() {
   assert_eq!(m.version, Version::V2);
   assert_eq!(m.msgtype, MsgType::Notice);
   assert!(m.include_image && !m.discovery && !m.hsreq && !m.e2ee && m.autoverify);
+  // As upstream's parse_bool(): anything unrecognized is false.
+  let m = load("matrix://user:pass@localhost/#room?discovery=maybe&hsreq=maybe");
+  assert!(!m.discovery && !m.hsreq);
   // autoverify implies e2ee unless e2ee= says otherwise.
   assert!(load("matrix://user:pass@localhost/#room?autoverify=yes").e2ee);
 
@@ -444,6 +447,37 @@ async fn test_anonymous_registration_and_joined_rooms() {
   mock(&server, "POST", "/_matrix/client/v3/register", 200, json!({"access_token": "anon", "user_id": "@x:localhost"})).await;
   mock(&server, "GET", "/_matrix/client/v3/joined_rooms", 200, json!({"joined_rooms": []})).await;
   assert!(!send(&load("matrix://localhost?mode=off"), &server, &ctx("", "B")).await);
+}
+
+#[tokio::test]
+async fn test_login_reuses_a_known_device() {
+  // A remembered device ID keeps Matrix from creating a new device.
+  let server = MockServer::start().await;
+  homeserver(&server).await;
+  let m = load("matrix://user:pass@localhost/!a:localhost?e2ee=no");
+  m.session.lock().await.local.insert("device_id".into(), (json!("KNOWN"), None));
+  assert!(send(&m, &server, &ctx("", "B")).await);
+  let login = body(&seen(&server).await[0]);
+  assert_eq!(login["device_id"], "KNOWN");
+  assert!(login.get("initial_device_display_name").is_none());
+}
+
+#[tokio::test]
+async fn test_whoami_supplies_the_home_server() {
+  // A raw token learns its home server from whoami, for aliases and DMs.
+  let server = MockServer::start().await;
+  mock(&server, "GET", "/_matrix/client/v3/account/whoami", 200, json!({"user_id": "@bot:example.org", "device_id": "D"})).await;
+  Mock::given(method("POST")).and(path_regex("/join/")).respond_with(JoinEcho).mount(&server).await;
+  mock_re(&server, "PUT", "/send/", 200, json!({})).await;
+  assert!(send(&load("matrix://token@localhost/%23general?e2ee=no"), &server, &ctx("", "B")).await);
+  assert!(seen(&server).await.iter().any(|r| line(r) == "POST /_matrix/client/v3/join/%23general%3Aexample.org"));
+  // Without whoami the URL's host stands in.
+  let server = MockServer::start().await;
+  mock(&server, "GET", "/_matrix/client/v3/account/whoami", 500, json!({})).await;
+  Mock::given(method("POST")).and(path_regex("/join/")).respond_with(JoinEcho).mount(&server).await;
+  mock_re(&server, "PUT", "/send/", 200, json!({})).await;
+  assert!(send(&load("matrix://token@localhost/%23general?e2ee=no"), &server, &ctx("", "B")).await);
+  assert!(seen(&server).await.iter().any(|r| line(r) == "POST /_matrix/client/v3/join/%23general%3Alocalhost"));
 }
 
 /// Every send's transaction ID, from the request paths.

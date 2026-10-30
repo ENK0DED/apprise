@@ -329,7 +329,8 @@ fn test_sas_rejects_bad_peer_macs() {
     json!({"transaction_id": "txn1", "mac": {"ed25519:PHONE": m("ed25519:PHONE", &peer.signing_key)}, "keys": m("KEY_IDS", "ed25519:PHONE")})
   };
 
-  let cases: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
+  type Mutation = Box<dyn Fn(&mut Value)>;
+  let cases: Vec<(&str, Mutation)> = vec![
     ("wrong transaction", Box::new(|c| c["transaction_id"] = json!("other"))),
     ("no keys", Box::new(|c| c["mac"] = json!({}))),
     ("tampered key MAC", Box::new(|c| c["mac"]["ed25519:PHONE"] = json!(b64enc(&[1; 32])))),
