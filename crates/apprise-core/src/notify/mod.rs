@@ -57,6 +57,7 @@ pub mod infobip;
 pub mod irc;
 pub mod jellyfin;
 pub mod join;
+pub mod kaleyra;
 pub mod kavenegar;
 pub mod kumulos;
 pub mod lametric;
