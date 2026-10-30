@@ -122,6 +122,69 @@ pub fn cwe312_url(url: &str) -> String {
   format!("{}://{}{}{}{}{}", parsed.schema, auth, host, port, masked_path, params)
 }
 
+/// Query options that never carry a secret; their values stay readable in
+/// [`privacy_url`].
+const PUBLIC_OPTIONS: &[&str] = &[
+  "format", "overflow", "emojis", "store", "tz", "retry", "wait", "optional", "redirect", "cto", "rto", "verify", "method", "mode", "priority", "image",
+  "batch", "region", "lang", "language", "version", "v",
+];
+
+/// A service URL for listings (`--dry-run`, `storage list`, results), where
+/// upstream shows each plugin's privacy URL. Without per-plugin knowledge
+/// this masks structurally: the user, every path segment and every query
+/// value except [`PUBLIC_OPTIONS`] become `f...l`, the password `****`, and
+/// the host too unless it is clearly a network host (a dotted name, an IP
+/// address or `localhost`), since custom schemes often put a token there.
+pub fn privacy_url(url: &str) -> String {
+  let Some((schema, rest)) = url.split_once("://") else { return mask_word(url) };
+  let (base, query) = match rest.split_once('?') {
+    Some((b, q)) => (b, Some(q)),
+    None => (rest, None),
+  };
+  let (authority, path) = match base.find('/') {
+    Some(i) => (&base[..i], &base[i..]),
+    None => (base, ""),
+  };
+  let (userinfo, hostport) = match authority.rsplit_once('@') {
+    Some((u, h)) => (Some(u), h),
+    None => (None, authority),
+  };
+  let mut out = format!("{}://", schema);
+  if let Some(userinfo) = userinfo {
+    match userinfo.split_once(':') {
+      Some((user, _)) => out.push_str(&format!("{}:****@", mask_word(user))),
+      None => out.push_str(&format!("{}@", mask_word(userinfo))),
+    }
+  }
+  let (host, port) = match hostport.rsplit_once(':') {
+    Some((h, p)) if !h.is_empty() && !h.ends_with(']') && p.bytes().all(|b| b.is_ascii_digit()) => (h, Some(p)),
+    Some((h, p)) if h.ends_with(']') && p.bytes().all(|b| b.is_ascii_digit()) => (h, Some(p)),
+    _ => (hostport, None),
+  };
+  let network_host = host.eq_ignore_ascii_case("localhost") || host.contains('.') || host.starts_with('[') || host.parse::<std::net::IpAddr>().is_ok();
+  out.push_str(&if network_host { host.to_string() } else { mask_word(host) });
+  if let Some(port) = port {
+    out.push(':');
+    out.push_str(port);
+  }
+  out.push_str(&path.split('/').map(mask_word).collect::<Vec<_>>().join("/"));
+  if let Some(query) = query {
+    let pairs: Vec<String> = query
+      .split('&')
+      .map(|pair| match pair.split_once('=') {
+        Some((key, value)) => {
+          let name = key.trim_start_matches(['+', '-', ':']).to_ascii_lowercase();
+          if PUBLIC_OPTIONS.contains(&name.as_str()) || value.is_empty() { pair.to_string() } else { format!("{}={}", key, mask_word(value)) }
+        }
+        None => pair.to_string(),
+      })
+      .collect();
+    out.push('?');
+    out.push_str(&pairs.join("&"));
+  }
+  out
+}
+
 fn mask_word(word: &str) -> String {
   if word.is_empty() {
     return String::new();
@@ -297,5 +360,16 @@ mod tests {
   fn test_cwe312_url_invalid_url() {
     // Invalid URLs are returned unchanged
     assert_eq!(cwe312_url("not a url"), "not a url");
+  }
+
+  #[test]
+  fn test_privacy_url_masks_tokens_upstream_would_hide() {
+    assert_eq!(privacy_url("notica://dIXpIYY"), "notica://d...Y");
+    assert_eq!(privacy_url("apprise://example.com/mykey"), "apprise://example.com/m...y");
+    assert_eq!(privacy_url("json://localhost/?client_secret=abcd1234&format=html"), "json://localhost/?client_secret=a...4&format=html");
+    assert_eq!(privacy_url("mailtos://user:pass@example.com:587/?to=a@b.c"), "mailtos://u...r:****@example.com:587/?to=a...c");
+    assert_eq!(privacy_url("xml://127.0.0.1:8080/path"), "xml://127.0.0.1:8080/p...h");
+    assert_eq!(privacy_url("discord://1234567890/AbCdEf"), "discord://1...0/A...f");
+    assert_eq!(privacy_url("ntfy://[::1]:8080/topic?priority=high"), "ntfy://[::1]:8080/t...c?priority=high");
   }
 }

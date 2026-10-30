@@ -5,7 +5,7 @@ mod logging;
 use std::path::Path;
 
 use apprise_core::storage::{PersistentStore, StoreState};
-use apprise_core::utils::cwe312::cwe312_loggable;
+use apprise_core::utils::cwe312::{cwe312_loggable, privacy_url};
 use apprise_core::utils::disk::path_decode;
 use apprise_core::utils::parse::parse_urls;
 use apprise_core::{Apprise, AppriseAsset, Notify, NotifyContext, NotifyFormat, NotifyType, ResultStatus, StorageMode, TagFilter};
@@ -96,7 +96,7 @@ fn shown_url(svc: &dyn Notify) -> String {
     }
     None => url.to_string(),
   };
-  cwe312_loggable(&url, true)
+  privacy_url(&url)
 }
 
 fn sorted_tags(svc: &dyn Notify) -> Vec<String> {
@@ -394,7 +394,7 @@ fn dry_run_listing(apprise: &Apprise) -> ResultStatus {
   for entry in apprise.pending_matching(apprise.tag_filter()) {
     listed += 1;
     unresolved += 1;
-    let url = cwe312_loggable(&entry.display_url(), true);
+    let url = privacy_url(&entry.display_url());
     println!("{:>4}. {}", listed, fit(&url, columns.saturating_sub(8), columns.saturating_sub(9)));
     println!("{:>10}: - template; unresolved, would not send -", "uid");
     let mut tags: Vec<String> = apprise_core::tag::parse_service_tags(&entry.tags()).iter().map(|t| t.name().to_string()).collect();

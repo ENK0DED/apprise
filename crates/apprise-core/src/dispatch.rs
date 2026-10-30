@@ -30,7 +30,7 @@ use crate::notify::{HttpOptions, Notify, NotifyContext, with_http_options, with_
 use crate::prepare::prepare_contexts;
 use crate::result::{NotifyAttempt, ResultStatus, SendResult, ServiceResult, aggregate_status};
 use crate::tag::{AppriseTag, TagFilter, parse_service_tags};
-use crate::utils::cwe312::{cwe312_loggable, cwe312_text};
+use crate::utils::cwe312::cwe312_text;
 
 /// How long past its deadline a service may run before the caller stops
 /// waiting for it (upstream `_ABANDON_GRACE_SECONDS`).
@@ -302,7 +302,7 @@ fn http_options(call: &Call<'_>, opts: &DispatchOptions) -> HttpOptions {
 fn service_result(call: &Call<'_>, max_attempts: u32, attempts: Vec<NotifyAttempt>, elapsed: Duration) -> ServiceResult {
   let optional = call.svc.service_options().and_then(|o| o.optional).unwrap_or(false);
   let url =
-    call.svc.source_url().map(|u| cwe312_loggable(u, true)).unwrap_or_else(|| format!("{}://", call.svc.schemas().first().copied().unwrap_or("unknown")));
+    call.svc.source_url().map(crate::utils::cwe312::privacy_url).unwrap_or_else(|| format!("{}://", call.svc.schemas().first().copied().unwrap_or("unknown")));
   let mut tags: Vec<String> = call.tags.iter().map(|t| t.name().to_string()).collect();
   tags.sort();
   ServiceResult::new(call.svc.service_name().to_string(), url, tags, optional, max_attempts, attempts, elapsed)

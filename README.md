@@ -891,7 +891,7 @@ For more information on persistent storage, [visit here](https://appriseit.com/l
 
 This port aims to behave like upstream Apprise 2.1. Where it does not:
 
-* **Not ported**: upstream's `url()` serialisation (turning a loaded service back into a URL, including the privacy URL), and custom Python plugins (the `@notify` decorator, `--plugin-path` and `APPRISE_PLUGIN_PATH`, which the CLI accepts but ignores with a warning).
+* **Not ported**: upstream's `url()` serialisation (turning a loaded service back into a URL, including the privacy URL; `--dry-run` and `storage` listings mask the URL you gave instead, hiding the user, password, path, query values and token-like hosts), and custom Python plugins (the `@notify` decorator, `--plugin-path` and `APPRISE_PLUGIN_PATH`, which the CLI accepts but ignores with a warning).
 * **Time zones**: `?tz=` understands UTC and fixed offsets (`+05:00`, `UTC-8`). An IANA name such as `Europe/Paris` is accepted but treated as UTC for now.
 * **Upstream bugs fixed deliberately** (several following the Go port, [apprise-go](https://github.com/unraid/apprise-go)):
   * Matrix: every event gets its own transaction ID, so Synapse no longer drops repeats; a room whose encryption cannot be confirmed, or an encrypted room in a build without `matrix-e2ee`, receives nothing rather than plaintext.

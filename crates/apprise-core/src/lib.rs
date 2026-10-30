@@ -478,7 +478,7 @@ impl Apprise {
       tags.sort();
       results.push(result::ServiceResult::new(
         registry::service_name(entry.schema()),
-        utils::cwe312::cwe312_loggable(&entry.display_url(), true),
+        utils::cwe312::privacy_url(&entry.display_url()),
         tags,
         optional,
         1,
