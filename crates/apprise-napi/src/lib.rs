@@ -1,16 +1,19 @@
 #![deny(clippy::all)]
 
-use apprise_core::{Apprise, NotifyContext, NotifyFormat, NotifyType};
+use std::sync::Arc;
+
+use apprise_core::{Apprise, NotifyContext, NotifyFormat, NotifyType, ServiceDetails, TagFilter};
 use napi_derive::napi;
+use tokio::sync::RwLock;
 
 // ── Data types for JS interop ────────────────────────────────────────────────
 
 /// Options for sending a notification.
 #[napi(object)]
 pub struct SendOptions {
-  /// Notification service URL(s), separated by commas or semicolons.
+  /// Notification service URL(s), separated by commas, semicolons or whitespace.
   pub urls: Option<String>,
-  /// Path to a configuration file.
+  /// Path or URL of a configuration file.
   pub config: Option<String>,
   /// Message body (required).
   pub body: String,
@@ -20,8 +23,18 @@ pub struct SendOptions {
   pub notification_type: Option<String>,
   /// Body format: "text", "html", "markdown".
   pub body_format: Option<String>,
-  /// Tag filter(s) — comma-separated AND groups.
+  /// One tag filter group: its comma-separated tags must all match (like one
+  /// CLI `--tag`).
   pub tag: Option<String>,
+  /// Tag filter groups; a service matching any group is notified (like
+  /// repeating `--tag`). Without `tag` or `tags`, every service is notified.
+  pub tags: Option<Vec<String>>,
+  /// Attachments: file paths or `file://` / `http(s)://` URLs.
+  pub attach: Option<Vec<String>>,
+  /// Interpret backslash escapes such as `\n` in the title and body.
+  pub interpret_escapes: Option<bool>,
+  /// Interpret `:emoji:` shortcodes in the title and body.
+  pub interpret_emojis: Option<bool>,
 }
 
 /// Result of a notification dispatch.
@@ -33,6 +46,8 @@ pub struct SendResult {
   pub succeeded: i32,
   /// Number that failed.
   pub failed: i32,
+  /// Overall outcome: "success", "failure", "partial", "nomatch" or "timeout".
+  pub status: String,
 }
 
 /// Information about a notification service.
@@ -54,7 +69,70 @@ pub struct NotifyOptions {
   pub title: Option<String>,
   pub notification_type: Option<String>,
   pub body_format: Option<String>,
+  /// One tag filter group (see `SendOptions.tag`).
   pub tag: Option<String>,
+  /// Tag filter groups (see `SendOptions.tags`).
+  pub tags: Option<Vec<String>>,
+  /// Attachments: file paths or `file://` / `http(s)://` URLs.
+  pub attach: Option<Vec<String>>,
+  pub interpret_escapes: Option<bool>,
+  pub interpret_emojis: Option<bool>,
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+struct Message {
+  ctx: NotifyContext,
+  filter: TagFilter,
+  attach: Vec<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn message(
+  body: String,
+  title: Option<String>,
+  notification_type: Option<String>,
+  body_format: Option<String>,
+  tag: Option<String>,
+  tags: Option<Vec<String>>,
+  attach: Option<Vec<String>>,
+  interpret_escapes: Option<bool>,
+  interpret_emojis: Option<bool>,
+) -> napi::Result<Message> {
+  let notify_type = match notification_type {
+    Some(t) => t.parse::<NotifyType>().map_err(napi::Error::from_reason)?,
+    None => NotifyType::Info,
+  };
+  let body_format = match body_format {
+    Some(f) => f.parse::<NotifyFormat>().map_err(napi::Error::from_reason)?,
+    None => NotifyFormat::Text,
+  };
+  let mut groups = tags.unwrap_or_default();
+  groups.extend(tag);
+  let filter = if groups.is_empty() { TagFilter::All } else { TagFilter::from_cli(&groups) };
+  let ctx = NotifyContext {
+    body,
+    title: title.unwrap_or_default(),
+    notify_type,
+    body_format,
+    interpret_escapes: interpret_escapes.unwrap_or(false),
+    interpret_emojis: interpret_emojis.unwrap_or(false),
+    ..Default::default()
+  };
+  Ok(Message { ctx, filter, attach: attach.unwrap_or_default() })
+}
+
+fn to_js(result: apprise_core::SendResult) -> SendResult {
+  SendResult { total: result.total as i32, succeeded: result.succeeded as i32, failed: result.failed as i32, status: result.status.name().to_lowercase() }
+}
+
+fn service_info(d: ServiceDetails) -> ServiceInfo {
+  ServiceInfo {
+    name: d.service_name.to_string(),
+    protocols: d.protocols.iter().map(|s| s.to_string()).collect(),
+    description: d.description.to_string(),
+    attachment_support: d.attachment_support,
+  }
 }
 
 // ── Standalone functions ─────────────────────────────────────────────────────
@@ -63,6 +141,17 @@ pub struct NotifyOptions {
 /// and sends the notification.
 #[napi]
 pub async fn send(options: SendOptions) -> napi::Result<SendResult> {
+  let msg = message(
+    options.body,
+    options.title,
+    options.notification_type,
+    options.body_format,
+    options.tag,
+    options.tags,
+    options.attach,
+    options.interpret_escapes,
+    options.interpret_emojis,
+  )?;
   let mut apprise = Apprise::new();
 
   if let Some(urls) = &options.urls {
@@ -76,47 +165,19 @@ pub async fn send(options: SendOptions) -> napi::Result<SendResult> {
     return Err(napi::Error::from_reason("No notification services specified"));
   }
 
-  if let Some(tag) = &options.tag {
-    apprise.set_tag_strings(std::slice::from_ref(tag));
-  }
-
-  let ctx = NotifyContext {
-    body: options.body,
-    title: options.title.unwrap_or_default(),
-    notify_type: options.notification_type.as_deref().and_then(|s| s.parse::<NotifyType>().ok()).unwrap_or(NotifyType::Info),
-    body_format: options.body_format.as_deref().and_then(|s| s.parse::<NotifyFormat>().ok()).unwrap_or(NotifyFormat::Text),
-    ..Default::default()
-  };
-
-  let result = apprise.notify(&ctx).await;
-  Ok(SendResult { total: result.total as i32, succeeded: result.succeeded as i32, failed: result.failed as i32 })
+  Ok(to_js(apprise.notify_tagged(&msg.ctx, &msg.filter, &msg.attach).await))
 }
 
 /// Parse a notification URL and return service info, or null if invalid.
 #[napi]
 pub fn parse_url(url: String) -> Option<ServiceInfo> {
-  let svc = apprise_core::registry::from_url(&url)?;
-  let details = svc.details();
-  Some(ServiceInfo {
-    name: details.service_name.to_string(),
-    protocols: details.protocols.iter().map(|s| s.to_string()).collect(),
-    description: details.description.to_string(),
-    attachment_support: details.attachment_support,
-  })
+  apprise_core::registry::from_url(&url).map(|svc| service_info(svc.details()))
 }
 
 /// List all supported notification services.
 #[napi]
 pub fn list_services() -> Vec<ServiceInfo> {
-  Apprise::all_service_details()
-    .into_iter()
-    .map(|d| ServiceInfo {
-      name: d.service_name.to_string(),
-      protocols: d.protocols.iter().map(|s| s.to_string()).collect(),
-      description: d.description.to_string(),
-      attachment_support: d.attachment_support,
-    })
-    .collect()
+  Apprise::all_service_details().into_iter().map(service_info).collect()
 }
 
 // ── Apprise class for stateful usage ─────────────────────────────────────────
@@ -124,20 +185,21 @@ pub fn list_services() -> Vec<ServiceInfo> {
 /// Stateful notification manager.
 ///
 /// ```js
-/// const { Apprise } = require('apprise');
+/// import { Apprise } from '@enk0ded/apprise';
 /// const a = new Apprise();
 /// a.add('ntfy://mytopic');
-/// a.add('slack://TokenA/TokenB/TokenC');
-/// await a.notify('Hello!', { title: 'Test' });
+/// await a.addConfig('/etc/apprise.yml');
+/// await a.notify('Hello!', { title: 'Test', tags: ['devops'] });
 /// ```
 #[napi(js_name = "Apprise")]
 pub struct JsApprise {
-  inner: Apprise,
+  // Async methods only get `&self`; the lock lets them load configuration.
+  inner: Arc<RwLock<Apprise>>,
 }
 
 impl Default for JsApprise {
   fn default() -> Self {
-    Self { inner: Apprise::new() }
+    Self { inner: Arc::new(RwLock::new(Apprise::new())) }
   }
 }
 
@@ -149,74 +211,61 @@ impl JsApprise {
     Self::default()
   }
 
-  /// Add a notification service by URL. Returns true if parsed successfully.
+  /// Add notification service URL(s). Returns true if every URL was parsed
+  /// and added.
   #[napi]
-  pub fn add(&mut self, url: String) -> bool {
-    self.inner.add(&url)
+  pub fn add(&self, url: String) -> bool {
+    self.inner.blocking_write().add(&url)
   }
 
-  /// Load services from a config file (synchronous — blocks until loaded).
+  /// Load services from a configuration file or URL. Resolves to the number
+  /// of services loaded.
   #[napi]
-  pub fn add_config(&mut self, path: String) -> napi::Result<i32> {
-    let rt = tokio::runtime::Handle::current();
-    let count = rt.block_on(self.inner.add_config(&path, 1)).map_err(|e| napi::Error::from_reason(format!("Config error: {}", e)))?;
+  pub async fn add_config(&self, path: String) -> napi::Result<i32> {
+    let count = self.inner.write().await.add_config(&path, 1).await.map_err(|e| napi::Error::from_reason(format!("Config error: {}", e)))?;
     Ok(count as i32)
   }
 
   /// Get the number of loaded services.
   #[napi]
   pub fn len(&self) -> i32 {
-    self.inner.len() as i32
+    self.inner.blocking_read().len() as i32
   }
 
   /// Check if no services are loaded.
   #[napi]
   pub fn is_empty(&self) -> bool {
-    self.inner.is_empty()
+    self.inner.blocking_read().is_empty()
   }
 
-  /// Send a notification to all loaded services.
+  /// Send a notification to the loaded services the tag filter selects
+  /// (every service when no tags are given).
   #[napi]
   pub async fn notify(&self, body: String, options: Option<NotifyOptions>) -> napi::Result<SendResult> {
-    let opts = options.unwrap_or(NotifyOptions { title: None, notification_type: None, body_format: None, tag: None });
-
-    if let Some(tag) = &opts.tag {
-      // Note: can't mutate self in async context with NAPI
-      // Tags should be set via a separate method
-      let _ = tag;
-    }
-
-    let ctx = NotifyContext {
-      body,
-      title: opts.title.unwrap_or_default(),
-      notify_type: opts.notification_type.as_deref().and_then(|s| s.parse::<NotifyType>().ok()).unwrap_or(NotifyType::Info),
-      body_format: opts.body_format.as_deref().and_then(|s| s.parse::<NotifyFormat>().ok()).unwrap_or(NotifyFormat::Text),
-      ..Default::default()
-    };
-
-    let result = self.inner.notify(&ctx).await;
-    Ok(SendResult { total: result.total as i32, succeeded: result.succeeded as i32, failed: result.failed as i32 })
+    let o = options.unwrap_or(NotifyOptions {
+      title: None,
+      notification_type: None,
+      body_format: None,
+      tag: None,
+      tags: None,
+      attach: None,
+      interpret_escapes: None,
+      interpret_emojis: None,
+    });
+    let msg = message(body, o.title, o.notification_type, o.body_format, o.tag, o.tags, o.attach, o.interpret_escapes, o.interpret_emojis)?;
+    let apprise = self.inner.read().await;
+    Ok(to_js(apprise.notify_tagged(&msg.ctx, &msg.filter, &msg.attach).await))
   }
 
   /// Get details of all loaded services.
   #[napi]
   pub fn details(&self) -> Vec<ServiceInfo> {
-    self
-      .inner
-      .details()
-      .into_iter()
-      .map(|d| ServiceInfo {
-        name: d.service_name.to_string(),
-        protocols: d.protocols.iter().map(|s| s.to_string()).collect(),
-        description: d.description.to_string(),
-        attachment_support: d.attachment_support,
-      })
-      .collect()
+    self.inner.blocking_read().details().into_iter().map(service_info).collect()
   }
 
   /// Clear all loaded services.
   #[napi]
-  pub fn clear(&mut self) {
-    self.inner.clear();
+  pub fn clear(&self) {
+    self.inner.blocking_write().clear();
   }
 }

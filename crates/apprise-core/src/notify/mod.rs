@@ -6,6 +6,7 @@ use crate::asset::AppriseAsset;
 use crate::error::NotifyError;
 use crate::types::{NotifyFormat, NotifyType};
 
+mod incident;
 mod messaging_targets;
 pub mod options;
 pub mod registry;
@@ -20,6 +21,7 @@ pub mod amqp;
 pub mod apprise_api;
 pub mod aprs;
 pub mod bark;
+pub mod betterstack;
 pub mod blink1;
 pub mod bluesky;
 pub mod brevo;
@@ -54,6 +56,7 @@ pub mod fluxer;
 pub mod fortysixelks;
 pub mod freemobile;
 pub mod github;
+pub mod goalert;
 pub mod google_chat;
 pub mod gorush;
 pub mod gotify;
@@ -65,9 +68,12 @@ pub mod home_assistant;
 pub mod httpsms;
 pub mod humhub;
 pub mod ifttt;
+pub mod ilert;
+pub mod incidentio;
 pub mod infobip;
 pub mod irc;
 pub mod jellyfin;
+pub mod jira;
 pub mod join;
 pub mod kaleyra;
 pub mod kavenegar;
@@ -150,6 +156,7 @@ pub mod sparkpost;
 pub mod spike;
 pub mod splunk;
 pub mod spugpush;
+pub mod squadcast;
 pub mod stackfield;
 pub mod streamlabs;
 pub mod synology;
@@ -387,6 +394,15 @@ pub trait Notify: Send + Sync {
   /// Maximum body length in characters (default: 32768, matching Python)
   fn body_maxlen(&self) -> usize {
     32768
+  }
+
+  /// The body limit for one notification, given its converted title and
+  /// body (upstream plugins that size by content, such as Matrix, set it in
+  /// `_build_send_calls`). Preparation uses it in place of
+  /// [`body_maxlen`](Self::body_maxlen) for splitting, truncating and
+  /// dialect re-fitting. Default: [`body_maxlen`](Self::body_maxlen).
+  fn body_maxlen_for(&self, _title: &str, _body: &str, _body_format: &NotifyFormat) -> usize {
+    self.body_maxlen()
   }
 
   /// Maximum title length in characters (default: 250, matching Python)

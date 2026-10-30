@@ -364,7 +364,15 @@ impl Apprise {
   /// groups only run if a more urgent one failed. Plugins see the asset of
   /// this instance in `ctx.asset`.
   pub async fn notify(&self, ctx: &NotifyContext) -> SendResult {
-    self.dispatch(ctx, &self.dispatch_options()).await
+    self.dispatch(ctx, &self.dispatch_options(), &self.tag_filter).await
+  }
+
+  /// [`notify_with_attachments`](Self::notify_with_attachments) for the
+  /// services `filter` selects instead of the instance's tag filter
+  /// (upstream `notify(tag=...)`). Pass no `sources` to send without
+  /// attachments.
+  pub async fn notify_tagged(&self, ctx: &NotifyContext, filter: &TagFilter, sources: &[String]) -> SendResult {
+    self.notify_attached(ctx, sources, filter).await
   }
 
   /// [`notify`](Self::notify) with attachments loaded from `sources` (paths
@@ -376,6 +384,10 @@ impl Apprise {
   /// fails only the services that take attachments, and the others send the
   /// message without it.
   pub async fn notify_with_attachments(&self, ctx: &NotifyContext, sources: &[String]) -> SendResult {
+    self.notify_attached(ctx, sources, &self.tag_filter).await
+  }
+
+  async fn notify_attached(&self, ctx: &NotifyContext, sources: &[String], filter: &TagFilter) -> SendResult {
     let mut opts = self.dispatch_options();
     let mut ctx = ctx.clone();
     if !self.services.is_empty() {
@@ -397,7 +409,7 @@ impl Apprise {
         }
       }
     }
-    self.dispatch(&ctx, &opts).await
+    self.dispatch(&ctx, &opts, filter).await
   }
 
   /// Where this instance runs, which limits where attachments may come
@@ -410,7 +422,7 @@ impl Apprise {
   pub async fn notify_sequential(&self, ctx: &NotifyContext) -> SendResult {
     let mut opts = self.dispatch_options();
     opts.sequential = true;
-    self.dispatch(ctx, &opts).await
+    self.dispatch(ctx, &opts, &self.tag_filter).await
   }
 
   fn dispatch_options(&self) -> dispatch::DispatchOptions {
@@ -433,10 +445,10 @@ impl Apprise {
     notify::options::url_id(svc, &self.asset.storage_salt, self.asset.storage_idlen)
   }
 
-  async fn dispatch(&self, ctx: &NotifyContext, opts: &dispatch::DispatchOptions) -> SendResult {
+  async fn dispatch(&self, ctx: &NotifyContext, opts: &dispatch::DispatchOptions, filter: &TagFilter) -> SendResult {
     let mut ctx = ctx.clone();
     ctx.asset = self.asset.clone();
-    dispatch::notify(&self.services, &self.tag_filter, &ctx, opts).await
+    dispatch::notify(&self.services, filter, &ctx, opts).await
   }
 
   /// Load an attachment from a file path or URL.

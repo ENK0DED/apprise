@@ -50,10 +50,13 @@ webpki-roots.workspace = true
 hidapi = { workspace = true, optional = true }
 png = { workspace = true, optional = true }
 fe2o3-amqp = { workspace = true, optional = true }
+vodozemac = { workspace = true, optional = true }
+ctr = { workspace = true, optional = true }
+aes = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
 
 [features]
-default = ["mqtt", "amqp", "email", "yaml", "images", "simplepush-encryption"]
+default = ["mqtt", "amqp", "email", "yaml", "images", "simplepush-encryption", "matrix-e2ee"]
 mqtt = []
 amqp = ["dep:fe2o3-amqp"]
 email = ["dep:lettre"]
@@ -63,6 +66,9 @@ blink1 = ["dep:hidapi"]
 # Bundle the default theme's PNG icons for AppriseAsset::image_raw() (~280 KB).
 images = []
 simplepush-encryption = ["dep:argon2", "dep:chacha20poly1305", "dep:x25519-dalek", "dep:salsa20", "dep:poly1305"]
+# Matrix end-to-end encryption (Olm/Megolm, SAS device verification and
+# encrypted attachments). Without it encrypted rooms fail closed.
+matrix-e2ee = ["dep:vodozemac", "dep:ctr", "dep:aes"]
 
 [target.'cfg(unix)'.dependencies]
 # p2p lets the tests talk to a fake notification service
@@ -73,6 +79,8 @@ windows-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+# Matrix tests play the other SAS device with independent primitives
+x25519-dalek.workspace = true
 wiremock.workspace = true
 tokio-test.workspace = true
 tempfile.workspace = true

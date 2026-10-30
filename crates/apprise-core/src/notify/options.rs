@@ -207,6 +207,9 @@ impl Notify for ConfiguredService {
   fn body_maxlen(&self) -> usize {
     self.inner.body_maxlen()
   }
+  fn body_maxlen_for(&self, title: &str, body: &str, body_format: &NotifyFormat) -> usize {
+    self.inner.body_maxlen_for(title, body, body_format)
+  }
   fn title_maxlen(&self) -> usize {
     self.inner.title_maxlen()
   }
@@ -297,6 +300,9 @@ mod tests {
     fn body_maxlen(&self) -> usize {
       7
     }
+    fn body_maxlen_for(&self, title: &str, body: &str, _body_format: &NotifyFormat) -> usize {
+      title.len() + body.len() + 1
+    }
     fn title_maxlen(&self) -> usize {
       3
     }
@@ -335,6 +341,7 @@ mod tests {
     assert_eq!(wrapped.notify_formats(), direct.notify_formats());
     assert_eq!(wrapped.notify_format_overridable(), direct.notify_format_overridable());
     assert_eq!(wrapped.body_maxlen(), direct.body_maxlen());
+    assert_eq!(wrapped.body_maxlen_for("ab", "cde", &NotifyFormat::Html), direct.body_maxlen_for("ab", "cde", &NotifyFormat::Html));
     assert_eq!(wrapped.title_maxlen(), direct.title_maxlen());
     assert_eq!(wrapped.request_rate_per_sec(), direct.request_rate_per_sec());
     assert_eq!(wrapped.overflow_mode(), direct.overflow_mode());
