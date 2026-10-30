@@ -57,6 +57,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(google_chat::GoogleChat::static_details());
   collect!(gorush::Gorush::static_details());
   collect!(gotify::Gotify::static_details());
+  collect!(groupme::GroupMe::static_details());
   collect!(growl::Growl::static_details());
   collect!(guilded::Guilded::static_details());
   collect!(home_assistant::HomeAssistant::static_details());
@@ -204,6 +205,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(google_chat::GoogleChat::from_url, "gchat");
   reg!(gorush::Gorush::from_url, "gorush", "gorushs");
   reg!(gotify::Gotify::from_url, "gotify", "gotifys");
+  reg!(groupme::GroupMe::from_url, "groupme");
   reg!(growl::Growl::from_url, "growl");
   reg!(guilded::Guilded::from_url, "guilded");
   reg!(home_assistant::HomeAssistant::from_url, "hassio", "hassios");
