@@ -39,13 +39,16 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(chanify::Chanify::static_details());
   collect!(clickatell::Clickatell::static_details());
   collect!(clicksend::ClickSend::static_details());
+  collect!(cm::Cm::static_details());
   collect!(d7networks::D7Networks::static_details());
   collect!(dapnet::Dapnet::static_details());
   collect!(dingtalk::DingTalk::static_details());
   collect!(discord::Discord::static_details());
   collect!(dot::Dot::static_details());
+  collect!(eight00com::Eight00com::static_details());
   collect!(emby::Emby::static_details());
   collect!(enigma2::Enigma2::static_details());
+  collect!(exotel::Exotel::static_details());
   collect!(fcm::Fcm::static_details());
   collect!(feishu::FeiShu::static_details());
   collect!(flock::Flock::static_details());
@@ -56,15 +59,18 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(gotify::Gotify::static_details());
   collect!(growl::Growl::static_details());
   collect!(guilded::Guilded::static_details());
+  collect!(gupshup::Gupshup::static_details());
   collect!(home_assistant::HomeAssistant::static_details());
   collect!(httpsms::HttpSms::static_details());
   collect!(ifttt::Ifttt::static_details());
+  collect!(infobip::Infobip::static_details());
   collect!(irc::Irc::static_details());
   collect!(jellyfin::Jellyfin::static_details());
   collect!(join::Join::static_details());
   collect!(custom_json::Json::static_details());
   collect!(custom_form::Form::static_details());
   collect!(custom_xml::Xml::static_details());
+  collect!(kaleyra::Kaleyra::static_details());
   collect!(kavenegar::Kavenegar::static_details());
   collect!(kumulos::Kumulos::static_details());
   collect!(lametric::LaMetric::static_details());
@@ -76,6 +82,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(mattermost::Mattermost::static_details());
   collect!(messagebird::MessageBird::static_details());
   collect!(misskey::Misskey::static_details());
+  collect!(mobilemessage::MobileMessage::static_details());
   #[cfg(feature = "mqtt")]
   collect!(mqtt::Mqtt::static_details());
   collect!(msg91::Msg91::static_details());
@@ -86,6 +93,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(notifiarr::Notifiarr::static_details());
   collect!(notificationapi::NotificationApi::static_details());
   collect!(notifico::Notifico::static_details());
+  collect!(notifyre::Notifyre::static_details());
   collect!(ntfy::Ntfy::static_details());
   collect!(office365::Office365::static_details());
   collect!(one_signal::OneSignal::static_details());
@@ -183,13 +191,16 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(chanify::Chanify::from_url, "chanify");
   reg!(clickatell::Clickatell::from_url, "clickatell");
   reg!(clicksend::ClickSend::from_url, "clicksend");
+  reg!(cm::Cm::from_url, "cm");
   reg!(d7networks::D7Networks::from_url, "d7sms");
   reg!(dapnet::Dapnet::from_url, "dapnet");
   reg!(dingtalk::DingTalk::from_url, "dingtalk");
   reg!(discord::Discord::from_url, "discord");
   reg!(dot::Dot::from_url, "dot");
+  reg!(eight00com::Eight00com::from_url, "eight00com");
   reg!(emby::Emby::from_url, "emby", "embys");
   reg!(enigma2::Enigma2::from_url, "enigma2", "enigma2s");
+  reg!(exotel::Exotel::from_url, "exotel");
   reg!(fcm::Fcm::from_url, "fcm");
   reg!(feishu::FeiShu::from_url, "feishu");
   reg!(flock::Flock::from_url, "flock");
@@ -200,15 +211,18 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(gotify::Gotify::from_url, "gotify", "gotifys");
   reg!(growl::Growl::from_url, "growl");
   reg!(guilded::Guilded::from_url, "guilded");
+  reg!(gupshup::Gupshup::from_url, "gupshup");
   reg!(home_assistant::HomeAssistant::from_url, "hassio", "hassios");
   reg!(httpsms::HttpSms::from_url, "httpsms");
   reg!(ifttt::Ifttt::from_url, "ifttt");
+  reg!(infobip::Infobip::from_url, "infobip");
   reg!(irc::Irc::from_url, "irc", "ircs");
   reg!(jellyfin::Jellyfin::from_url, "jellyfin", "jellyfins");
   reg!(join::Join::from_url, "join");
   reg!(custom_json::Json::from_url, "json", "jsons");
   reg!(custom_form::Form::from_url, "form", "forms");
   reg!(custom_xml::Xml::from_url, "xml", "xmls");
+  reg!(kaleyra::Kaleyra::from_url, "kaleyra", "klr");
   reg!(kavenegar::Kavenegar::from_url, "kavenegar");
   reg!(kumulos::Kumulos::from_url, "kumulos");
   reg!(lametric::LaMetric::from_url, "lametric", "lametrics");
@@ -220,6 +234,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(mattermost::Mattermost::from_url, "mmost", "mmosts");
   reg!(messagebird::MessageBird::from_url, "msgbird");
   reg!(misskey::Misskey::from_url, "misskey", "misskeys");
+  reg!(mobilemessage::MobileMessage::from_url, "mobilemessage", "mobilemsg");
   #[cfg(feature = "mqtt")]
   reg!(mqtt::Mqtt::from_url, "mqtt", "mqtts");
   reg!(msg91::Msg91::from_url, "msg91");
@@ -230,6 +245,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(notifiarr::Notifiarr::from_url, "notifiarr");
   reg!(notificationapi::NotificationApi::from_url, "napi", "notificationapi");
   reg!(notifico::Notifico::from_url, "notifico");
+  reg!(notifyre::Notifyre::from_url, "notifyre");
   reg!(ntfy::Ntfy::from_url, "ntfy", "ntfys");
   reg!(office365::Office365::from_url, "o365", "azure");
   reg!(one_signal::OneSignal::from_url, "onesignal");
