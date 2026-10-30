@@ -80,7 +80,7 @@ impl WebexTeams {
     // Room IDs come from the path and ?to=
     let mut entries: Vec<String> = url.path_parts.clone();
     if let Some(to) = url.get("to") {
-      entries.extend(to.split(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n' | ',' | '\\' | '/')).filter(|s| !s.is_empty()).map(String::from));
+      entries.extend(to.split([' ', '\t', '\r', '\n', ',', '\\', '/']).filter(|s| !s.is_empty()).map(String::from));
     }
     let token = match url.get("token").filter(|t| !t.is_empty()) {
       Some(t) => t.to_string(),

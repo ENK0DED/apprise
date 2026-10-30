@@ -69,7 +69,7 @@ impl Line {
 
     let mut raw: Vec<String> = path;
     if let Some(to) = url.get("to") {
-      raw.extend(to.split(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n' | ',' | '#' | '\\' | '/')).filter(|s| !s.is_empty()).map(String::from));
+      raw.extend(to.split([' ', '\t', '\r', '\n', ',', '#', '\\', '/']).filter(|s| !s.is_empty()).map(String::from));
     }
     let targets = parse_list(raw.iter().map(String::as_str));
     let include_image = url.get("image").map(parse_bool).unwrap_or(true);
