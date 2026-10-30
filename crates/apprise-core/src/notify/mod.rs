@@ -142,6 +142,7 @@ pub mod workflows;
 pub mod wxpusher;
 pub mod xbmc;
 pub mod xmpp;
+pub mod zalo;
 pub mod zulip;
 
 // Platform-specific plugins

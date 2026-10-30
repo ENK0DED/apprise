@@ -154,6 +154,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(wxpusher::WxPusher::static_details());
   collect!(xbmc::Xbmc::static_details());
   collect!(xmpp::Xmpp::static_details());
+  collect!(zalo::Zalo::static_details());
   collect!(zulip::Zulip::static_details());
   #[cfg(feature = "email")]
   collect!(email::Email::static_details());
@@ -300,6 +301,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(wxpusher::WxPusher::from_url, "wxpusher");
   reg!(xbmc::Xbmc::from_url, "xbmc", "xbmcs", "kodi", "kodis");
   reg!(xmpp::Xmpp::from_url, "xmpp", "xmpps");
+  reg!(zalo::Zalo::from_url, "zalo");
   reg!(zulip::Zulip::from_url, "zulip");
   #[cfg(feature = "email")]
   reg!(email::Email::from_url, "mailto", "mailtos");
