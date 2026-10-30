@@ -34,7 +34,7 @@ use crate::error::ConfigError;
 use crate::notify::Notify;
 use crate::notify::registry::url_schema;
 use crate::utils::cwe312::cwe312_url;
-use crate::utils::parse::{ParsedUrl, parse_bool, parse_list, unquote};
+use crate::utils::parse::{ParsedUrl, parse_list, unquote};
 
 pub use template::PendingService;
 
@@ -366,6 +366,7 @@ async fn follow(parsed: ParseOutput, origin: Origin, opts: &LoadOptions, loaded:
   }
 }
 
+#[cfg(feature = "yaml")]
 /// Upstream `VALID_TOKEN.match()`: a YAML setting name must start with two
 /// characters out of `[a-z0-9_]` (the first not `_`).
 pub(crate) fn is_valid_token(key: &str) -> bool {
@@ -459,9 +460,10 @@ pub(crate) fn tag_set(text: &str) -> BTreeSet<String> {
   parse_list(text).into_iter().collect()
 }
 
+#[cfg(feature = "yaml")]
 /// Read a boolean config value the upstream way.
 pub(crate) fn config_bool(v: &str) -> bool {
-  parse_bool(v)
+  crate::utils::parse::parse_bool(v)
 }
 
 /// Lowercased `HashMap` view used by tests.
@@ -494,6 +496,7 @@ mod tests {
     assert!("yml".parse::<ConfigFormat>().is_err());
   }
 
+  #[cfg(feature = "yaml")]
   #[test]
   fn test_valid_token() {
     assert!(is_valid_token("to"));

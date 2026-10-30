@@ -61,11 +61,11 @@ pub fn tidy_path(path: &str) -> String {
   }
 
   // Expand home directory
-  if result.starts_with('~') {
-    if let Some(home) = dirs::home_dir() {
-      let rest = result.strip_prefix("~/").or_else(|| result.strip_prefix("~")).unwrap_or("");
-      return home.join(rest).to_string_lossy().to_string();
-    }
+  if result.starts_with('~')
+    && let Some(home) = dirs::home_dir()
+  {
+    let rest = result.strip_prefix("~/").or_else(|| result.strip_prefix("~")).unwrap_or("");
+    return home.join(rest).to_string_lossy().to_string();
   }
 
   result

@@ -26,17 +26,15 @@ pub fn base64_urldecode(data: &str) -> Option<Vec<u8>> {
 pub fn decode_b64_dict(di: &HashMap<String, serde_json::Value>) -> HashMap<String, serde_json::Value> {
   let mut result = di.clone();
   for (k, v) in result.iter_mut() {
-    if let Some(s) = v.as_str() {
-      if let Some(encoded) = s.strip_prefix("b64:") {
-        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) {
-          if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&decoded) {
-            *v = parsed;
-            continue;
-          }
-        }
-        // Decoding failed — leave the original value
-      }
+    if let Some(s) = v.as_str()
+      && let Some(encoded) = s.strip_prefix("b64:")
+      && let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded)
+      && let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&decoded)
+    {
+      *v = parsed;
+      continue;
     }
+    // Decoding failed — leave the original value
     let _ = k; // suppress unused warning
   }
   result
@@ -48,7 +46,7 @@ pub fn encode_b64_dict(di: &HashMap<String, serde_json::Value>) -> (HashMap<Stri
   let mut result = di.clone();
   let mut needs_decoding = false;
 
-  for (_k, v) in result.iter_mut() {
+  for v in result.values_mut() {
     if v.is_string() {
       continue;
     }

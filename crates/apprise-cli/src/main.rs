@@ -396,7 +396,7 @@ fn dry_run_listing(apprise: &Apprise) -> ResultStatus {
     unresolved += 1;
     let url = cwe312_loggable(&entry.display_url(), true);
     println!("{:>4}. {}", listed, fit(&url, columns.saturating_sub(8), columns.saturating_sub(9)));
-    println!("{:>10}: {}", "uid", "- template; unresolved, would not send -");
+    println!("{:>10}: - template; unresolved, would not send -", "uid");
     let mut tags: Vec<String> = apprise_core::tag::parse_service_tags(&entry.tags()).iter().map(|t| t.name().to_string()).collect();
     tags.sort();
     if !tags.is_empty() {

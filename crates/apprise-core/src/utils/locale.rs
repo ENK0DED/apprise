@@ -7,10 +7,10 @@ use std::env;
 /// (e.g., "en", "fr", "de") or falls back to "en".
 pub fn detect_language() -> String {
   for var in &["LC_ALL", "LC_CTYPE", "LANG", "LANGUAGE"] {
-    if let Ok(val) = env::var(var) {
-      if let Some(lang) = parse_locale_lang(&val) {
-        return lang;
-      }
+    if let Ok(val) = env::var(var)
+      && let Some(lang) = parse_locale_lang(&val)
+    {
+      return lang;
     }
   }
   "en".to_string()

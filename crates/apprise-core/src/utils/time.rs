@@ -51,10 +51,10 @@ pub fn zoneinfo(name: &str) -> Option<Timezone> {
   for prefix in &["utc+", "utc-", "gmt+", "gmt-"] {
     if let Some(rest) = lower.strip_prefix(prefix) {
       let sign = if prefix.ends_with('+') { 1 } else { -1 };
-      if let Ok(hours) = rest.parse::<i32>() {
-        if (-12..=14).contains(&hours) {
-          return FixedOffset::east_opt(sign * hours * 3600).map(Timezone::Fixed);
-        }
+      if let Ok(hours) = rest.parse::<i32>()
+        && (-12..=14).contains(&hours)
+      {
+        return FixedOffset::east_opt(sign * hours * 3600).map(Timezone::Fixed);
       }
     }
   }
@@ -63,10 +63,10 @@ pub fn zoneinfo(name: &str) -> Option<Timezone> {
   if (raw.starts_with('+') || raw.starts_with('-')) && raw.contains(':') {
     let sign = if raw.starts_with('+') { 1 } else { -1 };
     let parts: Vec<&str> = raw[1..].split(':').collect();
-    if parts.len() == 2 {
-      if let (Ok(h), Ok(m)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
-        return FixedOffset::east_opt(sign * (h * 3600 + m * 60)).map(Timezone::Fixed);
-      }
+    if parts.len() == 2
+      && let (Ok(h), Ok(m)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>())
+    {
+      return FixedOffset::east_opt(sign * (h * 3600 + m * 60)).map(Timezone::Fixed);
     }
   }
 

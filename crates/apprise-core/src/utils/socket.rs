@@ -72,15 +72,15 @@ impl TimeoutConfig {
 
   /// Create a split timeout config with separate connect and read values.
   pub fn split(connect: Option<f64>, read: Option<f64>) -> Result<Self, String> {
-    if let Some(c) = connect {
-      if c < 0.0 {
-        return Err("connect timeout must be >= 0".to_string());
-      }
+    if let Some(c) = connect
+      && c < 0.0
+    {
+      return Err("connect timeout must be >= 0".to_string());
     }
-    if let Some(r) = read {
-      if r < 0.0 {
-        return Err("read timeout must be >= 0".to_string());
-      }
+    if let Some(r) = read
+      && r < 0.0
+    {
+      return Err("read timeout must be >= 0".to_string());
     }
     Ok(TimeoutConfig::Split { connect, read })
   }

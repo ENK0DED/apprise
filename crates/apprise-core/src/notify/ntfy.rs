@@ -2,41 +2,13 @@ use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value};
 
-use crate::asset::AppriseAsset;
 use crate::asset::NotifyImageSize;
 use crate::error::NotifyError;
 use crate::notify::apprise_api::uuid4;
 use crate::notify::{APP_ID, Attachment, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::types::{NotifyFormat, NotifyType};
+use crate::types::NotifyFormat;
 use crate::utils::parse::{ParsedUrl, parse_bool_or, parse_list, quote, unquote};
 use crate::utils::validate::{is_hostname, is_ipaddr};
-
-/// Upstream `AppriseAsset.image_url_mask`, used when the asset sets none.
-/// Only Rocket.Chat still uses [`image_url`]; ntfy itself uses
-/// `NotifyContext::image_url`.
-const DEFAULT_IMAGE_URL_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
-
-/// The notification icon URL for `notify_type` at `size` (`"256x256"`),
-/// built from the asset's URL mask like upstream `AppriseAsset.image_url()`.
-pub(crate) fn image_url(asset: &AppriseAsset, notify_type: &NotifyType, size: &str) -> String {
-  let mask = asset.image_url_mask.as_deref().unwrap_or(DEFAULT_IMAGE_URL_MASK);
-  let mut out = String::with_capacity(mask.len());
-  let mut rest = mask;
-  // One pass, case-insensitive, so substituted values are never rescanned
-  'outer: while !rest.is_empty() {
-    for (key, value) in [("{THEME}", asset.theme.as_str()), ("{TYPE}", notify_type.as_str()), ("{XY}", size), ("{EXTENSION}", ".png")] {
-      if rest.len() >= key.len() && rest.is_char_boundary(key.len()) && rest[..key.len()].eq_ignore_ascii_case(key) {
-        out.push_str(value);
-        rest = &rest[key.len()..];
-        continue 'outer;
-      }
-    }
-    let c = rest.chars().next().unwrap();
-    out.push(c);
-    rest = &rest[c.len_utf8()..];
-  }
-  out
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Mode {
@@ -631,14 +603,6 @@ mod tests {
     assert!(!ntfy("ntfy://localhost/t?image=False").include_image);
     assert!(ntfy("ntfy://localhost/t?image=bogus").include_image);
     assert_eq!(ntfy("ntfy://localhost/t?click=http://a.com/%C3%A9%20x").click.as_deref(), Some("http://a.com/%C3%A9%20x"));
-  }
-
-  #[test]
-  fn test_image_url() {
-    let asset = AppriseAsset::default();
-    assert_eq!(image_url(&asset, &NotifyType::Info, "256x256"), ICON);
-    let custom = AppriseAsset { image_url_mask: Some("http://x/{theme}/{TYPE}-{xy}{EXTENSION}?{TYPE}".into()), ..AppriseAsset::default() };
-    assert_eq!(image_url(&custom, &NotifyType::Warning, "72x72"), "http://x/default/warning-72x72.png?warning");
   }
 
   #[test]

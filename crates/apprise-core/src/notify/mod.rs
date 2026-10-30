@@ -7,10 +7,8 @@ use crate::error::NotifyError;
 use crate::types::{NotifyFormat, NotifyType};
 
 mod incident;
-mod messaging_targets;
 pub mod options;
 pub mod registry;
-mod sms_targets;
 
 pub use options::{ConfiguredService, ServiceOptions};
 
@@ -340,6 +338,9 @@ impl ServiceDetails {
 /// - **Title**: when [`title_maxlen`](Self::title_maxlen) is 0 the title is
 ///   moved into the body (`title\r\nbody`, an HTML `<b>` line, or a
 ///   Markdown `#` heading) and `ctx.title` is empty.
+// `#[async_trait]` marks `send` `#[must_use]` although its boxed future
+// already is.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Notify: Send + Sync {
   /// URL schemes handled by this plugin (e.g., ["discord"])
