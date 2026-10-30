@@ -24,7 +24,7 @@ use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client,
 use crate::types::NotifyType;
 use crate::utils::keyfile::{pem_blocks, read_source};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{parse_bool_or, parse_list, prefixed_args, split_path, unquote};
+use crate::utils::plugin_args::{parse_bool_or, parse_list, prefixed_args, qsd_bool, split_path, unquote};
 
 /// Largest key file accepted (`max_fcm_keyfile_size`).
 const MAX_KEYFILE_SIZE: usize = 5000;
@@ -299,10 +299,7 @@ impl Fcm {
 
     // A custom image turns images on unless image= says otherwise
     let image_src = url.get("image_url").map(str::to_string);
-    let include_image = match url.get("image") {
-      Some(v) => parse_bool_or(Some(v), false),
-      None => image_src.is_some(),
-    };
+    let include_image = qsd_bool(url, "image", image_src.is_some());
 
     Some(Self {
       mode,

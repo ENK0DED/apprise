@@ -15,7 +15,7 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::types::NotifyFormat;
 use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{parse_bool_or, parse_list, qsd_raw, split_path};
+use crate::utils::plugin_args::{parse_list, qsd_bool, qsd_raw, split_path};
 
 type Aes192Gcm = AesGcm<aes_gcm::aes::Aes192, aes_gcm::aead::consts::U12>;
 
@@ -186,7 +186,7 @@ impl Bark {
       user: url.user.clone(),
       password: url.password.clone(),
       targets: parse_list(targets, true, true),
-      include_image: url.get("image").map(|v| parse_bool_or(Some(v), false)).unwrap_or(true),
+      include_image: qsd_bool(url, "image", true),
       sound,
       category: qsd("category"),
       group: qsd("group"),
@@ -195,7 +195,7 @@ impl Bark {
       badge,
       volume,
       icon: qsd("icon"),
-      call: parse_bool_or(url.get("call"), false),
+      call: qsd_bool(url, "call", false),
       cipher,
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),

@@ -17,6 +17,13 @@ pub fn parse_bool_or(value: Option<&str>, default: bool) -> bool {
   }
 }
 
+/// Upstream's `parse_bool(qsd.get(key, default))`: `default` when the
+/// argument is absent, otherwise its boolean value, where anything
+/// unrecognised counts as false.
+pub fn qsd_bool(url: &ParsedUrl, key: &str, default: bool) -> bool {
+  url.get(key).map(|v| parse_bool_or(Some(v), false)).unwrap_or(default)
+}
+
 fn is_list_delim(c: char, allow_whitespace: bool) -> bool {
   matches!(c, '[' | ']' | ';' | ',') || (allow_whitespace && c.is_whitespace())
 }
@@ -95,6 +102,16 @@ pub fn prefixed_args(url: &ParsedUrl, prefix: char) -> Vec<(String, String)> {
     }
   }
   out
+}
+
+/// Whether `value` is a UUID version 4 (upstream `UUID4_RE`, any case).
+pub fn is_uuid4(value: &str) -> bool {
+  let parts: Vec<&str> = value.split('-').collect();
+  let hex = |s: &str| s.chars().all(|c| c.is_ascii_hexdigit());
+  parts.len() == 5
+    && [8, 4, 4, 4, 12].iter().zip(&parts).all(|(len, part)| part.len() == *len && hex(part))
+    && parts[2].starts_with('4')
+    && parts[3].starts_with(['8', '9', 'a', 'b', 'A', 'B'])
 }
 
 /// The full email address in `address` (upstream `is_email()["full_email"]`).
@@ -197,6 +214,17 @@ mod tests {
   }
 
   #[test]
+  fn test_qsd_bool() {
+    let url = ParsedUrl::parse("json://host?a=random&b=yes&c=no&d=").unwrap();
+    assert!(!qsd_bool(&url, "a", true));
+    assert!(qsd_bool(&url, "b", false));
+    assert!(!qsd_bool(&url, "c", true));
+    assert!(!qsd_bool(&url, "d", true));
+    assert!(qsd_bool(&url, "missing", true));
+    assert!(!qsd_bool(&url, "missing", false));
+  }
+
+  #[test]
   fn test_parse_list() {
     assert_eq!(parse_list(["c, a;b", "a"], true, true), vec!["a", "b", "c"]);
     assert_eq!(parse_list(["c a,c"], true, false), vec!["c", "a", "c"]);
@@ -238,6 +266,16 @@ mod tests {
     assert_eq!(email_address("user@example.com/x").as_deref(), Some("user@example.com"));
     assert_eq!(email_address("us.er@ex-ample.co.uk").as_deref(), Some("us.er@ex-ample.co.uk"));
     assert_eq!(email_address("o'k@x.com").as_deref(), Some("k@x.com"));
+  }
+
+  #[test]
+  fn test_is_uuid4() {
+    assert!(is_uuid4("8b799edf-6f98-4d3a-9be7-2862fb4e5752"));
+    assert!(is_uuid4("8B799EDF-6F98-4D3A-BBE7-2862FB4E5752"));
+    assert!(!is_uuid4("8b799edf-6f98-3d3a-9be7-2862fb4e5752"));
+    assert!(!is_uuid4("8b799edf-6f98-4d3a-cbe7-2862fb4e5752"));
+    assert!(!is_uuid4("8b799edf-6f98-4d3a-9be7-2862fb4e575"));
+    assert!(!is_uuid4("abc"));
   }
 
   #[test]

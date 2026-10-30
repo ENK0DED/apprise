@@ -4,7 +4,7 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::base64::decode_b64_dict;
 use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{email_address, parse_bool_or, parse_list, prefixed_args, split_path, unquote};
+use crate::utils::plugin_args::{email_address, parse_list, prefixed_args, qsd_bool, split_path, unquote};
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 
@@ -95,7 +95,7 @@ impl OneSignal {
       targets.get_mut(category).unwrap().push(value);
     }
 
-    let decode = parse_bool_or(url.get("decode"), false);
+    let decode = qsd_bool(url, "decode", false);
     let custom: HashMap<String, Value> = prefixed_args(url, ':').into_iter().map(|(k, v)| (k, Value::String(v))).collect();
     let custom = if decode { decode_b64_dict(&custom) } else { custom };
     let postback_data: Map<String, Value> = prefixed_args(url, '+').into_iter().map(|(k, v)| (k, Value::String(v))).collect();
@@ -106,9 +106,9 @@ impl OneSignal {
       template_id,
       subtitle: qsd("subtitle"),
       language,
-      include_image: parse_bool_or(url.get("image"), true),
-      use_contents: parse_bool_or(url.get("contents"), true),
-      batch_size: if parse_bool_or(url.get("batch"), false) { DEFAULT_BATCH_SIZE } else { 1 },
+      include_image: qsd_bool(url, "image", true),
+      use_contents: qsd_bool(url, "contents", true),
+      batch_size: if qsd_bool(url, "batch", false) { DEFAULT_BATCH_SIZE } else { 1 },
       targets,
       custom_data: custom.into_iter().collect(),
       postback_data,

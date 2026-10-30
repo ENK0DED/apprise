@@ -241,7 +241,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(popcorn_notify::PopcornNotify::from_url, "popcorn");
   reg!(prowl::Prowl::from_url, "prowl");
   reg!(pushbullet::Pushbullet::from_url, "pbul");
-  reg!(pushdeer::PushDeer::from_url, "pushdeer", "pushdeers", "push");
+  reg!(pushdeer::PushDeer::from_url, "pushdeer", "pushdeers");
   reg!(pushed::Pushed::from_url, "pushed");
   reg!(pushjet::PushJet::from_url, "pjet", "pjets");
   reg!(pushme::PushMe::from_url, "pushme");
@@ -279,7 +279,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(streamlabs::Streamlabs::from_url, "strmlabs");
   reg!(synology::Synology::from_url, "synology", "synologys");
   reg!(syslog::Syslog::from_url, "syslog");
-  reg!(techuluspush::TechulusPush::from_url, "techulus");
+  reg!(techuluspush::TechulusPush::from_url, "push", "techulus");
   reg!(telegram::Telegram::from_url, "tgram");
   reg!(threema::Threema::from_url, "threema");
   reg!(twilio::Twilio::from_url, "twilio");

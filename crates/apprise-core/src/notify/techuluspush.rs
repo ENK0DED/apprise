@@ -1,37 +1,46 @@
 use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
+use crate::utils::plugin_args::{is_uuid4, unquote};
 use async_trait::async_trait;
 use serde_json::json;
 
 pub struct TechulusPush {
-  token: String,
+  apikey: String,
   verify_certificate: bool,
   tags: Vec<String>,
 }
+
 impl TechulusPush {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let token = url.host.clone()?;
-    Some(Self { token, verify_certificate: url.verify_certificate(), tags: url.tags() })
+    // API keys are UUID4 strings
+    let apikey = url.host.as_deref().map(unquote).unwrap_or_default().trim().to_string();
+    if !is_uuid4(&apikey) {
+      tracing::warn!("An invalid Techulus Push API key was specified.");
+      return None;
+    }
+    Some(Self { apikey, verify_certificate: url.verify_certificate(), tags: url.tags() })
   }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
-      service_name: "TechulusPush",
+      service_name: "Techulus Push",
       service_url: Some("https://push.techulus.com"),
-      setup_url: None,
-      protocols: vec!["push", "techuluspush"],
+      setup_url: Some("https://appriseit.com/services/techulus/"),
+      protocols: vec!["push", "techulus"],
       description: "Send push via Techulus.",
       attachment_support: false,
     }
   }
 }
+
 #[async_trait]
 impl Notify for TechulusPush {
   fn schemas(&self) -> &[&str] {
-    &["techulus", "push", "techuluspush"]
+    &["push", "techulus"]
   }
   fn service_name(&self) -> &str {
-    "TechulusPush"
+    "Techulus Push"
   }
   fn details(&self) -> ServiceDetails {
     Self::static_details()
@@ -39,12 +48,30 @@ impl Notify for TechulusPush {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn body_maxlen(&self) -> usize {
+    1000
+  }
+
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
-    let client = build_client(self.verify_certificate)?;
     let payload = json!({ "title": ctx.title, "body": ctx.body });
-    let resp =
-      client.post("https://push.techulus.com/api/v1/notify").header("User-Agent", APP_ID).header("x-api-key", &self.token).json(&payload).send().await?;
-    Ok(resp.status().is_success())
+    let url = format!("{}/api/v1/notify", service_base("https://push.techulus.com"));
+    let client = build_client(self.verify_certificate)?;
+    let resp = client
+      .post(&url)
+      .header("User-Agent", APP_ID)
+      .header("Content-Type", "application/json")
+      .header("x-api-key", &self.apikey)
+      .body(serde_json::to_vec(&payload)?)
+      .send()
+      .await?;
+    let status = resp.status();
+    if matches!(status.as_u16(), 200 | 204) {
+      tracing::info!("Sent Techulus Push notification.");
+      return Ok(true);
+    }
+    let reason = status.canonical_reason().unwrap_or("");
+    tracing::warn!("Failed to send Techulus Push notification: {}{}error={}.", reason, if reason.is_empty() { "" } else { ", " }, status.as_u16());
+    Err(NotifyError::ServiceError { status: status.as_u16(), body: resp.text().await.unwrap_or_default() })
   }
 }
 
@@ -52,57 +79,53 @@ impl Notify for TechulusPush {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
+  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
+
+  const UUID4: &str = "8b799edf-6f98-4d3a-9be7-2862fb4e5752";
 
   #[test]
-  fn test_invalid_urls() {
-    // techulus:// is the registered schema for TechulusPush in the registry
-    let urls = vec!["techulus://"];
-    for url in &urls {
+  fn test_urls() {
+    assert!(from_url(&format!("push://{}", UUID4)).is_some());
+    // The port's earlier techulus:// schema keeps working
+    assert!(from_url(&format!("techulus://{}", UUID4)).is_some());
+    for url in ["push://", "push://:@/", "push://abcd", "push://8b799edf-6f98-3d3a-9be7-2862fb4e5752"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
   }
 
-  #[test]
-  fn test_valid_urls() {
-    let uuid = "8b799edf-6f98-4d3a-9be7-2862fb4e5752";
-    let urls = vec![format!("techulus://{}", uuid)];
-    for url in &urls {
-      assert!(from_url(url).is_some(), "Should parse: {}", url);
+  #[tokio::test]
+  async fn test_send() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/api/v1/notify"))
+      .and(header("x-api-key", UUID4))
+      .and(header("content-type", "application/json"))
+      .and(body_json(json!({"title": "T", "body": "B"})))
+      .respond_with(ResponseTemplate::new(204))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let svc = from_url(&format!("push://{}", UUID4)).unwrap();
+    assert_eq!(svc.body_maxlen(), 1000);
+    let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_send_failure() {
+    for status in [500, 999] {
+      let server = MockServer::start().await;
+      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      let ctx = NotifyContext { body: "B".into(), ..Default::default() };
+      assert!(crate::notify::with_test_base(server.uri(), from_url(&format!("push://{}", UUID4)).unwrap().send(&ctx)).await.is_err());
     }
   }
 
   #[test]
-  fn test_from_url_fields() {
-    let uuid = "8b799edf-6f98-4d3a-9be7-2862fb4e5752";
-    let parsed = crate::utils::parse::ParsedUrl::parse(&format!("techulus://{}", uuid)).unwrap();
-    let tp = TechulusPush::from_url(&parsed).unwrap();
-    assert_eq!(tp.token, uuid);
-  }
-
-  #[test]
-  fn test_from_url_empty_host_returns_none() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("techulus://").unwrap();
-    // host is None or empty => from_url returns None
-    assert!(TechulusPush::from_url(&parsed).is_none());
-  }
-
-  #[test]
-  fn test_static_details() {
+  fn test_service_details() {
     let details = TechulusPush::static_details();
-    assert_eq!(details.service_name, "TechulusPush");
-    assert_eq!(details.service_url, Some("https://push.techulus.com"));
+    assert_eq!(details.service_name, "Techulus Push");
     assert!(details.protocols.contains(&"push"));
-    assert!(details.protocols.contains(&"techuluspush"));
-    assert!(!details.attachment_support);
-  }
-
-  #[test]
-  fn test_schemas() {
-    let uuid = "8b799edf-6f98-4d3a-9be7-2862fb4e5752";
-    let parsed = crate::utils::parse::ParsedUrl::parse(&format!("techulus://{}", uuid)).unwrap();
-    let tp = TechulusPush::from_url(&parsed).unwrap();
-    let schemas = tp.schemas();
-    assert!(schemas.contains(&"push"));
-    assert!(schemas.contains(&"techuluspush"));
   }
 }
