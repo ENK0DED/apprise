@@ -110,8 +110,9 @@ pub fn apply_template(template: &str, app_mode: TemplateType, kwargs: &HashMap<S
     }
 
     // No match or no closing braces found; emit the character as-is
-    result.push(bytes[i] as char);
-    i += 1;
+    let ch = template[i..].chars().next().unwrap_or_default();
+    result.push(ch);
+    i += ch.len_utf8();
   }
 
   result
@@ -153,6 +154,13 @@ pub fn build_template_vars(title: &str, body: &str, notify_type: &str, app_id: &
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn test_apply_template_keeps_non_ascii() {
+    let mut vars = HashMap::new();
+    vars.insert("body".to_string(), "é".to_string());
+    assert_eq!(apply_template("Café {{body}} 🐧", TemplateType::Raw, &vars), "Café é 🐧");
+  }
 
   #[test]
   fn test_apply_template_raw_basic() {
