@@ -231,6 +231,29 @@ pub fn parse_bool_with_default(s: &str, default: bool) -> bool {
   }
 }
 
+/// The user and password of a URL after upstream's query overrides
+/// (`URLBase.post_process_parse_url_results`): `?password=` and its alias
+/// `?pass=` replace the password, `?user=` replaces the user, and when
+/// `?user=` is given but no password is, the user part of the URL becomes
+/// the password (`mailtos://PASSWORD@host?user=admin`).
+pub fn url_credentials(url: &ParsedUrl) -> (Option<String>, Option<String>) {
+  let mut password = url.password.clone();
+  if let Some(p) = url.get("password") {
+    password = Some(p.to_string());
+  }
+  if let Some(p) = url.get("pass") {
+    password = Some(p.to_string());
+  }
+  let mut user = url.user.clone();
+  if let Some(u) = url.get("user") {
+    if password.is_none() {
+      password = url.user.clone();
+    }
+    user = Some(u.to_string());
+  }
+  (user, password)
+}
+
 /// Split URL path entries the way upstream `URLBase.split_path()` does: on
 /// `/` (already done by `ParsedUrl`) and also on whitespace, commas and
 /// backslashes. Empty entries are dropped.
@@ -514,6 +537,18 @@ mod tests {
       assert!(parse_bool_with_default(val, true), "Expected default true for '{}'", val);
       assert!(!parse_bool_with_default(val, false), "Expected default false for '{}'", val);
     }
+  }
+
+  #[test]
+  fn test_url_credentials() {
+    let creds = |u: &str| url_credentials(&ParsedUrl::parse(u).unwrap());
+    assert_eq!(creds("smpp://user:pass@host"), (Some("user".into()), Some("pass".into())));
+    assert_eq!(creds("smpp://user:pass@host?password=pw"), (Some("user".into()), Some("pw".into())));
+    assert_eq!(creds("smpp://user:pass@host?pass=pw&password=other"), (Some("user".into()), Some("pw".into())));
+    assert_eq!(creds("smpp://host?user=u&password=pw"), (Some("u".into()), Some("pw".into())));
+    // ?user= turns the URL's user into the password when none was given
+    assert_eq!(creds("smpp://admin@host?user=bob"), (Some("bob".into()), Some("admin".into())));
+    assert_eq!(creds("smpp://host"), (None, None));
   }
 
   #[test]
