@@ -47,7 +47,7 @@ impl OneBot {
     // Treat every path entry as a target; ?to= adds more
     let path_entries: Vec<String> = url
       .path
-      .split(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n' | ',' | '\\' | '/'))
+      .split([' ', '\t', '\r', '\n', ',', '\\', '/'])
       .filter(|s| !s.is_empty())
       .map(|s| urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string()))
       .collect();

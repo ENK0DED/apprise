@@ -203,7 +203,7 @@ mod tests {
     let urls = [
       format!("pushward://{}", KEY),
       format!("pushward://?apikey={}", KEY),
-      format!("pushward://HLK_ABCdef123?level=critical&volume=0.8"),
+      "pushward://HLK_ABCdef123?level=critical&volume=0.8".to_string(),
       format!("pushward://{}?level=c", KEY),
       format!("pushward://{}?info=passive&success=a&warning=t&failure=critical", KEY),
       format!("pushward://{}?volume=0", KEY),
@@ -291,6 +291,21 @@ mod tests {
     let svc = from_url(&format!("pushward://{}?volume=0.5", KEY)).unwrap();
     let mut ctx = NotifyContext { body: "body".into(), notify_type: NotifyType::Warning, ..Default::default() };
     ctx.asset.image_url_mask = Some("https://example.com/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}".into());
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_send_title_falls_back_to_app_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(body_json(json!({"title": "Apprise", "body": "body only", "level": "active"})))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let svc = from_url(&format!("pushward://{}", KEY)).unwrap();
+    let mut ctx = NotifyContext { body: "body only".into(), ..Default::default() };
+    ctx.asset.app_desc = String::new();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
   }
 

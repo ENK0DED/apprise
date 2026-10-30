@@ -123,7 +123,7 @@ impl GitHub {
     // The remaining path follows a GitHub browser URL
     let mut entries = url
       .path
-      .split(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n' | ',' | '\\' | '/'))
+      .split([' ', '\t', '\r', '\n', ',', '\\', '/'])
       .filter(|s| !s.is_empty())
       .map(|s| urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string()));
 

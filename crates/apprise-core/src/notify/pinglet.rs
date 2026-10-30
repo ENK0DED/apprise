@@ -109,8 +109,7 @@ impl Pinglet {
 
     // The last two path entries are the namespace and topic; anything before
     // them is a path prefix such as a reverse-proxy mount point
-    let mut entries: Vec<String> =
-      url.path.split(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n' | ',' | '\\' | '/')).filter(|s| !s.is_empty()).map(unquote).collect();
+    let mut entries: Vec<String> = url.path.split([' ', '\t', '\r', '\n', ',', '\\', '/']).filter(|s| !s.is_empty()).map(unquote).collect();
     let topic = entries.pop();
     let namespace = entries.pop();
     let fullpath = if entries.is_empty() { "/".to_string() } else { format!("/{}/", entries.join("/")) };
