@@ -119,6 +119,7 @@ pub mod sparkpost;
 pub mod spike;
 pub mod splunk;
 pub mod spugpush;
+pub mod stackfield;
 pub mod streamlabs;
 pub mod synology;
 pub mod syslog;

@@ -132,6 +132,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(spike::Spike::static_details());
   collect!(splunk::Splunk::static_details());
   collect!(spugpush::SpugPush::static_details());
+  collect!(stackfield::Stackfield::static_details());
   collect!(streamlabs::Streamlabs::static_details());
   collect!(synology::Synology::static_details());
   collect!(syslog::Syslog::static_details());
@@ -276,6 +277,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(spike::Spike::from_url, "spike");
   reg!(splunk::Splunk::from_url, "splunk", "victorops");
   reg!(spugpush::SpugPush::from_url, "spugpush");
+  reg!(stackfield::Stackfield::from_url, "stackfield");
   reg!(streamlabs::Streamlabs::from_url, "strmlabs");
   reg!(synology::Synology::from_url, "synology", "synologys");
   reg!(syslog::Syslog::from_url, "syslog");
@@ -347,6 +349,7 @@ fn instantiate(parsed: &ParsedUrl) -> Option<Box<dyn Notify>> {
         ("qmsg.zendee.cn", "qq"),
         ("push.spug.cc", "spugpush"),
         ("push.spug.dev", "spugpush"),
+        ("stackfield.com", "stackfield"),
         ("qyapi.weixin.qq.com", "wecombot"),
         ("n.tkte.ch", "notifico"),
         ("api.46elks.com", "46elks"),
