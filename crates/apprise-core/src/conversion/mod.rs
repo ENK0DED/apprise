@@ -22,6 +22,8 @@ mod markdown;
 pub(crate) mod pyhtml;
 pub mod pystr;
 mod unicode_tables;
+#[cfg(test)]
+mod vectors;
 
 pub use commonmark::*;
 pub use dialect::{split_dialect_chunk, truncate_dialect_chunk};

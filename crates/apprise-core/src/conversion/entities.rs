@@ -1,6 +1,6 @@
 //! HTML5 character references, generated from Python's `html.entities.html5`
 //! and the `html` module's invalid character-reference tables.
-//! Regenerate with `gen_entities.py` rather than editing by hand.
+//! Regenerate with `testdata/gen_entities.py` rather than editing by hand.
 
 /// Named references, sorted by name. Names include their trailing `;`
 /// where the standard requires one, so `amp` and `amp;` are both listed.
