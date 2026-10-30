@@ -97,6 +97,7 @@ dependencies = [
  "notify-rust",
  "rand",
  "reqwest",
+ "ring",
  "rumqttc",
  "rustls",
  "serde",
