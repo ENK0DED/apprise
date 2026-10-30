@@ -22,6 +22,7 @@ dirs.workspace = true
 [features]
 default = ["apprise-core/default"]
 mqtt = ["apprise-core/mqtt"]
+amqp = ["apprise-core/amqp"]
 email = ["apprise-core/email"]
 yaml = ["apprise-core/yaml"]
 desktop = ["apprise-core/desktop"]

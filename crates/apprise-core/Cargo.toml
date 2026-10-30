@@ -34,11 +34,13 @@ tokio-rustls.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
 notify-rust = { workspace = true, optional = true }
+fe2o3-amqp = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
 
 [features]
-default = ["mqtt", "email", "yaml"]
+default = ["mqtt", "amqp", "email", "yaml"]
 mqtt = []
+amqp = ["dep:fe2o3-amqp"]
 email = ["dep:lettre"]
 yaml = ["dep:serde_yaml"]
 desktop = ["dep:notify-rust"]
@@ -47,3 +49,4 @@ desktop = ["dep:notify-rust"]
 wiremock.workspace = true
 tokio-test.workspace = true
 tempfile.workspace = true
+fe2o3-amqp = { workspace = true, features = ["acceptor"] }

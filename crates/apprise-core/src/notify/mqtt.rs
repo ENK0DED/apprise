@@ -848,32 +848,42 @@ mod tests {
     let shared = log.clone();
     tokio::spawn(async move {
       while let Ok((stream, _)) = listener.accept().await {
-        let index = {
-          let mut log = shared.lock().unwrap();
-          log.push(Vec::new());
-          log.len() - 1
-        };
-        tokio::spawn(serve(Box::new(stream), script, shared.clone(), index));
+        tokio::spawn(serve(Box::new(stream), script, shared.clone()));
       }
     });
     (port, log)
   }
 
-  async fn serve(mut stream: Box<dyn Io>, script: Script, log: Log, index: usize) {
+  async fn serve(mut stream: Box<dyn Io>, script: Script, log: Log) {
     let mut inbox = Vec::new();
     let mut version = 4;
     let mut published = 0;
+    let mut slot = None;
     loop {
       let (header, body) = loop {
-        if let Some((header, body, used)) = parse_packet(&inbox).unwrap() {
-          inbox.drain(..used);
-          break (header, body);
+        match parse_packet(&inbox) {
+          Ok(Some((header, body, used))) => {
+            inbox.drain(..used);
+            break (header, body);
+          }
+          Ok(None) => {}
+          Err(_) => return,
         }
         let mut buf = [0u8; 4096];
         match stream.read(&mut buf).await {
           Ok(0) | Err(_) => return,
           Ok(n) => inbox.extend_from_slice(&buf[..n]),
         }
+      };
+      // Only log connections that start like MQTT ones
+      let index = match slot {
+        Some(index) => index,
+        None if header == CONNECT && body.len() >= 10 => {
+          let mut log = log.lock().unwrap();
+          log.push(Vec::new());
+          *slot.insert(log.len() - 1)
+        }
+        None => return,
       };
       log.lock().unwrap()[index].push((header, body.clone()));
       let reply: Vec<u8> = match header & 0xF0 {
@@ -1046,11 +1056,8 @@ mod tests {
     let svc = from_url(&format!("mqtt://127.0.0.1:{}/t", port)).unwrap();
     assert!(svc.send(&ctx("x")).await.is_err());
 
-    // Nothing listening at all
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    let svc = from_url(&format!("mqtt://127.0.0.1:{}/t?cto=1", port)).unwrap();
+    // Nothing listening (a freed test port could be taken by a parallel test)
+    let svc = from_url("mqtt://127.0.0.1:1/t?cto=1").unwrap();
     assert!(svc.send(&ctx("x")).await.is_err());
   }
 
@@ -1149,12 +1156,7 @@ sQY3n5koWF/N3eWjjLI37CFdIqea/UdYy9V4WZ5XeMviGVIg3OfgBMkY
     tokio::spawn(async move {
       while let Ok((stream, _)) = listener.accept().await {
         let Ok(tls) = acceptor.accept(stream).await else { continue };
-        let index = {
-          let mut log = shared.lock().unwrap();
-          log.push(Vec::new());
-          log.len() - 1
-        };
-        tokio::spawn(serve(Box::new(tls), Script::default(), shared.clone(), index));
+        tokio::spawn(serve(Box::new(tls), Script::default(), shared.clone()));
       }
     });
     (port, log)

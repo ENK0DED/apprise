@@ -65,6 +65,9 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 webpki-roots = "1"
 
+# AMQP 1.0 (optional); AMQP 0-9-1 is built in
+fe2o3-amqp = { version = "0.18", default-features = false }
+
 # Desktop notifications (optional)
 notify-rust = { version = "4" }
 

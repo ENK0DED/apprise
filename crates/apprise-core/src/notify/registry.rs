@@ -28,6 +28,8 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
 
   use super::*;
   collect!(africas_talking::AfricasTalking::static_details());
+  #[cfg(feature = "amqp")]
+  collect!(amqp::Amqp::static_details());
   collect!(apprise_api::AppriseApi::static_details());
   collect!(aprs::Aprs::static_details());
   collect!(bark::Bark::static_details());
@@ -172,6 +174,8 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   use super::*;
 
   reg!(africas_talking::AfricasTalking::from_url, "atalk");
+  #[cfg(feature = "amqp")]
+  reg!(amqp::Amqp::from_url, "amqp", "amqps");
   reg!(apprise_api::AppriseApi::from_url, "apprise", "apprises");
   reg!(aprs::Aprs::from_url, "aprs");
   reg!(bark::Bark::from_url, "bark", "barks");
