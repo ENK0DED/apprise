@@ -30,12 +30,15 @@ hmac.workspace = true
 sha2.workspace = true
 sha1.workspace = true
 hex.workspace = true
+ed25519-dalek.workspace = true
+blake2.workspace = true
 socket2.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
 rumqttc = { workspace = true, optional = true }
 notify-rust = { workspace = true, optional = true }
+hidapi = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
 
 [features]
@@ -44,6 +47,7 @@ mqtt = ["dep:rumqttc"]
 email = ["dep:lettre"]
 yaml = ["dep:serde_yaml"]
 desktop = ["dep:notify-rust"]
+blink1 = ["dep:hidapi"]
 
 [dev-dependencies]
 wiremock.workspace = true

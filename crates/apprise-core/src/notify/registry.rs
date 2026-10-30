@@ -31,6 +31,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(apprise_api::AppriseApi::static_details());
   collect!(aprs::Aprs::static_details());
   collect!(bark::Bark::static_details());
+  collect!(blink1::Blink1::static_details());
   collect!(bluesky::BlueSky::static_details());
   collect!(brevo::Brevo::static_details());
   collect!(bulksms::BulkSms::static_details());
@@ -77,6 +78,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(custom_xml::Xml::static_details());
   collect!(kaleyra::Kaleyra::static_details());
   collect!(kavenegar::Kavenegar::static_details());
+  collect!(kodi::Kodi::static_details());
   collect!(kumulos::Kumulos::static_details());
   collect!(lametric::LaMetric::static_details());
   collect!(lark::Lark::static_details());
@@ -152,10 +154,12 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(smsmanager::SmsManager::static_details());
   collect!(smtp2go::Smtp2Go::static_details());
   collect!(sns::Sns::static_details());
+  collect!(sogs::SessionOgs::static_details());
   collect!(sparkpost::SparkPost::static_details());
   collect!(spike::Spike::static_details());
   collect!(splunk::Splunk::static_details());
   collect!(spugpush::SpugPush::static_details());
+  collect!(stackfield::Stackfield::static_details());
   collect!(streamlabs::Streamlabs::static_details());
   collect!(synology::Synology::static_details());
   collect!(syslog::Syslog::static_details());
@@ -164,6 +168,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(telesign::Telesign::static_details());
   collect!(telnyx::Telnyx::static_details());
   collect!(threema::Threema::static_details());
+  collect!(trigv::Trigv::static_details());
   collect!(twilio::Twilio::static_details());
   collect!(twist::Twist::static_details());
   collect!(twitter::Twitter::static_details());
@@ -172,13 +177,16 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(vapid::Vapid::static_details());
   collect!(vonage::Vonage::static_details());
   collect!(webexteams::WebexTeams::static_details());
+  collect!(wechat::WeChat::static_details());
   collect!(wecombot::WeComBot::static_details());
   collect!(whatsapp::WhatsApp::static_details());
   collect!(workflows::Workflows::static_details());
+  collect!(wpush::WPush::static_details());
   collect!(wxpusher::WxPusher::static_details());
-  collect!(xbmc::Xbmc::static_details());
   collect!(xmpp::Xmpp::static_details());
   collect!(zalo::Zalo::static_details());
+  collect!(youlmk::YouLmk::static_details());
+  collect!(zoom::Zoom::static_details());
   collect!(zulip::Zulip::static_details());
   #[cfg(feature = "email")]
   collect!(email::Email::static_details());
@@ -202,6 +210,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(apprise_api::AppriseApi::from_url, "apprise", "apprises");
   reg!(aprs::Aprs::from_url, "aprs");
   reg!(bark::Bark::from_url, "bark", "barks");
+  reg!(blink1::Blink1::from_url, "blink1");
   reg!(bluesky::BlueSky::from_url, "bsky", "bluesky");
   reg!(brevo::Brevo::from_url, "brevo");
   reg!(bulksms::BulkSms::from_url, "bulksms");
@@ -248,6 +257,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(custom_xml::Xml::from_url, "xml", "xmls");
   reg!(kaleyra::Kaleyra::from_url, "kaleyra", "klr");
   reg!(kavenegar::Kavenegar::from_url, "kavenegar");
+  reg!(kodi::Kodi::from_url, "kodi", "kodis", "xbmc", "xbmcs");
   reg!(kumulos::Kumulos::from_url, "kumulos");
   reg!(lametric::LaMetric::from_url, "lametric", "lametrics");
   reg!(lark::Lark::from_url, "lark");
@@ -323,10 +333,12 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(smsmanager::SmsManager::from_url, "smsmanager", "smsmgr");
   reg!(smtp2go::Smtp2Go::from_url, "smtp2go");
   reg!(sns::Sns::from_url, "sns");
+  reg!(sogs::SessionOgs::from_url, "session", "sessions", "sogs");
   reg!(sparkpost::SparkPost::from_url, "sparkpost");
   reg!(spike::Spike::from_url, "spike");
   reg!(splunk::Splunk::from_url, "splunk", "victorops");
   reg!(spugpush::SpugPush::from_url, "spugpush");
+  reg!(stackfield::Stackfield::from_url, "stackfield");
   reg!(streamlabs::Streamlabs::from_url, "strmlabs");
   reg!(synology::Synology::from_url, "synology", "synologys");
   reg!(syslog::Syslog::from_url, "syslog");
@@ -335,6 +347,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(telesign::Telesign::from_url, "telesign");
   reg!(telnyx::Telnyx::from_url, "telnyx");
   reg!(threema::Threema::from_url, "threema");
+  reg!(trigv::Trigv::from_url, "trigv", "trigvs");
   reg!(twilio::Twilio::from_url, "twilio");
   reg!(twist::Twist::from_url, "twist");
   reg!(twitter::Twitter::from_url, "twitter", "x", "tweet");
@@ -343,13 +356,16 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(vapid::Vapid::from_url, "vapid");
   reg!(vonage::Vonage::from_url, "vonage", "nexmo");
   reg!(webexteams::WebexTeams::from_url, "wxteams", "webex");
+  reg!(wechat::WeChat::from_url, "wechat");
   reg!(wecombot::WeComBot::from_url, "wecombot");
   reg!(whatsapp::WhatsApp::from_url, "whatsapp");
   reg!(workflows::Workflows::from_url, "workflow", "workflows");
+  reg!(wpush::WPush::from_url, "wpush");
   reg!(wxpusher::WxPusher::from_url, "wxpusher");
-  reg!(xbmc::Xbmc::from_url, "xbmc", "xbmcs", "kodi", "kodis");
   reg!(xmpp::Xmpp::from_url, "xmpp", "xmpps");
   reg!(zalo::Zalo::from_url, "zalo");
+  reg!(youlmk::YouLmk::from_url, "youlmk");
+  reg!(zoom::Zoom::from_url, "zoom");
   reg!(zulip::Zulip::from_url, "zulip");
   #[cfg(feature = "email")]
   reg!(email::Email::from_url, "mailto", "mailtos");
@@ -400,6 +416,10 @@ fn instantiate(parsed: &ParsedUrl) -> Option<Box<dyn Notify>> {
         ("pushplus.plus", "pushplus"),
         ("qmsg.zendee.cn", "qq"),
         ("push.spug.dev", "spugpush"),
+        ("stackfield.com", "stackfield"),
+        ("api.wpush.cn", "wpush"),
+        ("youlmk.com", "youlmk"),
+        ("inbots.zoom.us", "zoom"),
         ("qyapi.weixin.qq.com", "wecombot"),
         ("n.tkte.ch", "notifico"),
         ("api.46elks.com", "46elks"),
