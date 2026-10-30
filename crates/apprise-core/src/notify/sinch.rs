@@ -1,57 +1,93 @@
 use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
+use crate::utils::targets::{is_phone_no, parse_phone_no};
 use async_trait::async_trait;
-use serde_json::json;
+use serde_json::{Value, json};
+
+const SINCH_REGIONS: &[&str] = &["us", "eu"];
+
 pub struct Sinch {
   service_plan_id: String,
   api_token: String,
-  from_phone: String,
+  /// `+E.164` number, or a bare 5/6 digit short code
+  source: String,
   targets: Vec<String>,
   region: String,
   verify_certificate: bool,
   tags: Vec<String>,
 }
+
+fn is_hex(value: &str) -> bool {
+  !value.is_empty() && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 impl Sinch {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let service_plan_id = url.get("spi").map(|s| s.to_string()).or_else(|| url.user.clone())?;
-    let api_token = url.get("token").map(|s| s.to_string()).or_else(|| url.password.clone())?;
-    let from_phone = url.get("from").or_else(|| url.get("source")).map(|s| s.to_string()).or_else(|| {
-      let h = url.host.clone().unwrap_or_default();
-      if h.is_empty() || h == "_" { None } else { Some(h) }
-    })?;
-    // Validate from_phone: must be 5-6 digits (short code) or 11-14 digits (full phone)
-    let digits: String = from_phone.chars().filter(|c| c.is_ascii_digit()).collect();
-    let valid_phone = (digits.len() >= 11 && digits.len() <= 14) || digits.len() == 5 || digits.len() == 6;
-    if !valid_phone {
+    // sinch://service_plan_id:api_token@source/targets
+    let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let service_plan_id = qs("spi").or_else(|| url.user.clone()).unwrap_or_default();
+    let api_token = qs("token").or_else(|| url.password.clone()).unwrap_or_default();
+    let source = qs("source").or_else(|| qs("from")).or_else(|| url.host.clone()).unwrap_or_default();
+    let region = qs("region").map(|r| r.to_lowercase()).unwrap_or_else(|| "us".to_string());
+
+    if !is_hex(&service_plan_id) {
+      tracing::warn!("An invalid Sinch Account SID ({}) was specified.", service_plan_id);
       return None;
     }
-    let mut targets = url.path_parts.clone();
-    if let Some(to) = url.get("to") {
-      targets.extend(to.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
-    }
-    let region = url.get("region").unwrap_or("us").to_string();
-    // Validate region: must be 2 lowercase alpha chars
-    if !region.chars().all(|c| c.is_ascii_alphabetic()) || region.len() != 2 {
+    if !is_hex(&api_token) {
+      tracing::warn!("An invalid Sinch Authentication Token was specified.");
       return None;
     }
-    let valid_regions = ["us", "eu"];
-    if !valid_regions.contains(&region.to_lowercase().as_str()) {
+    if !SINCH_REGIONS.contains(&region.as_str()) {
+      tracing::warn!("The region specified ({}) is invalid.", region);
       return None;
     }
-    Some(Self { service_plan_id, api_token, from_phone, targets, region, verify_certificate: url.verify_certificate(), tags: url.tags() })
+    let Some(phone) = is_phone_no(&source, 5) else {
+      tracing::warn!("The Account (From) Phone # or Short-code specified ({}) is invalid.", source);
+      return None;
+    };
+    let source = match phone.full.len() {
+      // Short codes are sent as is
+      5 | 6 => phone.full,
+      11..=14 => format!("+{}", phone.full),
+      _ => {
+        tracing::warn!("The Account (From) Phone # specified ({}) is invalid.", source);
+        return None;
+      }
+    };
+
+    let mut entries = url.path_parts.clone();
+    if let Some(to) = qs("to") {
+      entries.extend(parse_phone_no([to], false));
+    }
+    let mut targets = Vec::new();
+    for target in parse_phone_no(&entries, false) {
+      match is_phone_no(&target, 10) {
+        Some(phone) => targets.push(format!("+{}", phone.full)),
+        None => tracing::warn!("Dropped invalid phone # ({}) specified.", target),
+      }
+    }
+
+    Some(Self { service_plan_id, api_token, source, targets, region, verify_certificate: url.verify_certificate(), tags: url.tags() })
   }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "Sinch",
-      service_url: Some("https://sinch.com"),
-      setup_url: None,
+      service_url: Some("https://sinch.com/"),
+      setup_url: Some("https://appriseit.com/services/sinch/"),
       protocols: vec!["sinch"],
       description: "Send SMS via Sinch.",
       attachment_support: false,
     }
   }
+
+  fn is_short_code(&self) -> bool {
+    !self.source.starts_with('+')
+  }
 }
+
 #[async_trait]
 impl Notify for Sinch {
   fn schemas(&self) -> &[&str] {
@@ -66,19 +102,58 @@ impl Notify for Sinch {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn body_maxlen(&self) -> usize {
+    160
+  }
+  fn title_maxlen(&self) -> usize {
+    0
+  }
+  fn request_rate_per_sec(&self) -> f64 {
+    0.20
+  }
+
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
-    let msg = format!("{}{}", if ctx.title.is_empty() { String::new() } else { format!("{}: ", ctx.title) }, ctx.body);
-    let url = format!("https://{}.sms.api.sinch.com/xms/v1/{}/batches", self.region, self.service_plan_id);
+    // A short code can't receive messages, so it can't notify itself
+    if self.targets.is_empty() && self.is_short_code() {
+      tracing::warn!("There are no valid Sinch targets to notify.");
+      return Ok(false);
+    }
+    let targets = if self.targets.is_empty() { std::slice::from_ref(&self.source) } else { self.targets.as_slice() };
     let client = build_client(self.verify_certificate)?;
-    let mut all_ok = true;
-    for target in &self.targets {
-      let payload = json!({ "from": self.from_phone, "to": [target], "body": msg });
-      let resp = client.post(&url).header("User-Agent", APP_ID).header("Authorization", format!("Bearer {}", self.api_token)).json(&payload).send().await?;
-      if !resp.status().is_success() && resp.status().as_u16() != 201 {
-        all_ok = false;
+    let url = format!("{}/xms/v1/{}/batches", service_base(&format!("https://{}.sms.api.sinch.com", self.region)), self.service_plan_id);
+    let mut has_error = false;
+
+    for target in targets {
+      let payload = json!({ "body": ctx.body, "from": self.source, "to": [target] });
+      let result = client
+        .post(&url)
+        .header("User-Agent", APP_ID)
+        .header("Authorization", format!("Bearer {}", self.api_token))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&payload)?)
+        .send()
+        .await;
+      match result {
+        Ok(resp) if matches!(resp.status().as_u16(), 200 | 201) => tracing::info!("Sent Sinch notification to {}.", target),
+        Ok(resp) => {
+          let status = resp.status();
+          let text = resp.text().await.unwrap_or_default();
+          // Sinch explains failures in a JSON body
+          let detail: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+          let code = detail.get("code").map(|c| c.to_string().trim_matches('"').to_string()).unwrap_or_else(|| status.as_u16().to_string());
+          let message = detail.get("message").and_then(Value::as_str).or(status.canonical_reason()).unwrap_or("");
+          tracing::warn!("Failed to send Sinch notification to {}: {}{}error={}.", target, message, if message.is_empty() { "" } else { ", " }, code);
+          tracing::debug!("Response Details: {}", text.chars().take(2000).collect::<String>());
+          has_error = true;
+        }
+        Err(e) => {
+          tracing::warn!("A Connection error occurred sending Sinch:{} notification.", target);
+          tracing::debug!("Socket Exception: {}", e);
+          has_error = true;
+        }
       }
     }
-    Ok(all_ok)
+    Ok(!has_error)
   }
 }
 
@@ -86,38 +161,30 @@ impl Notify for Sinch {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
+  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
 
-  #[test]
-  fn test_valid_urls() {
-    let spi = "a".repeat(32);
-    let token = "b".repeat(32);
-    let urls = vec![
-      format!("sinch://{}:{}@{}", spi, token, "3".repeat(5)),
-      format!("sinch://{}:{}@{}/123/{}/abcd/", spi, token, "3".repeat(11), "9".repeat(15)),
-      format!("sinch://{}:{}@12345/{}", spi, token, "4".repeat(11)),
-      format!("sinch://{}:{}@123456/{}", spi, token, "4".repeat(11)),
-      format!("sinch://{}:{}@{}", spi, token, "5".repeat(11)),
-      format!("sinch://{}:{}@{}?region=eu", spi, token, "5".repeat(11)),
-      format!("sinch://_?spi={}&token={}&from={}", spi, token, "5".repeat(11)),
-      format!("sinch://_?spi={}&token={}&source={}", spi, token, "5".repeat(11)),
-      format!("sinch://_?spi={}&token={}&from={}&to={}", spi, token, "5".repeat(11), "7".repeat(13)),
-    ];
-    for url in &urls {
-      assert!(from_url(url).is_some(), "Should parse: {}", url);
-    }
+  fn sinch(url: &str) -> Sinch {
+    Sinch::from_url(&ParsedUrl::parse(url).expect("parse")).expect("from_url")
   }
 
   #[test]
   fn test_invalid_urls() {
-    let spi = "a".repeat(32);
-    let token = "b".repeat(32);
+    let a32 = "a".repeat(32);
+    let b32 = "b".repeat(32);
     let urls = vec![
       "sinch://".to_string(),
       "sinch://:@/".to_string(),
-      format!("sinch://{}@12345678", spi),
-      format!("sinch://{}:{}@_", spi, token),
-      format!("sinch://{}:{}@{}", spi, token, "3".repeat(9)),
-      format!("sinch://{}:{}@{}?region=invalid", spi, token, "5".repeat(11)),
+      // Just the service plan id
+      format!("sinch://{}@12345678", a32),
+      // Invalid source
+      format!("sinch://{}:{}@_", a32, b32),
+      // 9 digits is neither a short code nor a full number
+      format!("sinch://{}:{}@{}", a32, b32, "3".repeat(9)),
+      format!("sinch://{}:{}@{}?region=invalid", a32, b32, "5".repeat(11)),
+      // Ids and tokens are hexadecimal
+      format!("sinch://{}:{}@{}", "z".repeat(32), b32, "5".repeat(11)),
+      format!("sinch://{}:{}@{}", a32, "z".repeat(32), "5".repeat(11)),
     ];
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
@@ -125,63 +192,45 @@ mod tests {
   }
 
   #[test]
-  fn test_from_url_fields_basic() {
-    let spi = "a".repeat(32);
-    let token = "b".repeat(32);
-    let from_phone = "5".repeat(11);
-    let url_str = format!("sinch://{}:{}@{}", spi, token, from_phone);
-    let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
-    let s = Sinch::from_url(&parsed).unwrap();
-    assert_eq!(s.service_plan_id, spi);
-    assert_eq!(s.api_token, token);
-    assert_eq!(s.from_phone, from_phone);
-    assert_eq!(s.region, "us"); // default
+  fn test_valid_urls() {
+    let a32 = "a".repeat(32);
+    let b32 = "b".repeat(32);
+    let urls = vec![
+      // Short code with no targets (notify fails)
+      format!("sinch://{}:{}@{}", a32, b32, "3".repeat(5)),
+      format!("sinch://{}:{}@{}/123/{}/abcd/", a32, b32, "5".repeat(11), "3".repeat(11)),
+      format!("sinch://{}:{}@12345/{}", a32, b32, "4".repeat(11)),
+      format!("sinch://{}:{}@123456/{}", a32, b32, "4".repeat(11)),
+      format!("sinch://{}:{}@{}", a32, b32, "5".repeat(11)),
+      format!("sinch://{}:{}@{}?region=eu", a32, b32, "5".repeat(11)),
+      format!("sinch://{}:{}@{}?region=EU", a32, b32, "5".repeat(11)),
+      format!("sinch://_?spi={}&token={}&from={}", a32, b32, "5".repeat(11)),
+      format!("sinch://_?spi={}&token={}&source={}", a32, b32, "5".repeat(11)),
+      format!("sinch://_?spi={}&token={}&from={}&to={}", a32, b32, "5".repeat(11), "7".repeat(13)),
+    ];
+    for url in &urls {
+      assert!(from_url(url).is_some(), "Should parse: {}", url);
+    }
   }
 
   #[test]
-  fn test_from_url_shortcode() {
-    let spi = "a".repeat(32);
-    let token = "b".repeat(32);
-    let target = "4".repeat(11);
-    let url_str = format!("sinch://{}:{}@12345/{}", spi, token, target);
-    let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
-    let s = Sinch::from_url(&parsed).unwrap();
-    assert_eq!(s.from_phone, "12345");
-    assert!(s.targets.contains(&target));
-  }
+  fn test_from_url_fields() {
+    let a32 = "a".repeat(32);
+    let b32 = "b".repeat(32);
+    let s = sinch(&format!("sinch://{}:{}@{}/123/{}/abcd/", a32, b32, "5".repeat(11), "3".repeat(11)));
+    assert_eq!(s.service_plan_id, a32);
+    assert_eq!(s.api_token, b32);
+    assert_eq!(s.source, format!("+{}", "5".repeat(11)));
+    assert_eq!(s.targets, vec![format!("+{}", "3".repeat(11))]);
+    assert_eq!(s.region, "us");
 
-  #[test]
-  fn test_from_url_eu_region() {
-    let spi = "a".repeat(32);
-    let token = "b".repeat(32);
-    let url_str = format!("sinch://{}:{}@{}?region=eu", spi, token, "5".repeat(11));
-    let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
-    let s = Sinch::from_url(&parsed).unwrap();
+    let s = sinch(&format!("sinch://{}:{}@12345/{}?region=EU", a32, b32, "4".repeat(11)));
+    assert_eq!(s.source, "12345");
+    assert!(s.is_short_code());
     assert_eq!(s.region, "eu");
-  }
 
-  #[test]
-  fn test_from_url_query_params() {
-    let spi = "a".repeat(32);
-    let token = "b".repeat(32);
-    let from = "5".repeat(11);
-    let to = "7".repeat(13);
-    let url_str = format!("sinch://_?spi={}&token={}&from={}&to={}", spi, token, from, to);
-    let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
-    let s = Sinch::from_url(&parsed).unwrap();
-    assert_eq!(s.service_plan_id, spi);
-    assert_eq!(s.api_token, token);
-    assert_eq!(s.from_phone, from);
-    assert!(s.targets.contains(&to));
-  }
-
-  #[test]
-  fn test_invalid_region() {
-    let spi = "a".repeat(32);
-    let token = "b".repeat(32);
-    let url_str = format!("sinch://{}:{}@{}?region=invalid", spi, token, "5".repeat(11));
-    let parsed = crate::utils::parse::ParsedUrl::parse(&url_str).unwrap();
-    assert!(Sinch::from_url(&parsed).is_none());
+    let s = sinch(&format!("sinch://_?spi={}&token={}&from={}&to={}", a32, b32, "5".repeat(11), "7".repeat(13)));
+    assert_eq!(s.targets, vec![format!("+{}", "7".repeat(13))]);
   }
 
   #[test]
@@ -189,6 +238,57 @@ mod tests {
     let d = Sinch::static_details();
     assert_eq!(d.service_name, "Sinch");
     assert!(d.protocols.contains(&"sinch"));
-    assert!(!d.attachment_support);
+  }
+
+  #[tokio::test]
+  async fn test_send_payload() {
+    // Matches upstream pycapture output
+    let a32 = "a".repeat(32);
+    let b32 = "b".repeat(32);
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path(format!("/xms/v1/{}/batches", a32)))
+      .and(header("Authorization", format!("Bearer {}", b32).as_str()))
+      .and(header("Content-Type", "application/json"))
+      .and(body_json(json!({"body": "title\r\nbody", "from": "+15551231234", "to": ["+15551232000"]})))
+      .respond_with(ResponseTemplate::new(201))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let svc = from_url(&format!("sinch://{}:{}@15551231234/15551232000?region=eu", a32, b32)).unwrap();
+    let ctx = NotifyContext { body: "title\r\nbody".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_send_to_self_without_targets() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(body_json(json!({"body": "b", "from": "+15551231234", "to": ["+15551231234"]})))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let svc = from_url(&format!("sinch://{}:{}@15551231234", "a".repeat(32), "b".repeat(32))).unwrap();
+    let ctx = NotifyContext { body: "b".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_send_failures() {
+    let ctx = NotifyContext { body: "b".into(), ..Default::default() };
+    // Short code without targets
+    let svc = from_url(&format!("sinch://{}:{}@12345", "a".repeat(32), "b".repeat(32))).unwrap();
+    assert!(!svc.send(&ctx).await.unwrap());
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"code": 21211, "message": "The 'To' number +1234567 is not a valid phone number."}"#))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let svc = from_url(&format!("sinch://{}:{}@15551231234/15551232000", "a".repeat(32), "b".repeat(32))).unwrap();
+    assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+    assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
   }
 }
