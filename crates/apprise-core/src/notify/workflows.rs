@@ -17,7 +17,7 @@ impl Workflows {
     }
     // Need at least 2 path parts (workflow_id + signature) or query params with id/signature
     let has_query_workflow = url.get("id").is_some() || url.get("workflow").is_some();
-    let has_query_sig = url.get("signature").is_some();
+    let has_query_sig = url.get("signature").or_else(|| url.get("sig")).is_some();
     if url.path_parts.len() < 2 && !has_query_workflow && !has_query_sig {
       return None;
     }

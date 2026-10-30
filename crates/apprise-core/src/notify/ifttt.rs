@@ -35,6 +35,9 @@ impl Ifttt {
         let events = url.path_parts.clone();
         (webhook_id, events)
       }
+    } else if let Some(ref user) = url.user {
+      // ifttt://webhook_id@/event (the form upstream builds from a native URL)
+      (user.clone(), url.path_parts.clone())
     } else {
       return None;
     };

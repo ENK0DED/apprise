@@ -1120,6 +1120,34 @@ mod tests {
   }
 
   #[test]
+  fn test_plus_in_query_value_is_kept() {
+    // Upstream keeps '+' (tokens, passwords and phone numbers use it).
+    let p = ParsedUrl::parse("sinch://u:p@host/?to=+15551234567&from=+1%20555").unwrap();
+    assert_eq!(p.get("to"), Some("+15551234567"));
+    assert_eq!(p.get("from"), Some("+1 555"));
+    // Only office365 asks for form decoding
+    let p = ParsedUrl::parse_with("o365://host/?name=a+b", ParseOptions { plus_to_space: true, ..Default::default() }).unwrap();
+    assert_eq!(p.get("name"), Some("a b"));
+  }
+
+  #[test]
+  fn test_query_values_are_trimmed() {
+    let p = ParsedUrl::parse("json://host/?a=%20%20padded%20&b=%09tab%0A&c=  inner  space  ").unwrap();
+    assert_eq!(p.get("a"), Some("padded"));
+    assert_eq!(p.get("b"), Some("tab"));
+    assert_eq!(p.get("c"), Some("inner  space"));
+  }
+
+  #[test]
+  fn test_custom_schema_host_is_decoded() {
+    let p = ParsedUrl::parse("tgram://123456789%3Aabc%2Fdef/chat").unwrap();
+    assert_eq!(p.host.as_deref(), Some("123456789:abc/def"));
+    let p = ParsedUrl::parse("pover://u%40ser@tok%20en/").unwrap();
+    assert_eq!(p.user.as_deref(), Some("u@ser"));
+    assert_eq!(p.host.as_deref(), Some("tok en"));
+  }
+
+  #[test]
   fn test_qsd_case_duplicates_keep_last() {
     let p = ParsedUrl::parse("http://host?Format=html&format=text").unwrap();
     assert_eq!(p.qsd.len(), 1);
@@ -1166,11 +1194,15 @@ mod tests {
 
   #[test]
   fn test_verify_certificate() {
+    // Upstream post-processing reads ?verify= with parse_bool(value), whose
+    // default is False, so an unrecognised value turns verification off.
     assert!(ParsedUrl::parse("http://host").unwrap().verify_certificate());
-    for v in ["no", "false", "0", "off", "random", ""] {
+    for v in ["no", "false", "0", "off", "random", "garbage", "active", ""] {
       assert!(!ParsedUrl::parse(&format!("http://host?verify={}", v)).unwrap().verify_certificate(), "{}", v);
     }
-    assert!(ParsedUrl::parse("http://host?verify=yes").unwrap().verify_certificate());
+    for v in ["yes", "always", "yeah", "true", "1", "on"] {
+      assert!(ParsedUrl::parse(&format!("http://host?verify={}", v)).unwrap().verify_certificate(), "{}", v);
+    }
   }
 
   // ── base_url / is_secure / host_or ─────────────────────────────
