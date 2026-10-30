@@ -181,6 +181,19 @@ impl AppriseAsset {
     }
   }
 
+  /// The asset's public settings (upstream `AppriseAsset.details()`).
+  pub fn details(&self) -> serde_json::Value {
+    serde_json::json!({
+      "app_id": self.app_id,
+      "app_desc": self.app_desc,
+      "default_extension": self.default_extension,
+      "theme": self.theme,
+      "image_path_mask": self.image_path_mask,
+      "image_url_mask": self.image_url_mask,
+      "image_url_logo": self.image_url_logo,
+    })
+  }
+
   /// The per-service time limit, or `None` when disabled.
   pub fn service_timeout(&self) -> Option<std::time::Duration> {
     (self.service_timeout.is_finite() && self.service_timeout > 0.0).then(|| std::time::Duration::from_secs_f64(self.service_timeout))

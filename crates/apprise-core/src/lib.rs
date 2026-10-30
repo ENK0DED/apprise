@@ -254,6 +254,22 @@ impl Apprise {
     registry::all_service_details()
   }
 
+  /// Every supported service, the asset and the version, as upstream's
+  /// `Apprise.details()` reports them.
+  pub fn details_json(&self) -> serde_json::Value {
+    serde_json::json!({
+      "version": env!("CARGO_PKG_VERSION"),
+      "schemas": Self::all_service_details().iter().map(ServiceDetails::to_json).collect::<Vec<_>>(),
+      "asset": self.asset.details(),
+    })
+  }
+
+  /// [`details_json`](Self::details_json) as compact JSON (upstream
+  /// `Apprise.json()`).
+  pub fn json(&self) -> String {
+    self.details_json().to_string()
+  }
+
   /// Get the current asset.
   pub fn asset(&self) -> &AppriseAsset {
     &self.asset
@@ -347,6 +363,28 @@ impl Apprise {
   /// Load an attachment from a file path or URL.
   pub async fn load_attachment(source: &str) -> Result<Attachment, AttachError> {
     attachment::load_attachment(source).await
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_details_json() {
+    let a = Apprise::new();
+    let d: serde_json::Value = serde_json::from_str(&a.json()).unwrap();
+    assert_eq!(d["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(d["asset"]["app_id"], "Apprise");
+    assert_eq!(d["asset"]["default_extension"], ".png");
+    assert!(d["schemas"].as_array().unwrap().iter().any(|s| s["service_name"] == "Slack"));
+  }
+
+  #[tokio::test]
+  async fn test_with_asset_installs_the_crypto_provider() {
+    let a = Apprise::with_asset(AppriseAsset::default());
+    assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    drop(a);
   }
 }
 
