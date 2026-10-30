@@ -62,7 +62,9 @@ fn mode_of(label: Option<&str>, default: Mode) -> Mode {
 
 /// `^prefix[a-f0-9]+$` (any case), as for `AC...` SIDs and `SK...` keys.
 fn is_prefixed_hex(value: &str, prefix: &str) -> bool {
-  value.len() > prefix.len() && value[..prefix.len()].eq_ignore_ascii_case(prefix) && value[prefix.len()..].chars().all(|c| c.is_ascii_hexdigit())
+  value.len() > prefix.len()
+    && value.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+    && value[prefix.len()..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// `xml.sax.saxutils.escape()`

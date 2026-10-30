@@ -127,7 +127,7 @@ impl Ntfy {
       && let Some(u) = &user
       && password.is_none()
     {
-      let is_token = u.len() > 3 && u[..3].eq_ignore_ascii_case("tk_") && !u[3..].starts_with([' ', '\t']);
+      let is_token = u.len() > 3 && u.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("tk_")) && !u[3..].starts_with([' ', '\t']);
       auth = Some(if is_token { "token" } else { "basic" }.into());
     }
     if auth.as_deref() == Some("token") && token.is_none() {

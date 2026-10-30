@@ -30,7 +30,7 @@ fn split_webhook(raw: &str) -> Option<(String, String)> {
     }
     let sep = if s[a..].starts_with('/') {
       1
-    } else if s.len() >= a + 3 && s[a..a + 3].eq_ignore_ascii_case("%2F") {
+    } else if s.get(a..a + 3).is_some_and(|p| p.eq_ignore_ascii_case("%2F")) {
       3
     } else {
       return None;

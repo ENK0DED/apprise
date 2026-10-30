@@ -183,3 +183,13 @@ async fn test_attachment_names_are_cleaned_before_plugins_see_them() {
   let payload: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
   assert_eq!(payload["attachments"][0]["filename"], "a.txtX-Injected: yes");
 }
+
+#[test]
+fn test_multibyte_urls_do_not_panic() {
+  // Each of these sliced a string inside a multibyte character
+  for url in
+    ["ntfy://😀@localhost/topic", "ntfy://é日@localhost/topic", "rocket://a😀", "rocket://user:a😀/b@host", "twilio://日x:abcdefgh@12345678901/12345678901"]
+  {
+    let _ = crate::notify::registry::from_url(url);
+  }
+}
