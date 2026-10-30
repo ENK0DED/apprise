@@ -4,25 +4,34 @@
  * Stateful notification manager.
  *
  * ```js
- * const { Apprise } = require('apprise');
+ * import { Apprise } from '@enk0ded/apprise';
  * const a = new Apprise();
  * a.add('ntfy://mytopic');
- * a.add('slack://TokenA/TokenB/TokenC');
- * await a.notify('Hello!', { title: 'Test' });
+ * await a.addConfig('/etc/apprise.yml');
+ * await a.notify('Hello!', { title: 'Test', tags: ['devops'] });
  * ```
  */
 export declare class Apprise {
   /** Create a new Apprise instance. */
   constructor()
-  /** Add a notification service by URL. Returns true if parsed successfully. */
+  /**
+   * Add notification service URL(s). Returns true if every URL was parsed
+   * and added.
+   */
   add(url: string): boolean
-  /** Load services from a config file (synchronous — blocks until loaded). */
-  addConfig(path: string): number
+  /**
+   * Load services from a configuration file or URL. Resolves to the number
+   * of services loaded.
+   */
+  addConfig(path: string): Promise<number>
   /** Get the number of loaded services. */
   len(): number
   /** Check if no services are loaded. */
   isEmpty(): boolean
-  /** Send a notification to all loaded services. */
+  /**
+   * Send a notification to the loaded services the tag filter selects
+   * (every service when no tags are given).
+   */
   notify(body: string, options?: NotifyOptions | undefined | null): Promise<SendResult>
   /** Get details of all loaded services. */
   details(): Array<ServiceInfo>
@@ -39,7 +48,14 @@ export interface NotifyOptions {
   title?: string
   notificationType?: string
   bodyFormat?: string
+  /** One tag filter group (see `SendOptions.tag`). */
   tag?: string
+  /** Tag filter groups (see `SendOptions.tags`). */
+  tags?: Array<string>
+  /** Attachments: file paths or `file://` / `http(s)://` URLs. */
+  attach?: Array<string>
+  interpretEscapes?: boolean
+  interpretEmojis?: boolean
 }
 
 /** Parse a notification URL and return service info, or null if invalid. */
@@ -53,9 +69,9 @@ export declare function send(options: SendOptions): Promise<SendResult>
 
 /** Options for sending a notification. */
 export interface SendOptions {
-  /** Notification service URL(s), separated by commas or semicolons. */
+  /** Notification service URL(s), separated by commas, semicolons or whitespace. */
   urls?: string
-  /** Path to a configuration file. */
+  /** Path or URL of a configuration file. */
   config?: string
   /** Message body (required). */
   body: string
@@ -65,8 +81,23 @@ export interface SendOptions {
   notificationType?: string
   /** Body format: "text", "html", "markdown". */
   bodyFormat?: string
-  /** Tag filter(s) — comma-separated AND groups. */
+  /**
+   * One tag filter group: its comma-separated tags must all match (like one
+   * CLI `--tag`).
+   */
   tag?: string
+  /**
+   * Tag filter groups; a service matching any group is notified (like
+   * repeating `--tag`). Without `tag` or `tags`, every service is notified.
+   */
+  tags?: Array<string>
+  /** Attachments: file paths or `file://` / `http(s)://` URLs. */
+  attach?: Array<string>
+  /** Interpret backslash escapes such as `
+  ` in the title and body. */
+  interpretEscapes?: boolean
+  /** Interpret `:emoji:` shortcodes in the title and body. */
+  interpretEmojis?: boolean
 }
 
 /** Result of a notification dispatch. */
@@ -77,6 +108,8 @@ export interface SendResult {
   succeeded: number
   /** Number that failed. */
   failed: number
+  /** Overall outcome: "success", "failure", "partial", "nomatch" or "timeout". */
+  status: string
 }
 
 /** Information about a notification service. */

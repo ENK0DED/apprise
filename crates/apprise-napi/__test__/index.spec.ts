@@ -50,3 +50,56 @@ test('Apprise class clear removes all services', async () => {
   a.clear();
   expect(a.len()).toBe(0);
 });
+
+test('Apprise class loads configuration asynchronously', async () => {
+  const { Apprise } = await import('../index.js');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'apprise-napi-'));
+  const path = join(dir, 'apprise.yml');
+  writeFileSync(path, 'urls:\n  - json://localhost:\n      tag: alpha\n  - xml://localhost\n');
+  const a = new Apprise();
+  expect(await a.addConfig(path)).toBe(2);
+  expect(a.len()).toBe(2);
+});
+
+test('Apprise.notify only notifies the services the tags select', async () => {
+  const { Apprise } = await import('../index.js');
+  const hits: string[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      if (req.method === 'POST') {
+        hits.push(new URL(req.url).pathname);
+      }
+      return new Response('ok');
+    },
+  });
+  try {
+    const a = new Apprise();
+    await a.addConfig(
+      await (async () => {
+        const { mkdtempSync, writeFileSync } = await import('node:fs');
+        const { join } = await import('node:path');
+        const { tmpdir } = await import('node:os');
+        const path = join(mkdtempSync(join(tmpdir(), 'apprise-napi-')), 'apprise.conf');
+        writeFileSync(path, `alpha=json://127.0.0.1:${server.port}/alpha\nbeta=json://127.0.0.1:${server.port}/beta\n`);
+        return path;
+      })(),
+    );
+    const result = await a.notify('hello', { tags: ['beta'] });
+    expect(result.status).toBe('success');
+    expect(result.total).toBe(1);
+    expect(hits).toEqual(['/beta']);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test('notify rejects an unknown notification type', async () => {
+  const { Apprise } = await import('../index.js');
+  const a = new Apprise();
+  a.add('json://localhost');
+  await expect(a.notify('hello', { notificationType: 'bogus' })).rejects.toThrow();
+});

@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "apprise-cli"
-version = "1.9.9"
+version = "2.1.0"
 dependencies = [
  "apprise-core",
  "chrono",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "apprise-core"
-version = "1.9.9"
+version = "2.1.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "apprise-napi"
-version = "1.9.9"
+version = "2.1.0"
 dependencies = [
  "apprise-core",
  "napi",
