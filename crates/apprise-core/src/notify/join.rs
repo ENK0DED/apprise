@@ -1,7 +1,6 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{parse_list, qsd_bool, split_path, unquote};
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list};
 use async_trait::async_trait;
 
 /// Upstream `JOIN_PRIORITY_MAP`, checked in order against the start of the
@@ -39,12 +38,12 @@ pub struct Join {
 impl Join {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // join://{apikey}/{targets} or join://{apikey}@{target}/{targets}
-    let host = url.host.as_deref().map(unquote).unwrap_or_default();
+    let host = url.host.clone().unwrap_or_default();
     let mut targets = Vec::new();
-    let apikey = match url.user.as_deref().filter(|u| !u.is_empty()) {
+    let apikey = match url.user.clone() {
       Some(user) => {
         targets.push(host);
-        unquote(user)
+        user
       }
       None => host,
     };
@@ -54,11 +53,11 @@ impl Join {
       return None;
     }
 
-    targets.extend(split_path(url));
+    targets.extend(url.path_parts.iter().cloned());
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
       targets.push(to.to_string());
     }
-    let mut targets: Vec<String> = parse_list(targets, true, true).into_iter().map(|t| group_name(&t).map(|g| format!("group.{}", g)).unwrap_or(t)).collect();
+    let mut targets: Vec<String> = parse_list(&targets.join(" ")).into_iter().map(|t| group_name(&t).map(|g| format!("group.{}", g)).unwrap_or(t)).collect();
     if targets.is_empty() {
       targets.push(DEFAULT_JOIN_GROUP.to_string());
     }
@@ -72,7 +71,14 @@ impl Join {
       })
       .unwrap_or(0);
 
-    Some(Self { apikey, targets, priority, include_image: qsd_bool(url, "image", true), verify_certificate: url.verify_certificate(), tags: url.tags() })
+    Some(Self {
+      apikey,
+      targets,
+      priority,
+      include_image: url.get("image").map(parse_bool).unwrap_or(true),
+      verify_certificate: url.verify_certificate(),
+      tags: url.tags(),
+    })
   }
 
   pub fn static_details() -> ServiceDetails {
@@ -112,6 +118,11 @@ impl Notify for Join {
     let mut has_error = false;
 
     for target in &self.targets {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       let priority = self.priority.to_string();
       let mut args = vec![("apikey", self.apikey.as_str()), ("priority", priority.as_str()), ("title", ctx.title.as_str()), ("text", ctx.body.as_str())];
       // Groups and 32 character IDs are devices; anything else a device name
@@ -123,9 +134,13 @@ impl Notify for Join {
       let query: Vec<String> = args.iter().map(|(k, v)| format!("{}={}", k, urlencoding::encode(v))).collect();
       let url = format!("{}?{}", base, query.join("&"));
 
+      crate::notify::throttle().await;
       let result = client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/x-www-form-urlencoded").send().await;
       match result {
-        Ok(resp) if resp.status().as_u16() == 200 => tracing::info!("Sent Join notification to {}.", target),
+        Ok(resp) if resp.status().as_u16() == 200 => {
+          tracing::info!("Sent Join notification to {}.", target);
+          crate::delivery::mark_delivered(target, false);
+        }
         Ok(resp) => {
           let status = resp.status().as_u16();
           let reason = if status == 401 { "Unauthorized - Invalid Token." } else { resp.status().canonical_reason().unwrap_or("") };
@@ -134,7 +149,7 @@ impl Notify for Join {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Join:{} notification.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -204,7 +219,7 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     let icon = "icon=https%3A%2F%2Fgithub.com%2Fcaronc%2Fapprise%2Fraw%2Fmaster%2Fapprise%2Fassets%2Fthemes%2Fdefault%2Fapprise-info-72x72.png";
-    let requests = server.received_requests().await.unwrap();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/_ah/api/messaging/v1/sendPush").await;
     let queries: Vec<String> = requests.iter().map(|r| r.url.query().unwrap().to_string()).collect();
     assert_eq!(
       queries,
@@ -222,11 +237,25 @@ mod tests {
   async fn test_send_failure() {
     for status in [401, 500, 999] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
+      Mock::given(method("POST")).and(path("/_ah/api/messaging/v1/sendPush")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       let svc = from_url(&format!("join://{}/a1/a2?image=no", "a".repeat(32))).unwrap();
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
     }
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_devices_that_accepted() {
+    let server = MockServer::builder().start().await;
+    let device = |name: &str| Mock::given(method("POST")).and(path("/_ah/api/messaging/v1/sendPush")).and(wiremock::matchers::query_param("deviceNames", name));
+    device("a1").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second device fails once, then accepts the retry
+    device("a2").respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    device("a2").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("join://{}/a1/a2?image=no&retry=1&wait=0", "a".repeat(32))));
+    let ctx = NotifyContext { body: "B".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx)).await.is_success());
   }
 
   #[test]

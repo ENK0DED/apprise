@@ -1,13 +1,9 @@
-use crate::asset::AppriseAsset;
+use crate::asset::NotifyImageSize;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::types::NotifyType;
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list, unquote};
 use async_trait::async_trait;
 use serde_json::json;
-
-/// Upstream's default `AppriseAsset.image_url_mask`.
-const DEFAULT_IMAGE_URL_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
 
 /// LINE Messaging API push: `line://{token}/{user_id}/...`.
 pub struct Line {
@@ -18,36 +14,14 @@ pub struct Line {
   tags: Vec<String>,
 }
 
-/// Upstream `parse_list()`: split on `[]`, `;`, `,` and whitespace, then
-/// drop empty entries, de-duplicate and sort.
-fn parse_list<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-  let mut out: Vec<String> = items
-    .into_iter()
-    .flat_map(|s| s.split(|c: char| c == '[' || c == ']' || c == ';' || c == ',' || c.is_whitespace()))
-    .filter(|s| !s.is_empty())
-    .map(String::from)
-    .collect();
-  out.sort();
-  out.dedup();
-  out
-}
-
-/// Upstream `AppriseAsset.image_url()` at the 128x128 size LINE uses.
-fn image_url(asset: &AppriseAsset, notify_type: &NotifyType) -> Option<String> {
-  let mask = asset.image_url_mask.as_deref().unwrap_or(DEFAULT_IMAGE_URL_MASK);
-  if mask.is_empty() {
-    return None;
-  }
-  Some(mask.replace("{THEME}", &asset.theme).replace("{TYPE}", notify_type.as_str()).replace("{XY}", "128x128").replace("{EXTENSION}", ".png"))
-}
-
 impl Line {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     let mut path: Vec<String> = url.path_parts.clone();
+    // Upstream unquotes query values a second time
     let token = match url.get("token").filter(|t| !t.is_empty()) {
-      Some(t) => t.to_string(),
+      Some(t) => unquote(t),
       None => {
-        let mut token = urlencoding::decode(url.host.as_deref().unwrap_or_default()).map(|s| s.into_owned()).unwrap_or_default();
+        let mut token = url.host.clone().unwrap_or_default();
         // Access tokens can contain slashes. When the host does not end the
         // token (with its base64 '=' padding), the path up to the first
         // entry that ends in '=' still belongs to it.
@@ -68,10 +42,10 @@ impl Line {
     }
 
     let mut raw: Vec<String> = path;
-    if let Some(to) = url.get("to") {
+    if let Some(to) = url.get("to").map(unquote) {
       raw.extend(to.split([' ', '\t', '\r', '\n', ',', '#', '\\', '/']).filter(|s| !s.is_empty()).map(String::from));
     }
-    let targets = parse_list(raw.iter().map(String::as_str));
+    let targets = parse_list(&raw.join(" "));
     let include_image = url.get("image").map(parse_bool).unwrap_or(true);
 
     Some(Self { token, targets, include_image, verify_certificate: url.verify_certificate(), tags: url.tags() })
@@ -115,7 +89,7 @@ impl Notify for Line {
     }
     let mut sender = json!({ "name": ctx.asset.app_id });
     if self.include_image
-      && let Some(icon) = image_url(&ctx.asset, &ctx.notify_type)
+      && let Some(icon) = ctx.image_url(NotifyImageSize::Xy128)
     {
       sender["iconUrl"] = json!(icon);
     }
@@ -124,17 +98,24 @@ impl Notify for Line {
     let client = build_client(self.verify_certificate)?;
     let mut all_ok = true;
     for target in &self.targets {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       let payload = json!({ "to": target, "messages": [{ "type": "text", "text": ctx.body, "sender": sender }] });
+      crate::notify::throttle().await;
       let resp = match client.post(&url).header("User-Agent", APP_ID).bearer_auth(&self.token).json(&payload).send().await {
         Ok(resp) => resp,
         Err(e) => {
-          tracing::warn!("A Connection error occurred sending Line notification to {}: {}", target, e);
+          tracing::warn!("A Connection error occurred sending Line notification to {}: {}", target, crate::error::loggable_http_error(&e));
           all_ok = false;
           continue;
         }
       };
       if resp.status() == reqwest::StatusCode::OK {
         tracing::info!("Sent Line notification to {}.", target);
+        crate::delivery::mark_delivered(target, false);
       } else {
         tracing::warn!("Failed to send Line notification to {}: error={}", target, resp.status().as_u16());
         all_ok = false;
@@ -148,6 +129,7 @@ impl Notify for Line {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
+  use crate::types::NotifyType;
   use wiremock::matchers::{body_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -251,6 +233,7 @@ mod tests {
   async fn test_send_without_image() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v2/bot/message/push"))
       .and(body_json(json!({ "to": "t1", "messages": [{ "type": "text", "text": "B", "sender": { "name": "Apprise" } }] })))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -269,10 +252,25 @@ mod tests {
 
     // One target failing still tries the others and reports failure
     let server = MockServer::start().await;
-    Mock::given(method("POST")).and(body_json_to("t1")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
-    Mock::given(method("POST")).and(body_json_to("t2")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let push = |target| Mock::given(method("POST")).and(path("/v2/bot/message/push")).and(body_json_to(target));
+    push("t1").respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
+    push("t2").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
     let svc = from_url("line://token/t1/t2").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&NotifyContext::default())).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_targets_that_accepted() {
+    let server = MockServer::start().await;
+    let push = |target| Mock::given(method("POST")).and(path("/v2/bot/message/push")).and(body_json_to(target));
+    push("t1").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second target fails once, then accepts the retry
+    push("t2").respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    push("t2").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("line://token/t1/t2?retry=1&wait=0"));
+    let ctx = NotifyContext { body: "B".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx)).await.is_success());
   }
 
   fn body_json_to(target: &'static str) -> impl wiremock::Match {

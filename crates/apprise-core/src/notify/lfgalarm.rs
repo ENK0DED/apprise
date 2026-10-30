@@ -23,21 +23,9 @@ fn valid_token(token: &str) -> bool {
 
 impl LfgAlarm {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let token = if url.schema == "https" || url.schema == "http" {
-      // Native link: https://api.lfg.gm/horn/{token}[/][?params]
-      if url.user.is_some() || url.password.is_some() || url.port.is_some() || !url.host.as_deref().is_some_and(|h| h.eq_ignore_ascii_case("api.lfg.gm")) {
-        return None;
-      }
-      let path = url.path.strip_suffix('/').unwrap_or(&url.path);
-      let (horn, token) = path.split_once('/')?;
-      if !horn.eq_ignore_ascii_case("horn") || !valid_token(token) {
-        return None;
-      }
-      token.to_string()
-    } else {
-      // Our token is kept in the host
-      url.host.clone().unwrap_or_default()
-    };
+    // Our token is kept in the host. Native https://api.lfg.gm/horn/{token}
+    // links arrive here already rewritten by the registry as lfg://{token}/
+    let token = url.host.clone().unwrap_or_default();
 
     // Support ?token= for an easier yaml configuration
     let token = url.get("token").filter(|t| !t.is_empty()).map(String::from).unwrap_or(token);
@@ -89,6 +77,9 @@ impl Notify for LfgAlarm {
   fn overflow_mode(&self) -> OverflowMode {
     OverflowMode::Upstream
   }
+  fn overflow_mode_overridable(&self) -> bool {
+    false
+  }
 
   async fn send(&self, _ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let base = service_base("https://api.lfg.gm");
@@ -97,6 +88,7 @@ impl Notify for LfgAlarm {
     // LFG Alarm never reads the request body, so none is sent; the alarm
     // shows its own name when it rings
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client.post(format!("{}/horn/{}", base, self.token)).header("User-Agent", APP_ID).send().await?;
 
     // The reply tells us how many phones rang, or how long to wait before
@@ -182,14 +174,24 @@ mod tests {
 
   #[test]
   fn test_native_url_token() {
-    let parsed = ParsedUrl::parse(&format!("https://api.lfg.gm/horn/{}", TOKEN)).unwrap();
+    // What the registry makes of https://api.lfg.gm/horn/{token}
+    let parsed = ParsedUrl::parse(&format!("lfg://{}/", TOKEN)).unwrap();
     assert_eq!(LfgAlarm::from_url(&parsed).unwrap().token, TOKEN);
   }
 
-  #[test]
-  fn test_overflow_is_always_upstream() {
+  #[tokio::test]
+  async fn test_overflow_is_always_upstream() {
     let svc = from_url(&format!("lfg://{}?overflow=split", TOKEN)).unwrap();
     assert_eq!(svc.overflow_mode(), OverflowMode::Upstream);
+    assert!(!svc.overflow_mode_overridable());
+
+    // A body past the limit still rings the alarm once
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path(format!("/horn/{}", TOKEN))).respond_with(rang()).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("lfg://{}?overflow=split", TOKEN)));
+    let ctx = NotifyContext { body: "x".repeat(40000), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx)).await.is_success());
   }
 
   #[tokio::test]
@@ -200,7 +202,7 @@ mod tests {
     let ctx = NotifyContext { title: "Ignored".into(), body: "Also ignored".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", &format!("/horn/{}", TOKEN)).await;
     let ring = requests.iter().find(|r| r.url.path() == format!("/horn/{}", TOKEN)).unwrap();
     assert!(ring.body.is_empty());
     assert!(ring.headers.get("Content-Type").is_none());
@@ -210,7 +212,12 @@ mod tests {
   async fn test_send_fired_replies() {
     for reply in [json!({"fired": true, "devices": 1}), json!({"fired": true})] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(reply)).expect(1).mount(&server).await;
+      Mock::given(method("POST"))
+        .and(path(format!("/horn/{}", TOKEN)))
+        .respond_with(ResponseTemplate::new(200).set_body_json(reply))
+        .expect(1)
+        .mount(&server)
+        .await;
       let svc = from_url(&format!("lfg://{}", TOKEN)).unwrap();
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&NotifyContext::default())).await.unwrap());
     }
@@ -218,7 +225,12 @@ mod tests {
     // Anything short of fired=true is a failure
     for reply in [r#"{"fired": null}"#, r#"{"fired": false}"#, r#"{"fired": "cooling_down"}"#, r#"{"fired": 1}"#, "[true]", "not json", ""] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string(reply)).expect(1).mount(&server).await;
+      Mock::given(method("POST"))
+        .and(path(format!("/horn/{}", TOKEN)))
+        .respond_with(ResponseTemplate::new(200).set_body_string(reply))
+        .expect(1)
+        .mount(&server)
+        .await;
       let svc = from_url(&format!("lfg://{}", TOKEN)).unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&NotifyContext::default())).await.unwrap(), "reply {}", reply);
     }
@@ -230,7 +242,12 @@ mod tests {
       [(429u16, r#"{"fired": false, "reason": "cooling_down", "retryAfterSeconds": 42}"#), (409, r#"{"fired": false}"#), (404, ""), (500, ""), (999, "")]
     {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code).set_body_string(reply)).expect(1).mount(&server).await;
+      Mock::given(method("POST"))
+        .and(path(format!("/horn/{}", TOKEN)))
+        .respond_with(ResponseTemplate::new(code).set_body_string(reply))
+        .expect(1)
+        .mount(&server)
+        .await;
       let svc = from_url(&format!("lfg://{}", TOKEN)).unwrap();
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&NotifyContext::default())).await.is_err(), "code {}", code);
     }

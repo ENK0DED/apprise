@@ -23,8 +23,7 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyType;
 use crate::utils::keyfile::{pem_blocks, read_source};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{parse_bool_or, parse_list, prefixed_args, qsd_bool, split_path, unquote};
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list};
 
 /// Largest key file accepted (`max_fcm_keyfile_size`).
 const MAX_KEYFILE_SIZE: usize = 5000;
@@ -118,7 +117,7 @@ impl FcmColor {
     if hex.len() >= 3 {
       return Self::Rgb(hex[..3].iter().flat_map(|c| [*c, *c]).collect::<String>().to_lowercase());
     }
-    if parse_bool_or(Some(value), false) { Self::Asset } else { Self::Off }
+    if parse_bool(value) { Self::Asset } else { Self::Off }
   }
 
   fn get(&self, notify_type: &NotifyType) -> Option<String> {
@@ -233,7 +232,7 @@ fn merge(base: &mut Value, update: &Value) {
 
 impl Fcm {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.as_deref().map(unquote).unwrap_or_default();
+    let host = url.host.clone().unwrap_or_default();
     let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(str::to_string);
     let apikey = qsd("apikey").unwrap_or_else(|| host.clone());
     let project = qsd("project").unwrap_or(host);
@@ -280,11 +279,11 @@ impl Fcm {
       }
     };
 
-    let mut targets = split_path(url);
+    let mut targets = url.path_parts.clone();
     if let Some(to) = qsd("to") {
       targets.push(to);
     }
-    let targets = parse_list(targets, true, true);
+    let targets = parse_list(&targets.join(" "));
 
     let priority = match qsd("priority") {
       None => None,
@@ -299,7 +298,7 @@ impl Fcm {
 
     // A custom image turns images on unless image= says otherwise
     let image_src = url.get("image_url").map(str::to_string);
-    let include_image = qsd_bool(url, "image", image_src.is_some());
+    let include_image = url.get("image").map(parse_bool).unwrap_or(image_src.is_some());
 
     Some(Self {
       mode,
@@ -307,7 +306,7 @@ impl Fcm {
       project,
       keyfile: if mode == FcmMode::OAuth2 { keyfile } else { None },
       targets,
-      data: prefixed_args(url, '+'),
+      data: url.qsd_add.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
       include_image,
       image_src,
       priority,
@@ -365,7 +364,7 @@ impl Fcm {
       Ok(resp) => resp,
       Err(e) => {
         tracing::warn!("A Connection error occurred refreshing FCM Access Token.");
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return None;
       }
     };
@@ -479,9 +478,15 @@ impl Notify for Fcm {
 
     let mut has_error = false;
     for recipient in &self.targets {
+      // Skip a recipient that already accepted this message so a retry
+      // does not deliver it twice
+      if crate::delivery::is_delivered(recipient, false) {
+        continue;
+      }
       let payload = self.payload(ctx, recipient, image.as_deref());
       tracing::debug!("FCM {} POST URL: {} (cert_verify={})", self.mode.as_str(), url, self.verify_certificate);
 
+      crate::notify::throttle().await;
       let result = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -493,6 +498,7 @@ impl Notify for Fcm {
       match result {
         Ok(resp) if matches!(resp.status().as_u16(), 200 | 204) => {
           tracing::info!("Sent {} FCM notification.", self.mode.as_str());
+          crate::delivery::mark_delivered(recipient, false);
         }
         Ok(resp) => {
           let status = resp.status().as_u16();
@@ -507,7 +513,7 @@ impl Notify for Fcm {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending FCM notification.");
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -730,7 +736,7 @@ ORhLPuBVA+eLw73wx7FgbyPuxxVY6JN1M7xsFy4GSXFH4Ub3TV67PsgUVr7H7Btw
     let ctx = NotifyContext { title: "T".into(), body: "B".into(), notify_type: NotifyType::Warning, ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect();
     let image = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/default/apprise-warning-256x256.png";
     let expected = |to: &str| {
       json!({
@@ -753,7 +759,7 @@ ORhLPuBVA+eLw73wx7FgbyPuxxVY6JN1M7xsFy4GSXFH4Ub3TV67PsgUVr7H7Btw
     let svc = from_url("fcm://apikey/device-token").unwrap();
     let ctx = NotifyContext { title: "apprise parity".into(), body: "hello from python".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect();
     assert_eq!(
       body_json(&requests[0]),
       json!({"notification": {"notification": {"title": "apprise parity", "body": "hello from python"}}, "to": "device-token"})
@@ -789,7 +795,7 @@ ORhLPuBVA+eLw73wx7FgbyPuxxVY6JN1M7xsFy4GSXFH4Ub3TV67PsgUVr7H7Btw
     // The token is reused while valid
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect();
     // The assertion is an RS256 JWT for the service account
     let form = String::from_utf8(requests[0].body.clone()).unwrap();
     let assertion = form.strip_prefix("assertion=").unwrap().split('&').next().unwrap();
@@ -854,15 +860,29 @@ ORhLPuBVA+eLw73wx7FgbyPuxxVY6JN1M7xsFy4GSXFH4Ub3TV67PsgUVr7H7Btw
 
     for status in [400, 401, 404, 500, 999] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
+      Mock::given(method("POST")).and(path("/fcm/send")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       let svc = from_url("fcm://apikey/a/b").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "status {}", status);
     }
 
     // 204 is accepted
     let server = MockServer::builder().start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(204)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/fcm/send")).respond_with(ResponseTemplate::new(204)).expect(1).mount(&server).await;
     assert!(crate::notify::with_test_base(server.uri(), from_url("fcm://apikey/a").unwrap().send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_recipients_that_accepted() {
+    let server = MockServer::builder().start().await;
+    let to = |t: &str| Mock::given(method("POST")).and(path("/fcm/send")).and(wiremock::matchers::body_partial_json(json!({"to": t})));
+    to("a").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second device fails once, then accepts the retry
+    to("b").respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    to("b").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("fcm://apikey/a/b?retry=1&wait=0"));
+    let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx)).await.is_success());
   }
 
   #[test]

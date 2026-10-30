@@ -3,7 +3,7 @@ use serde_json::json;
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
 
 /// Note visibilities; the first is the default.
 const MISSKEY_VISIBILITIES: [&str; 4] = ["public", "home", "followers", "specified"];
@@ -25,7 +25,7 @@ impl Misskey {
     // ?token= wins; otherwise the user, when no password accompanies it
     let token = match url.get("token").filter(|t| !t.is_empty()) {
       Some(t) => Some(unquote(t)),
-      None if url.password.is_none() => url.user.as_deref().map(unquote),
+      None if url.password.is_none() => url.user.clone(),
       None => None,
     };
     let Some(token) = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) else {
@@ -92,6 +92,7 @@ impl Notify for Misskey {
     tracing::debug!("Misskey POST URL: {} (cert_verify={})", url, self.verify_certificate);
 
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/json").body(payload.to_string()).send().await?;
     let status = resp.status();
     if status.as_u16() == 200 {
@@ -103,10 +104,6 @@ impl Notify for Misskey {
       Err(NotifyError::ServiceError { status: status.as_u16(), body: resp.text().await.unwrap_or_default() })
     }
   }
-}
-
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
 }
 
 #[cfg(test)]
@@ -297,7 +294,7 @@ mod tests {
   async fn test_send_non_200_success_code_fails() {
     let server = MockServer::start().await;
     // Upstream only accepts 200
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(204)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api/notes/create")).respond_with(ResponseTemplate::new(204)).expect(1).mount(&server).await;
     let mk = misskey_for_mock(&server, "my_token");
     let ctx = NotifyContext { body: "test".into(), ..Default::default() };
     assert!(mk.send(&ctx).await.is_err());

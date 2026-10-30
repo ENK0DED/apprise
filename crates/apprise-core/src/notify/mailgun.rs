@@ -2,17 +2,13 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyFormat;
 use crate::utils::email::{formataddr, is_email, parse_emails, parse_emails_all, valid_addresses};
-use crate::utils::parse::{ParsedUrl, parse_bool};
-use crate::utils::qsd::{Qsd, unquote, validate_token};
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
+use crate::utils::qsd::validate_token;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::time::Duration;
 
 /// Recipients per request in batch mode.
 const BATCH_SIZE: usize = 2000;
-
-/// Pause between requests (upstream `request_rate_per_sec`).
-const THROTTLE: Duration = Duration::from_millis(200);
 
 /// Sender display name.
 #[derive(Debug, Clone, PartialEq)]
@@ -40,14 +36,14 @@ pub struct Mailgun {
   tokens: Vec<(String, String)>,
   region: String,
   batch: bool,
-  throttle: Duration,
   verify_certificate: bool,
   tags: Vec<String>,
 }
 
 impl Mailgun {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let qsd = Qsd::from_url(url);
+    // A query value, non-empty, as upstream's `qsd` holds it
+    let value = |key: &str| url.get(key).filter(|v| !v.is_empty());
     let domain = url.host.clone().unwrap_or_default();
 
     // The first path entry is the API key; the rest are recipients
@@ -55,7 +51,8 @@ impl Mailgun {
     let apikey = path.next().and_then(|k| validate_token(k))?;
     let user = url.user.clone().filter(|u| !u.is_empty())?;
 
-    let region = match qsd.value("region") {
+    // Upstream unquotes these a second time
+    let region = match value("region") {
       Some(r) => unquote(r).to_lowercase(),
       None => "us".to_string(),
     };
@@ -66,7 +63,7 @@ impl Mailgun {
 
     // ?from= is an address (optionally named by ?name=); ?name= alone only
     // names the default sender
-    let from_arg = match (qsd.value("from"), qsd.value("name")) {
+    let from_arg = match (value("from"), value("name")) {
       (Some(from), Some(name)) => Some(formataddr(Some(&unquote(name)), &unquote(from))),
       (Some(from), None) => Some(unquote(from)),
       (None, Some(name)) => Some(unquote(name)),
@@ -89,7 +86,7 @@ impl Mailgun {
     }
 
     let mut raw_targets: Vec<String> = path.cloned().collect();
-    if let Some(to) = qsd.value("to") {
+    if let Some(to) = value("to") {
       raw_targets.push(to.to_string());
     }
     let targets = if raw_targets.is_empty() {
@@ -101,7 +98,7 @@ impl Mailgun {
     let mut names = HashMap::new();
     let mut cc = Vec::new();
     let mut bcc = Vec::new();
-    for (list, raw, kind) in [(&mut cc, qsd.value("cc"), "Carbon Copy"), (&mut bcc, qsd.value("bcc"), "Blind Carbon Copy")] {
+    for (list, raw, kind) in [(&mut cc, value("cc"), "Carbon Copy"), (&mut bcc, value("bcc"), "Blind Carbon Copy")] {
       for e in valid_addresses(&parse_emails(raw.unwrap_or_default()), kind) {
         names.insert(e.full_email.clone(), e.display_name());
         if !list.contains(&e.full_email) {
@@ -110,7 +107,7 @@ impl Mailgun {
       }
     }
 
-    let unquote_pair = |(k, v): (String, String)| (unquote(&k), unquote(&v));
+    let unquote_pairs = |args: &indexmap::IndexMap<String, String>| args.iter().map(|(k, v)| (unquote(k), unquote(v))).collect();
     Some(Self {
       apikey,
       domain,
@@ -120,11 +117,10 @@ impl Mailgun {
       cc,
       bcc,
       names,
-      headers: qsd.prefixed('+').into_iter().map(unquote_pair).collect(),
-      tokens: qsd.prefixed(':').into_iter().map(unquote_pair).collect(),
+      headers: unquote_pairs(&url.qsd_add),
+      tokens: unquote_pairs(&url.qsd_colon),
       region,
-      batch: qsd.get("batch").map(parse_bool).unwrap_or(false),
-      throttle: THROTTLE,
+      batch: url.get("batch").map(parse_bool).unwrap_or(false),
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
     })
@@ -187,8 +183,11 @@ impl Notify for Mailgun {
     let mut has_error = false;
 
     for (index, batch) in self.targets.chunks(batch_size).enumerate() {
-      if index > 0 {
-        tokio::time::sleep(self.throttle).await;
+      // Skip a batch that already went out so a retry does not deliver it
+      // to those recipients twice
+      let key = (index * batch_size).to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
       }
       let in_batch = |addr: &String| batch.iter().any(|(_, t)| t == addr);
       let cc: Vec<&String> = self.cc.iter().filter(|a| !self.bcc.contains(a) && !in_batch(a)).collect();
@@ -227,8 +226,12 @@ impl Notify for Mailgun {
       };
 
       let dest = if batch.len() <= 3 { batch.iter().map(|(_, a)| a.as_str()).collect::<Vec<_>>().join(", ") } else { format!("{} recipients", batch.len()) };
+      crate::notify::throttle().await;
       match request.send().await {
-        Ok(resp) if resp.status().as_u16() == 200 => tracing::info!("Sent Mailgun notification to {}.", dest),
+        Ok(resp) if resp.status().as_u16() == 200 => {
+          tracing::info!("Sent Mailgun notification to {}.", dest);
+          crate::delivery::mark_delivered(&key, false);
+        }
         Ok(resp) => {
           let status = resp.status().as_u16();
           tracing::warn!("Failed to send Mailgun notification to {}: {}error={}.", dest, status_message(status), status);
@@ -237,7 +240,7 @@ impl Notify for Mailgun {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Mailgun:{} notification.", dest);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -263,7 +266,7 @@ mod tests {
   use super::*;
   use crate::notify::Attachment;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{method, path};
+  use wiremock::matchers::{method, path, path_regex};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn token() -> String {
@@ -280,8 +283,14 @@ mod tests {
 
   async fn mock(status: u16) -> MockServer {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
+    Mock::given(method("POST")).and(path_regex("^/v3/[^/]+/messages$")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
     server
+  }
+
+  /// The messages the mock received, in order, without stray requests.
+  async fn posts(server: &MockServer) -> Vec<wiremock::Request> {
+    let requests = server.received_requests().await.unwrap();
+    requests.into_iter().filter(|r| r.method.as_str() == "POST" && r.url.path().starts_with("/v3/")).collect()
   }
 
   fn ctx(body_format: NotifyFormat) -> NotifyContext {
@@ -399,7 +408,7 @@ mod tests {
     assert_eq!(svc.notify_format(), NotifyFormat::Html);
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx(NotifyFormat::Html))).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = posts(&server).await;
     assert_eq!(reqs.len(), 1);
     let req = &reqs[0];
     assert_eq!(req.method.as_str(), "POST");
@@ -428,7 +437,7 @@ mod tests {
     .unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx(NotifyFormat::Text))).await.unwrap());
 
-    let reqs: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
+    let reqs = posts(&server).await;
     assert_eq!(reqs.len(), 2);
     let first = form(&reqs[0].body);
     assert_eq!(
@@ -456,7 +465,7 @@ mod tests {
     let server = mock(200).await;
     let svc = from_url("mailgun://no-reply@example.com/apikey/user1@example.com/user2@example.com?batch=yes&region=eu").unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx(NotifyFormat::Html))).await.unwrap());
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = posts(&server).await;
     assert_eq!(reqs.len(), 1);
     assert!(form(&reqs[0].body).contains(&("to".to_string(), "user1@example.com,user2@example.com".to_string())));
     assert_eq!(parse("mailgun://user@example.com/apikey?region=eu").api_base(), "https://api.eu.mailgun.net");
@@ -474,7 +483,7 @@ mod tests {
     ];
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = posts(&server).await;
     let ct = reqs[0].headers.get("content-type").unwrap().to_str().unwrap().to_string();
     assert!(ct.starts_with("multipart/form-data; boundary="));
     let body = String::from_utf8_lossy(&reqs[0].body);
@@ -500,14 +509,40 @@ mod tests {
     let server = mock(200).await;
     let svc = from_url(&format!("mailgun://user@localhost.localdomain/{}/invalid", token())).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx(NotifyFormat::Html))).await.unwrap());
-    assert!(!server.received_requests().await.unwrap().iter().any(|r| r.method == wiremock::http::Method::POST));
+    assert!(posts(&server).await.is_empty());
 
     // One failed recipient fails the notification but the others still go out
     let server = MockServer::start().await;
     Mock::given(method("POST")).and(path("/v3/example.com/messages")).respond_with(ResponseTemplate::new(400)).up_to_n_times(1).mount(&server).await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v3/example.com/messages")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
     let svc = from_url("mailgun://user@example.com/apikey/a@example.com/b@example.com").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx(NotifyFormat::Html))).await.unwrap());
-    assert_eq!(server.received_requests().await.unwrap().iter().filter(|r| r.method == wiremock::http::Method::POST).count(), 2);
+    assert_eq!(posts(&server).await.len(), 2);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_recipients_that_accepted() {
+    use wiremock::matchers::body_string_contains;
+    let server = MockServer::start().await;
+    let to = |addr: &str| Mock::given(method("POST")).and(path("/v3/example.com/messages")).and(body_string_contains(format!("to={}", addr)));
+    to("a%40example.com").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second recipient fails once, then accepts the retry
+    to("b%40example.com").respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    to("b%40example.com").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("mailgun://user@example.com/apikey/a@example.com/b@example.com?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx(NotifyFormat::Html))).await.is_success());
+  }
+
+  #[tokio::test]
+  async fn test_requests_are_spaced_out() {
+    let server = mock(200).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("mailgun://user@example.com/apikey/a@example.com/b@example.com/c@example.com"));
+    let started = std::time::Instant::now();
+    let sent = crate::notify::with_throttling_in_tests(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx(NotifyFormat::Html)))).await;
+    assert!(sent.is_success());
+    // Upstream waits 0.2s between requests
+    assert!(started.elapsed() >= std::time::Duration::from_millis(400), "{:?}", started.elapsed());
   }
 }
