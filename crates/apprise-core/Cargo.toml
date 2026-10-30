@@ -16,7 +16,8 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml = { workspace = true, optional = true }
 url.workspace = true
-lettre = { workspace = true, optional = true }
+pgp = { workspace = true, optional = true }
+rand_core06 = { workspace = true, optional = true }
 tracing.workspace = true
 thiserror.workspace = true
 base64.workspace = true
@@ -38,6 +39,7 @@ ed25519-dalek.workspace = true
 blake2.workspace = true
 ring.workspace = true
 aes-gcm.workspace = true
+cbc.workspace = true
 argon2 = { workspace = true, optional = true }
 chacha20poly1305 = { workspace = true, optional = true }
 x25519-dalek = { workspace = true, optional = true }
@@ -59,7 +61,7 @@ tracing-subscriber.workspace = true
 default = ["mqtt", "amqp", "email", "yaml", "images", "simplepush-encryption", "matrix-e2ee"]
 mqtt = []
 amqp = ["dep:fe2o3-amqp"]
-email = ["dep:lettre"]
+email = ["dep:pgp", "dep:rand_core06"]
 yaml = ["dep:serde_yaml"]
 desktop = ["dep:png", "dep:zbus", "dep:windows-sys"]
 blink1 = ["dep:hidapi"]

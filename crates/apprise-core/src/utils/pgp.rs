@@ -25,197 +25,639 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
-//! PGP (Pretty Good Privacy) key handling utilities.
+//! OpenPGP keys, signing and encryption (upstream `apprise/utils/pgp.py`).
 //!
-//! Mirrors the Python `apprise.utils.pgp` module which provides:
-//! - Importing and managing PGP public keys
-//! - Encrypting content with PGP for email notifications
-//!
-//! Full PGP encryption (via the `pgpy` equivalent) requires a dedicated PGP
-//! crate such as `sequoia-openpgp` or `rpgp`. This module provides the
-//! foundational file I/O, key detection, and gpg binary availability checks
-//! that the notification plugins need.
+//! [`PgpController`] finds keys the way upstream's `ApprisePGPController`
+//! does: an explicit key source (`pgppub=`, `pgpprv=`: a path or URL), else
+//! a file named after the address in the service's storage directory, else
+//! a Web Key Directory lookup, else (when allowed) a freshly generated key
+//! pair. It signs detached (RFC 3156 `multipart/signed`), encrypts
+//! (SEIPD v1, compressed literal data, as PGPy does) and builds Autocrypt
+//! headers. The OpenPGP work is done by rPGP.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-/// Maximum accepted PGP public key file size (matches Python's 8000-byte limit).
+use base64::Engine;
+use pgp::composed::{
+  ArmorOptions, Deserializable, DetachedSignature, EncryptionCaps, KeyType, MessageBuilder, PublicOrSecret, SecretKeyParamsBuilder, SignedPublicKey,
+  SignedSecretKey, SubkeyParamsBuilder,
+};
+use pgp::crypto::hash::HashAlgorithm;
+use pgp::crypto::sym::SymmetricKeyAlgorithm;
+use pgp::packet::{Signature, SignatureType};
+use pgp::ser::Serialize;
+use pgp::types::{CompressionAlgorithm, KeyDetails, Password};
+use sha1::{Digest, Sha1};
+
+use crate::utils::cwe312::cwe312_loggable;
+use crate::utils::wkd::WkdController;
+
+/// Largest explicit public key accepted (upstream `max_pgp_public_key_size`).
 pub const MAX_PGP_PUBLIC_KEY_SIZE: usize = 8000;
 
-/// ASCII armor header for PGP public key blocks.
-const PGP_PUBLIC_KEY_MARKER: &[u8] = b"-----BEGIN PGP PUBLIC KEY BLOCK-----";
+/// Largest explicit private key accepted; private keys may carry extra
+/// identities and subkeys (upstream `max_pgp_private_key_size`).
+pub const MAX_PGP_PRIVATE_KEY_SIZE: usize = 32000;
 
-/// Load a PGP public key from a file.
-///
-/// Returns the raw bytes of the file. The caller is responsible for parsing
-/// the OpenPGP structure.
-///
-/// Returns an error if the file cannot be read or exceeds `MAX_PGP_PUBLIC_KEY_SIZE`.
-pub fn load_pgp_key(path: &str) -> Result<Vec<u8>, std::io::Error> {
-  let data = std::fs::read(path)?;
-  if data.len() > MAX_PGP_PUBLIC_KEY_SIZE {
-    return Err(std::io::Error::new(
-      std::io::ErrorKind::InvalidData,
-      format!("PGP key file exceeds maximum size ({} > {})", data.len(), MAX_PGP_PUBLIC_KEY_SIZE),
-    ));
+/// Largest complete Autocrypt header (Autocrypt Level 1: 10 KiB).
+pub const MAX_AUTOCRYPT_HEADER_SIZE: usize = 10 * 1024;
+
+/// Autocrypt `keydata` is folded with whitespace every 76 characters.
+const AUTOCRYPT_FOLD_WIDTH: usize = 76;
+
+/// How long a loaded key is reused.
+const KEY_CACHE_EXPIRY: Duration = Duration::from_secs(86400);
+
+/// Size of generated RSA keys (upstream generates RSA 2048).
+const KEYGEN_RSA_BITS: u32 = 2048;
+
+#[derive(Clone)]
+enum CachedKey {
+  Public(Box<SignedPublicKey>),
+  Secret(Box<SignedSecretKey>),
+}
+
+/// Where a key comes from.
+enum KeySource {
+  /// Key material, with the identifier it is cached under.
+  Found(Vec<u8>, String),
+  /// An explicit source that could not be read (upstream returns `False`).
+  Inaccessible,
+  /// Nothing configured or discovered (upstream returns `None`).
+  Missing,
+}
+
+/// Finds and uses PGP keys for one service (upstream
+/// `ApprisePGPController`). Clones share the key cache.
+#[derive(Clone)]
+pub struct PgpController {
+  /// The service's storage directory: where keys are discovered and
+  /// generated. `None` without persistent storage.
+  path: Option<PathBuf>,
+  pub_keyfile: Option<String>,
+  prv_keyfile: Option<String>,
+  email: Option<String>,
+  app_id: String,
+  wkd: Option<WkdController>,
+  /// Generate a key pair when one is needed and missing (upstream
+  /// `AppriseAsset.pgp_autogen`, on by default).
+  autogen: bool,
+  lookup: Arc<Mutex<HashMap<String, (CachedKey, Instant)>>>,
+}
+
+impl std::fmt::Debug for PgpController {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("PgpController").field("email", &self.email).field("wkd", &self.wkd.is_some()).finish_non_exhaustive()
   }
-  Ok(data)
 }
 
-/// Check if PGP encryption is available by looking for the `gpg` binary.
-///
-/// This mirrors the Python approach of checking whether the external gpg
-/// tool is installed, which is needed as a fallback when no native PGP
-/// library is available.
-pub fn pgp_available() -> bool {
-  std::process::Command::new("gpg")
-    .arg("--version")
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null())
-    .status()
-    .map(|s| s.success())
-    .unwrap_or(false)
-}
+impl PgpController {
+  /// A controller for the sender `email`, with optional explicit key
+  /// sources (paths or URLs) and WKD discovery.
+  pub fn new(pub_keyfile: Option<&str>, prv_keyfile: Option<&str>, email: Option<&str>, app_id: &str, wkd: Option<WkdController>) -> Self {
+    let nonempty = |s: Option<&str>| s.filter(|s| !s.is_empty()).map(str::to_string);
+    Self {
+      path: None,
+      pub_keyfile: nonempty(pub_keyfile),
+      prv_keyfile: nonempty(prv_keyfile),
+      email: nonempty(email),
+      app_id: app_id.to_string(),
+      wkd,
+      autogen: true,
+      lookup: Arc::new(Mutex::new(HashMap::new())),
+    }
+  }
 
-/// Check if data looks like an ASCII-armored PGP public key.
-pub fn is_pgp_public_key(data: &[u8]) -> bool {
-  let trimmed = data.iter().position(|&b| !b.is_ascii_whitespace()).map(|pos| &data[pos..]).unwrap_or(data);
-  trimmed.starts_with(PGP_PUBLIC_KEY_MARKER)
-}
+  /// This controller working in `path` (the service's storage directory).
+  pub fn with_path(&self, path: Option<PathBuf>) -> Self {
+    Self { path, ..self.clone() }
+  }
 
-/// Check whether a PGP key file exists at the given path.
-pub fn pgp_key_exists(path: &str) -> bool {
-  Path::new(path).is_file()
-}
+  /// This controller with another application name for generated keys.
+  pub fn with_app_id(&self, app_id: &str) -> Self {
+    Self { app_id: app_id.to_string(), ..self.clone() }
+  }
 
-/// Search for a PGP public key file in the given directory, trying common names.
-///
-/// Mirrors the Python `ApprisePGPController.public_keyfile()` search order:
-/// - `{email_prefix}-pub.asc` (if email is provided, using part before @)
-/// - `pgp-public.asc`
-/// - `pgp-pub.asc`
-/// - `public.asc`
-/// - `pub.asc`
-///
-/// Returns the full path to the first match found, or `None`.
-pub fn find_pgp_public_keyfile(dir: &str, email: Option<&str>) -> Option<String> {
-  let mut candidates: Vec<String> = Vec::new();
+  /// The WKD controller, if WKD discovery is on.
+  pub fn wkd(&self) -> Option<&WkdController> {
+    self.wkd.as_ref()
+  }
 
-  if let Some(addr) = email {
-    // Try full email lowercase first, then just the local part
-    let lower = addr.to_lowercase();
-    candidates.push(format!("{}-pub.asc", lower));
+  /// Replace the WKD controller.
+  pub fn set_wkd(&mut self, wkd: Option<WkdController>) {
+    self.wkd = wkd;
+  }
 
-    if let Some(local) = lower.split('@').next() {
-      if local != lower {
-        candidates.push(format!("{}-pub.asc", local));
+  /// Turn key generation on or off (upstream `AppriseAsset.pgp_autogen`).
+  pub fn set_autogen(&mut self, autogen: bool) {
+    self.autogen = autogen;
+  }
+
+  fn cache(&self) -> std::sync::MutexGuard<'_, HashMap<String, (CachedKey, Instant)>> {
+    self.lookup.lock().unwrap_or_else(|e| e.into_inner())
+  }
+
+  /// Public key file names to look for, best first (upstream
+  /// `_pub_key_candidates`). The sender's address is used only when no
+  /// recipient address is given.
+  pub fn pub_key_candidates(&self, emails: &[&str]) -> Vec<String> {
+    let addresses: Vec<&str> = if emails.is_empty() { self.email.as_deref().into_iter().collect() } else { emails.to_vec() };
+    let mut names: Vec<String> = ["pgp-public.asc", "pgp-pub.asc", "public.asc", "pub.asc"].iter().map(|s| s.to_string()).collect();
+    for email in addresses {
+      let local = email.split('@').next().unwrap_or_default().to_lowercase();
+      names.insert(0, format!("{}-pub.asc", local));
+      names.insert(0, format!("{}-pub.asc", email.to_lowercase()));
+    }
+    names
+  }
+
+  /// Private key file names to look for, best first (upstream
+  /// `_prv_key_candidates`).
+  pub fn prv_key_candidates(&self) -> Vec<String> {
+    let mut names: Vec<String> = ["pgp-private.asc", "pgp-prv.asc", "private.asc", "prv.asc"].iter().map(|s| s.to_string()).collect();
+    if let Some(email) = &self.email {
+      names.insert(0, format!("{}-prv.asc", email.split('@').next().unwrap_or_default().to_lowercase()));
+      names.insert(0, format!("{}-prv.asc", email.to_lowercase()));
+    }
+    names
+  }
+
+  fn find_file(&self, names: &[String]) -> Option<PathBuf> {
+    let dir = self.path.as_deref()?;
+    names.iter().map(|n| dir.join(n)).find(|p| p.is_file())
+  }
+
+  /// The first discovered public key file for `emails` (upstream
+  /// `public_keyfile` without an explicit `pgppub=`).
+  pub fn public_keyfile(&self, emails: &[&str]) -> Option<PathBuf> {
+    self.find_file(&self.pub_key_candidates(emails))
+  }
+
+  /// The first discovered private key file (upstream `private_keyfile`
+  /// without an explicit `pgpprv=`).
+  pub fn private_keyfile(&self) -> Option<PathBuf> {
+    self.find_file(&self.prv_key_candidates())
+  }
+
+  async fn source(&self, explicit: Option<&str>, max: usize, discovered: Option<PathBuf>, prefix: &str) -> KeySource {
+    if let Some(source) = explicit {
+      return match crate::attachment::load_attachment(source).await {
+        Ok(att) if att.data.len() <= max => KeySource::Found(att.data, format!("{}{}", prefix, source)),
+        Ok(_) => {
+          tracing::warn!("PGP key {} exceeds the {} byte limit", cwe312_loggable(source, true), max);
+          KeySource::Inaccessible
+        }
+        Err(_) => {
+          tracing::error!("Could not access PGP key {}.", cwe312_loggable(source, true));
+          KeySource::Inaccessible
+        }
+      };
+    }
+    let Some(path) = discovered else { return KeySource::Missing };
+    match std::fs::read(&path) {
+      Ok(data) => KeySource::Found(data, format!("{}{}", prefix, absolute(&path).display())),
+      Err(e) => {
+        tracing::warn!("Error accessing PGP key file {}", cwe312_loggable(&path.to_string_lossy(), true));
+        tracing::debug!("I/O Exception: {}", e);
+        KeySource::Missing
       }
     }
   }
 
-  candidates.extend_from_slice(&["pgp-public.asc".to_string(), "pgp-pub.asc".to_string(), "public.asc".to_string(), "pub.asc".to_string()]);
+  fn searched(&self, candidates: &[String]) -> String {
+    let ns = self.path.as_deref().and_then(Path::file_name).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let shown: Vec<String> = candidates.iter().take(4).map(|c| format!("'{}/{}'", ns, c)).collect();
+    format!("{}{}", shown.join(", "), if candidates.len() > 4 { ", ..." } else { "" })
+  }
 
-  let base = Path::new(dir);
-  candidates.into_iter().find_map(|fname| {
-    let full = base.join(&fname);
-    if full.is_file() { full.to_str().map(|s| s.to_string()) } else { None }
-  })
+  /// The sender's private key (upstream `private_key`). `None` when it is
+  /// missing, unreadable, passphrase-protected or public only.
+  pub async fn private_key(&self) -> Option<SignedSecretKey> {
+    let (data, id) = match self.source(self.prv_keyfile.as_deref(), MAX_PGP_PRIVATE_KEY_SIZE, self.private_keyfile(), "prv:").await {
+      KeySource::Found(data, id) => (data, id),
+      KeySource::Inaccessible => {
+        tracing::warn!("PGP Private Key could not be accessed");
+        return None;
+      }
+      KeySource::Missing => {
+        if self.path.is_some() {
+          tracing::debug!("No PGP private key found; searched: {}", self.searched(&self.prv_key_candidates()));
+        } else {
+          tracing::debug!("No PGP private key found");
+        }
+        return None;
+      }
+    };
+    let cache_key = hex::encode(Sha1::digest(id.as_bytes()));
+    let cached = self.cache().get(&cache_key).cloned();
+    if let Some((CachedKey::Secret(key), expires)) = cached {
+      if expires > Instant::now() {
+        return Some(*key);
+      }
+      self.cache().remove(&cache_key);
+    }
+    let key = match parse_key(&data) {
+      Some(PublicOrSecret::Secret(key)) => key,
+      Some(PublicOrSecret::Public(_)) => {
+        tracing::warn!("PGP Private Key file does not contain secret key material");
+        return None;
+      }
+      None => {
+        tracing::warn!("PGP Private Key file could not be parsed");
+        return None;
+      }
+    };
+    if key.primary_key.secret_params().is_encrypted() {
+      // Apprise runs unattended, so a protected key would block sending
+      tracing::warn!("PGP Private Key is passphrase-protected; Apprise does not support passphrase-protected keys");
+      return None;
+    }
+    self.cache().insert(cache_key, (CachedKey::Secret(Box::new(key.clone())), Instant::now() + KEY_CACHE_EXPIRY));
+    Some(key)
+  }
+
+  /// A detached signature over `message` and its `micalg` label (for
+  /// example `pgp-sha256`), or `None` when signing is not possible.
+  pub async fn sign(&self, message: &[u8]) -> Option<(String, String)> {
+    let Some(key) = self.private_key().await else {
+      tracing::debug!("PGP signing skipped: no usable private key");
+      return None;
+    };
+    let hash = preferred_hash(&key);
+    let rng = rand_core06::OsRng;
+    let signature = if may_sign(primary_binding(&key.details), key.primary_key.algorithm()) {
+      DetachedSignature::sign_binary_data(rng, &key.primary_key, &Password::empty(), hash, message)
+    } else if let Some(sub) = key.secret_subkeys.iter().find(|s| latest_binding(&s.signatures).is_some_and(|b| b.key_flags().sign())) {
+      DetachedSignature::sign_binary_data(rng, &sub.key, &Password::empty(), hash, message)
+    } else {
+      tracing::debug!("PGP signing failed; key may lack Sign capability");
+      return None;
+    };
+    match signature.and_then(|s| s.to_armored_string(ArmorOptions::default())) {
+      Ok(armored) => Some((armored, format!("pgp-{}", hash_name(hash)))),
+      Err(e) => {
+        tracing::debug!("PGP signing failed: {}", e);
+        None
+      }
+    }
+  }
+
+  /// The first key WKD publishes for `emails` (or the sender when none is
+  /// given), so a missed recipient lookup never encrypts to the sender.
+  async fn fetch_wkd_key(&self, emails: &[&str]) -> Option<SignedPublicKey> {
+    let wkd = self.wkd.as_ref()?;
+    let candidates: Vec<&str> = if emails.is_empty() { self.email.as_deref().into_iter().collect() } else { emails.to_vec() };
+    for email in candidates.into_iter().filter(|e| !e.is_empty()) {
+      let cache_key = hex::encode(Sha1::digest(format!("wkd:{}", email.to_lowercase()).as_bytes()));
+      let cached = self.cache().get(&cache_key).cloned();
+      if let Some((CachedKey::Public(key), expires)) = cached {
+        if expires > Instant::now() {
+          return Some(*key);
+        }
+        self.cache().remove(&cache_key);
+      }
+      let Some(data) = wkd.fetch(email).await else { continue };
+      let Some(PublicOrSecret::Public(key)) = parse_key(&data) else {
+        tracing::debug!("WKD key parse failed for {}; skipping", email);
+        continue;
+      };
+      self.cache().insert(cache_key, (CachedKey::Public(Box::new(key.clone())), Instant::now() + KEY_CACHE_EXPIRY));
+      tracing::debug!("Loaded PGP public key via WKD for {}", email);
+      return Some(key);
+    }
+    None
+  }
+
+  /// The public key to encrypt to (upstream `public_key`): explicit or
+  /// discovered file, then WKD, then a generated pair when `autogen` (or,
+  /// when `None`, the controller's setting) allows it.
+  pub async fn public_key(&self, emails: &[&str], autogen: Option<bool>) -> Option<SignedPublicKey> {
+    let mut generated = false;
+    loop {
+      let source = self.source(self.pub_keyfile.as_deref(), MAX_PGP_PUBLIC_KEY_SIZE, self.public_keyfile(emails), "").await;
+      let (data, id) = match source {
+        KeySource::Found(data, id) => (data, id),
+        KeySource::Inaccessible => return None,
+        KeySource::Missing => {
+          if let Some(key) = self.fetch_wkd_key(emails).await {
+            return Some(key);
+          }
+          if !generated && autogen.unwrap_or(self.autogen) && self.keygen(emails.first().copied(), None, false).await {
+            // Load what was just written
+            generated = true;
+            continue;
+          }
+          if self.path.is_some() {
+            tracing::debug!("No PGP public key found; searched: {}", self.searched(&self.pub_key_candidates(emails)));
+          } else {
+            tracing::debug!("No PGP public key found");
+          }
+          return None;
+        }
+      };
+      let cache_key = hex::encode(Sha1::digest(id.as_bytes()));
+      let cached = self.cache().get(&cache_key).cloned();
+      if let Some((CachedKey::Public(key), _)) = cached {
+        return Some(*key);
+      }
+      let key = match parse_key(&data) {
+        Some(PublicOrSecret::Public(key)) => key,
+        Some(PublicOrSecret::Secret(key)) => key.to_public_key(),
+        None => {
+          tracing::warn!("PGP Public Key file could not be parsed");
+          return None;
+        }
+      };
+      self.cache().insert(cache_key, (CachedKey::Public(Box::new(key.clone())), Instant::now() + KEY_CACHE_EXPIRY));
+      return Some(key);
+    }
+  }
+
+  /// Generate a key pair for `email` (default: the sender) in the storage
+  /// directory: an RSA signing and certification primary key with an RSA
+  /// encryption subkey, as upstream's `keygen` does. True when the pair
+  /// exists afterwards.
+  pub async fn keygen(&self, email: Option<&str>, name: Option<&str>, force: bool) -> bool {
+    if self.pub_keyfile.is_some() || self.path.is_none() {
+      tracing::trace!("PGP keygen disabled, reason={}", if self.pub_keyfile.is_some() { "keyfile-defined" } else { "no-write-path" });
+      return false;
+    }
+    let Some(email) = email.or(self.email.as_deref()).map(str::to_string) else { return false };
+    let dir = self.path.clone().expect("checked above");
+    let prefix = email.split('@').next().unwrap_or_default().to_lowercase();
+    let pub_path = dir.join(format!("{}-pub.asc", prefix));
+    let prv_path = dir.join(format!("{}-prv.asc", prefix));
+    if pub_path.is_file() && !force {
+      tracing::debug!("PGP generation skipped; Public Key already exists: {}", pub_path.display());
+      return true;
+    }
+    self.cache().remove(&hex::encode(Sha1::digest(absolute(&pub_path).display().to_string().as_bytes())));
+
+    let uid = format!("{} <{}>", name.unwrap_or(&self.app_id), email);
+    let generated = tokio::task::spawn_blocking(move || generate_key(&uid)).await.ok().flatten();
+    let Some((public, secret)) = generated else {
+      tracing::warn!("PGP key generation failed");
+      return false;
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&pub_path, public)) {
+      tracing::warn!("Error writing PGP file {}", pub_path.display());
+      tracing::debug!("I/O Exception: {}", e);
+      let _ = std::fs::remove_file(&pub_path);
+      return false;
+    }
+    if let Err(e) = write_private(&prv_path, secret.as_bytes()) {
+      tracing::warn!("Error writing PGP file {}", prv_path.display());
+      tracing::debug!("I/O Exception: {}", e);
+      let _ = std::fs::remove_file(&pub_path);
+      let _ = std::fs::remove_file(&prv_path);
+      return false;
+    }
+    tracing::info!("Wrote PGP Keys for {}/{}", dir.display(), pub_path.file_name().unwrap_or_default().to_string_lossy());
+    true
+  }
+
+  /// An Autocrypt header advertising the sender's key (Autocrypt Level 1):
+  /// only a key we hold the private half of, with exactly one user ID and
+  /// one encryption subkey, and only when the header fits the 10 KiB limit.
+  pub async fn autocrypt_header(&self) -> Option<String> {
+    let email = self.email.as_deref()?;
+    let mut key = self.private_key().await;
+    if key.is_none() && self.autogen && self.keygen(None, None, false).await {
+      key = self.private_key().await;
+    }
+    let key = key?;
+    // Validate what is advertised: the exported public key, parsed again
+    let exported = key.to_public_key().to_bytes().ok()?;
+    let Ok(reparsed) = SignedPublicKey::from_bytes(Cursor::new(&exported)) else {
+      tracing::debug!("Unable to re-parse our own exported PGP key");
+      return None;
+    };
+    if !has_encryption_subkey(&reparsed) {
+      tracing::debug!("PGP private key lacks an Autocrypt-compatible encryption subkey; omitting Autocrypt header");
+      return None;
+    }
+    let keydata = base64::engine::general_purpose::STANDARD.encode(&exported);
+    let folded: Vec<&str> = keydata.as_bytes().chunks(AUTOCRYPT_FOLD_WIDTH).map(|c| std::str::from_utf8(c).expect("base64 is ASCII")).collect();
+    let header = format!("addr={}; prefer-encrypt=mutual; keydata={}", email, folded.join("\r\n "));
+    let size = format!("Autocrypt: {}", header).len();
+    if size > MAX_AUTOCRYPT_HEADER_SIZE {
+      tracing::debug!("Autocrypt header ({} bytes) exceeds the {} byte spec limit; omitting", size, MAX_AUTOCRYPT_HEADER_SIZE);
+      return None;
+    }
+    Some(header)
+  }
+
+  /// `message` encrypted to the key of `emails`, ASCII-armored, or `None`
+  /// when no key is available. `autogen: Some(false)` uses existing keys
+  /// only.
+  pub async fn encrypt(&self, message: &[u8], emails: &[&str], autogen: Option<bool>) -> Option<String> {
+    let key = self.public_key(emails, autogen).await?;
+    encrypt_to(&key, message)
+  }
+
+  /// Drop expired keys (and expired WKD results).
+  pub fn prune(&self) {
+    let now = Instant::now();
+    self.cache().retain(|_, (_, expires)| *expires > now);
+    if let Some(wkd) = &self.wkd {
+      wkd.prune();
+    }
+  }
+}
+
+fn absolute(path: &Path) -> PathBuf {
+  std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Write a private key readable by its owner only.
+fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+  #[cfg(unix)]
+  {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    file.write_all(data)
+  }
+  #[cfg(not(unix))]
+  {
+    std::fs::write(path, data)
+  }
+}
+
+/// The first key in armored or binary OpenPGP data (PGPy `from_blob`).
+fn parse_key(data: &[u8]) -> Option<PublicOrSecret> {
+  let (mut keys, _) = PublicOrSecret::from_reader_many(Cursor::new(data)).ok()?;
+  keys.next()?.ok()
+}
+
+/// A new key pair, armored (public, secret).
+fn generate_key(uid: &str) -> Option<(String, String)> {
+  let mut subkey = SubkeyParamsBuilder::default();
+  subkey.key_type(KeyType::Rsa(KEYGEN_RSA_BITS)).can_sign(false).can_encrypt(EncryptionCaps::All);
+  let mut params = SecretKeyParamsBuilder::default();
+  params
+    .key_type(KeyType::Rsa(KEYGEN_RSA_BITS))
+    .can_certify(true)
+    .can_sign(true)
+    .can_encrypt(EncryptionCaps::None)
+    .primary_user_id(uid.to_string())
+    .preferred_symmetric_algorithms(vec![SymmetricKeyAlgorithm::AES256].into())
+    .preferred_hash_algorithms(vec![HashAlgorithm::Sha256].into())
+    .preferred_compression_algorithms(vec![CompressionAlgorithm::ZLIB].into())
+    .subkeys(vec![subkey.build().ok()?]);
+  let secret = params.build().ok()?.generate(rand_core06::OsRng).ok()?;
+  let public = secret.to_public_key().to_armored_string(ArmorOptions::default()).ok()?;
+  let secret = secret.to_armored_string(ArmorOptions::default()).ok()?;
+  Some((public, secret))
+}
+
+fn issued_by_primary(sig: &Signature, primary: &impl KeyDetails) -> bool {
+  let id = primary.legacy_key_id();
+  let fp = primary.fingerprint();
+  sig.issuer_key_id().iter().any(|k| **k == id) || sig.issuer_fingerprint().iter().any(|f| **f == fp)
+}
+
+fn expired(sig: &Signature) -> bool {
+  match (sig.created(), sig.signature_expiration_time()) {
+    (Some(created), Some(expires)) if expires.as_secs() > 0 => {
+      let until = std::time::UNIX_EPOCH + Duration::from_secs(u64::from(created.as_secs()) + u64::from(expires.as_secs()));
+      until < std::time::SystemTime::now()
+    }
+    _ => false,
+  }
+}
+
+/// The newest binding signature among `signatures`.
+fn latest_binding(signatures: &[Signature]) -> Option<&Signature> {
+  signatures.iter().filter(|s| s.typ() == Some(SignatureType::SubkeyBinding) && !expired(s)).max_by_key(|s| s.created().map(|c| c.as_secs()))
+}
+
+/// The self-signature carrying the primary key's preferences and flags:
+/// the primary user ID's (or the first user ID's) newest certification.
+fn primary_binding(details: &pgp::composed::SignedKeyDetails) -> Option<&Signature> {
+  fn newest_certification(user: &pgp::types::SignedUser) -> Option<&Signature> {
+    user.signatures.iter().filter(|s| s.is_certification() && !expired(s)).max_by_key(|s| s.created().map(|c| c.as_secs()))
+  }
+  details
+    .users
+    .iter()
+    .find(|u| u.signatures.iter().any(|s| s.is_primary()))
+    .or(details.users.first())
+    .and_then(newest_certification)
+    .or_else(|| details.direct_signatures.first())
+}
+
+/// Whether a binding carries no usage flags at all (old keys); the
+/// algorithm's capabilities apply then.
+fn no_flags(binding: Option<&Signature>) -> bool {
+  binding
+    .map(Signature::key_flags)
+    .is_none_or(|f| !(f.certify() || f.sign() || f.encrypt_comms() || f.encrypt_storage() || f.authentication() || f.shared() || f.group()))
+}
+
+/// Whether a component may sign (PGPy's `KeyAction(KeyFlags.Sign)`).
+fn may_sign(binding: Option<&Signature>, algorithm: pgp::crypto::public_key::PublicKeyAlgorithm) -> bool {
+  if no_flags(binding) { algorithm.can_sign() } else { binding.is_some_and(|b| b.key_flags().sign()) }
+}
+
+/// Whether a component may encrypt (communications or storage).
+fn may_encrypt(binding: Option<&Signature>, algorithm: pgp::crypto::public_key::PublicKeyAlgorithm) -> bool {
+  if no_flags(binding) { algorithm.can_encrypt() } else { binding.is_some_and(|b| b.key_flags().encrypt_comms() || b.key_flags().encrypt_storage()) }
+}
+
+/// The signing hash: the key's first preferred SHA-2 hash, else SHA-256
+/// (PGPy picks the first supported preference).
+fn preferred_hash(key: &SignedSecretKey) -> HashAlgorithm {
+  let prefs = primary_binding(&key.details).map(Signature::preferred_hash_algs).unwrap_or_default();
+  prefs
+    .iter()
+    .copied()
+    .find(|h| matches!(h, HashAlgorithm::Sha224 | HashAlgorithm::Sha256 | HashAlgorithm::Sha384 | HashAlgorithm::Sha512))
+    .unwrap_or(HashAlgorithm::Sha256)
+}
+
+fn hash_name(hash: HashAlgorithm) -> &'static str {
+  match hash {
+    HashAlgorithm::Sha224 => "sha224",
+    HashAlgorithm::Sha384 => "sha384",
+    HashAlgorithm::Sha512 => "sha512",
+    _ => "sha256",
+  }
+}
+
+/// The cipher for `key`: its first preferred AES, Camellia or Twofish
+/// cipher, else AES-256.
+fn preferred_cipher(key: &SignedPublicKey) -> SymmetricKeyAlgorithm {
+  use SymmetricKeyAlgorithm as S;
+  let prefs = primary_binding(&key.details).map(Signature::preferred_symmetric_algs).unwrap_or_default();
+  prefs
+    .iter()
+    .copied()
+    .find(|c| matches!(c, S::AES128 | S::AES192 | S::AES256 | S::Camellia128 | S::Camellia192 | S::Camellia256 | S::Twofish))
+    .unwrap_or(S::AES256)
+}
+
+/// Encrypt to the key's first encryption-capable subkey, else to the
+/// primary key when it may encrypt (PGPy's `KeyAction` selection), as a
+/// compressed binary literal in SEIPD v1.
+fn encrypt_to(key: &SignedPublicKey, message: &[u8]) -> Option<String> {
+  let mut rng = rand_core06::OsRng;
+  let mut builder = MessageBuilder::from_bytes("", message.to_vec()).seipd_v1(&mut rng, preferred_cipher(key));
+  builder.compression(CompressionAlgorithm::ZIP);
+  let subkey = key
+    .public_subkeys
+    .iter()
+    .filter(|s| !s.signatures.iter().any(|sig| sig.typ() == Some(SignatureType::SubkeyRevocation)))
+    .find(|s| may_encrypt(latest_binding(&s.signatures), s.key.algorithm()));
+  let result = match subkey {
+    Some(sub) => builder.encrypt_to_key(&mut rng, &sub.key).map(|_| ()),
+    None if may_encrypt(primary_binding(&key.details), key.primary_key.algorithm()) => builder.encrypt_to_key(&mut rng, &key.primary_key).map(|_| ()),
+    None => {
+      tracing::debug!("PGP Public Key has no encryption key; encryption not possible");
+      return None;
+    }
+  };
+  match result.and_then(|_| builder.to_armored_string(rng, ArmorOptions::default())) {
+    Ok(armored) => Some(armored),
+    Err(e) => {
+      tracing::debug!("PGP Public Key Corruption; encryption not possible: {}", e);
+      None
+    }
+  }
+}
+
+/// Whether `key` is shaped as Autocrypt expects (upstream
+/// `_has_encryption_subkey`): no user attributes, no revocations, exactly
+/// one user ID carrying exactly one signature (a self-signature), and
+/// exactly one subkey with one live binding that allows encryption.
+pub fn has_encryption_subkey(key: &SignedPublicKey) -> bool {
+  let details = &key.details;
+  if !details.user_attributes.is_empty() || !details.revocation_signatures.is_empty() {
+    return false;
+  }
+  if details.users.len() != 1 || key.public_subkeys.len() != 1 {
+    return false;
+  }
+  let user = &details.users[0];
+  if user.signatures.len() != 1 || !issued_by_primary(&user.signatures[0], &key.primary_key) || !user.signatures[0].is_certification() {
+    return false;
+  }
+  let subkey = &key.public_subkeys[0];
+  if subkey.signatures.iter().any(|s| s.typ() == Some(SignatureType::SubkeyRevocation)) {
+    return false;
+  }
+  let bindings: Vec<&Signature> =
+    subkey.signatures.iter().filter(|s| s.typ() == Some(SignatureType::SubkeyBinding) && issued_by_primary(s, &key.primary_key) && !expired(s)).collect();
+  if bindings.len() != 1 {
+    return false;
+  }
+  let flags = bindings[0].key_flags();
+  flags.encrypt_comms() || flags.encrypt_storage()
 }
 
 #[cfg(test)]
-mod tests {
-  use super::*;
-  use std::fs;
-
-  #[test]
-  fn test_is_pgp_public_key_valid() {
-    let data = b"-----BEGIN PGP PUBLIC KEY BLOCK-----\nVersion: GnuPG\n\nmQENB...";
-    assert!(is_pgp_public_key(data));
-  }
-
-  #[test]
-  fn test_is_pgp_public_key_with_whitespace() {
-    let data = b"  \n-----BEGIN PGP PUBLIC KEY BLOCK-----\ndata";
-    assert!(is_pgp_public_key(data));
-  }
-
-  #[test]
-  fn test_is_pgp_public_key_invalid() {
-    assert!(!is_pgp_public_key(b"not a pgp key"));
-    assert!(!is_pgp_public_key(b""));
-    assert!(!is_pgp_public_key(b"-----BEGIN PEM-----"));
-  }
-
-  #[test]
-  fn test_load_pgp_key_file_not_found() {
-    let result = load_pgp_key("/nonexistent/path/key.asc");
-    assert!(result.is_err());
-  }
-
-  #[test]
-  fn test_load_pgp_key_success() {
-    let dir = tempfile::tempdir().unwrap();
-    let key_path = dir.path().join("test.asc");
-    let content = b"-----BEGIN PGP PUBLIC KEY BLOCK-----\ntest\n-----END PGP PUBLIC KEY BLOCK-----\n";
-    fs::write(&key_path, content).unwrap();
-
-    let result = load_pgp_key(key_path.to_str().unwrap());
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), content.to_vec());
-  }
-
-  #[test]
-  fn test_load_pgp_key_too_large() {
-    let dir = tempfile::tempdir().unwrap();
-    let key_path = dir.path().join("big.asc");
-    let content = vec![b'A'; MAX_PGP_PUBLIC_KEY_SIZE + 1];
-    fs::write(&key_path, &content).unwrap();
-
-    let result = load_pgp_key(key_path.to_str().unwrap());
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
-  }
-
-  #[test]
-  fn test_find_pgp_public_keyfile_generic() {
-    let dir = tempfile::tempdir().unwrap();
-    let pub_path = dir.path().join("pub.asc");
-    fs::write(&pub_path, b"key data").unwrap();
-
-    let result = find_pgp_public_keyfile(dir.path().to_str().unwrap(), None);
-    assert!(result.is_some());
-    assert!(result.unwrap().ends_with("pub.asc"));
-  }
-
-  #[test]
-  fn test_find_pgp_public_keyfile_with_email() {
-    let dir = tempfile::tempdir().unwrap();
-    let named_path = dir.path().join("user-pub.asc");
-    fs::write(&named_path, b"key data").unwrap();
-
-    let result = find_pgp_public_keyfile(dir.path().to_str().unwrap(), Some("User@example.com"));
-    assert!(result.is_some());
-    assert!(result.unwrap().ends_with("user-pub.asc"));
-  }
-
-  #[test]
-  fn test_find_pgp_public_keyfile_not_found() {
-    let dir = tempfile::tempdir().unwrap();
-    assert!(find_pgp_public_keyfile(dir.path().to_str().unwrap(), None).is_none());
-  }
-
-  #[test]
-  fn test_pgp_key_exists() {
-    let dir = tempfile::tempdir().unwrap();
-    let key_path = dir.path().join("key.asc");
-    assert!(!pgp_key_exists(key_path.to_str().unwrap()));
-
-    fs::write(&key_path, b"data").unwrap();
-    assert!(pgp_key_exists(key_path.to_str().unwrap()));
-  }
-
-  #[test]
-  fn test_pgp_available() {
-    // Just verify it returns a bool without panicking
-    let _ = pgp_available();
-  }
-}
+mod tests;

@@ -24,7 +24,10 @@ serde_yaml = { version = "0.9" }
 url = "2"
 
 # Email
-lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls-tls", "builder"] }
+# OpenPGP (email PGP/MIME signing and encryption, WKD keys); pure Rust
+pgp = { version = "0.21", default-features = false }
+# The RNG traits rPGP takes (rand_core 0.6); rand 0.8 already pulls it in
+rand_core06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
 
 # Logging
 tracing = "0.1"
@@ -72,6 +75,9 @@ hex = "0.4"
 ring = { version = "0.17", default-features = false, features = ["alloc"] }
 # AES-GCM with 128/192/256-bit keys (Bark); ring has no AES-192
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
+# AES-256-CBC for Pushover end-to-end encryption (the aes cipher comes
+# from aes-gcm)
+cbc = { version = "0.2", default-features = false, features = ["block-padding", "alloc"] }
 # Simplepush end-to-end encryption (libsodium-compatible: Argon2id key
 # derivation, XChaCha20-Poly1305 fields, crypto_box organization key wraps)
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
@@ -114,7 +120,7 @@ hidapi = { version = "2", default-features = false, features = ["linux-native-ba
 clap = { version = "4", features = ["derive", "env"] }
 
 # Internal crate
-apprise-core = { path = "crates/apprise-core" }
+apprise-core = { path = "crates/apprise-core", default-features = false }
 
 # Dev dependencies
 wiremock = "0.6"

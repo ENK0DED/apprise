@@ -4,7 +4,6 @@ services:
     environment:
       - APPRISE_URLS
       - APPRISE_CONFIG_PATH
-      - APPRISE_BODY
       - APPRISE_STORAGE_PATH=/data/cache
     volumes:
       - apprise-data:/data
