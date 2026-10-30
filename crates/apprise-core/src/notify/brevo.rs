@@ -263,7 +263,7 @@ impl Notify for Brevo {
         .send()
         .await;
       match result {
-        Ok(resp) if matches!(resp.status().as_u16(), 200 | 201 | 202) => {
+        Ok(resp) if matches!(resp.status().as_u16(), 200..=202) => {
           tracing::info!("Sent Brevo notification to {}.", target);
           mark_delivered(target, false);
         }
