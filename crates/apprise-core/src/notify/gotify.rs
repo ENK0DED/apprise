@@ -5,6 +5,27 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::utils::parse::ParsedUrl;
 
+/// Upstream `GOTIFY_PRIORITY_MAP`: the first key the value starts with wins,
+/// anything else is normal (5).
+const PRIORITY_MAP: &[(&str, i32)] = &[
+  ("l", 0),
+  ("m", 3),
+  ("n", 5),
+  ("h", 8),
+  ("e", 10),
+  ("10", 10),
+  ("0", 0),
+  ("1", 0),
+  ("2", 0),
+  ("3", 3),
+  ("4", 3),
+  ("5", 5),
+  ("6", 5),
+  ("7", 5),
+  ("8", 8),
+  ("9", 8),
+];
+
 pub struct Gotify {
   host: String,
   port: Option<u16>,
@@ -29,17 +50,13 @@ impl Gotify {
     // Path prefix is everything except the last component
     let path = if url.path_parts.len() > 1 { format!("/{}/", url.path_parts[..url.path_parts.len() - 1].join("/")) } else { "/".to_string() };
 
-    let priority = url
-      .get("priority")
-      .and_then(|p| match p.to_lowercase().as_str() {
-        "l" | "low" | "1" => Some(1),
-        "m" | "moderate" | "3" => Some(3),
-        "n" | "normal" | "5" => Some(5),
-        "h" | "high" | "8" => Some(8),
-        "e" | "emergency" | "10" => Some(10),
-        n => n.parse().ok(),
-      })
-      .unwrap_or(5);
+    let priority = match url.get("priority").filter(|p| !p.is_empty()) {
+      Some(p) => {
+        let p = p.to_lowercase();
+        PRIORITY_MAP.iter().find(|(k, _)| p.starts_with(k)).map(|(_, v)| *v).unwrap_or(5)
+      }
+      None => 5,
+    };
 
     Some(Self {
       host,
@@ -56,8 +73,8 @@ impl Gotify {
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "Gotify",
-      service_url: Some("https://gotify.net"),
-      setup_url: Some("https://gotify.net/docs/pushmsg"),
+      service_url: Some("https://github.com/gotify/server"),
+      setup_url: Some("https://appriseit.com/services/gotify/"),
       protocols: vec!["gotify", "gotifys"],
       description: "Send notifications via Gotify self-hosted push server.",
       attachment_support: false,
@@ -78,6 +95,10 @@ impl Notify for Gotify {
   }
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
+  }
+  fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
+    0.0
   }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
@@ -101,8 +122,9 @@ impl Notify for Gotify {
     let client = build_client(self.verify_certificate)?;
     let resp = client.post(&api_url).header("User-Agent", APP_ID).header("X-Gotify-Key", &self.token).json(&payload).send().await?;
 
-    if resp.status().is_success() {
-      tracing::info!("Gotify notification sent");
+    // Upstream accepts 200 only
+    if resp.status().as_u16() == 200 {
+      tracing::info!("Sent Gotify notification.");
       Ok(true)
     } else {
       let status = resp.status().as_u16();
@@ -156,7 +178,7 @@ mod tests {
     let token = "a".repeat(16);
     let parsed = crate::utils::parse::ParsedUrl::parse(&format!("gotify://host/{}?priority=low", token)).unwrap();
     let g = Gotify::from_url(&parsed).unwrap();
-    assert_eq!(g.priority, 1);
+    assert_eq!(g.priority, 0);
 
     let parsed = crate::utils::parse::ParsedUrl::parse(&format!("gotify://host/{}?priority=moderate", token)).unwrap();
     let g = Gotify::from_url(&parsed).unwrap();
@@ -174,10 +196,15 @@ mod tests {
     let g = Gotify::from_url(&parsed).unwrap();
     assert_eq!(g.priority, 10);
 
-    // Numeric priority
-    let parsed = crate::utils::parse::ParsedUrl::parse(&format!("gotify://host/{}?priority=7", token)).unwrap();
-    let g = Gotify::from_url(&parsed).unwrap();
-    assert_eq!(g.priority, 7);
+    // Numeric priorities map onto the five levels by their first digits
+    for (value, expected) in [("0", 0), ("2", 0), ("4", 3), ("7", 5), ("9", 8), ("10", 10), ("1", 0)] {
+      let parsed = crate::utils::parse::ParsedUrl::parse(&format!("gotify://host/{}?priority={}", token, value)).unwrap();
+      assert_eq!(Gotify::from_url(&parsed).unwrap().priority, expected, "{value}");
+    }
+
+    // Empty priority defaults to normal (5)
+    let parsed = crate::utils::parse::ParsedUrl::parse(&format!("gotify://host/{}?priority=", token)).unwrap();
+    assert_eq!(Gotify::from_url(&parsed).unwrap().priority, 5);
 
     // Invalid priority defaults to normal (5)
     let parsed = crate::utils::parse::ParsedUrl::parse(&format!("gotify://host:8008/{}?priority=invalid", token)).unwrap();
@@ -247,7 +274,7 @@ mod tests {
     let ctx = default_ctx();
     let result = gotify.send(&ctx).await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), true);
+    assert!(result.unwrap());
   }
 
   #[tokio::test]
@@ -459,5 +486,30 @@ mod tests {
     let ctx = NotifyContext { title: "Text Title".into(), body: "plain text".into(), body_format: NotifyFormat::Text, ..Default::default() };
     let result = gotify.send(&ctx).await;
     assert!(result.is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_send_non_200_success_code_fails() {
+    // Upstream treats anything but 200 as a failure
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/message")).respond_with(ResponseTemplate::new(204)).expect(1).mount(&server).await;
+    let gotify = gotify_for_mock(&server, &"k".repeat(16));
+    assert!(matches!(gotify.send(&default_ctx()).await, Err(NotifyError::ServiceError { status: 204, .. })));
+  }
+
+  #[tokio::test]
+  async fn test_send_low_priority_is_zero() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/message"))
+      .and(header("Content-Type", "application/json"))
+      .and(wiremock::matchers::body_json(serde_json::json!({"title": "Test Title", "message": "Test Body", "priority": 0})))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let addr = server.address();
+    let parsed = crate::utils::parse::ParsedUrl::parse(&format!("gotify://{}:{}/{}?priority=low", addr.ip(), addr.port(), "l".repeat(16))).unwrap();
+    assert!(Gotify::from_url(&parsed).unwrap().send(&default_ctx()).await.unwrap());
   }
 }

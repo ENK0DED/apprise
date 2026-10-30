@@ -30,6 +30,7 @@ urlencoding.workspace = true
 regex-lite.workspace = true
 indexmap.workspace = true
 hmac.workspace = true
+md-5.workspace = true
 sha2.workspace = true
 sha1.workspace = true
 hex.workspace = true

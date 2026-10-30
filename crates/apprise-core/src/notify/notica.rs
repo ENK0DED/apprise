@@ -1,32 +1,93 @@
 use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::notify::custom_json::{basic_auth, custom_args, header_map};
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
+use crate::utils::qsd;
 use async_trait::async_trait;
-#[allow(dead_code)]
+
 pub struct Notica {
   token: String,
+  /// `None` for the official notica.us service.
   host: Option<String>,
   port: Option<u16>,
+  /// Self-hosted path in front of `?token=`, with surrounding slashes.
+  fullpath: String,
+  user: Option<String>,
+  password: Option<String>,
+  headers: Vec<(String, String)>,
   secure: bool,
   verify_certificate: bool,
   tags: Vec<String>,
 }
+
 impl Notica {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let token = url.host.clone()?;
-    Some(Self { token, host: None, port: url.port, secure: url.schema == "noticas", verify_certificate: url.verify_certificate(), tags: url.tags() })
+    // Native https://notica.us/?{token}[&options]
+    if url.schema == "http" || url.schema == "https" {
+      if !url.host.as_deref().is_some_and(|h| h.eq_ignore_ascii_case("notica.us")) || url.user.is_some() || url.port.is_some() {
+        return None;
+      }
+      let after_host = url.raw.splitn(4, '/').nth(3).unwrap_or("");
+      let rest = after_host.strip_prefix('?').unwrap_or(after_host);
+      let token = rest.split('&').next().unwrap_or("");
+      return Self::build(url, Some(qsd::unquote(token)), None, String::new());
+    }
+
+    let encoded: Vec<&str> = url.path.split('/').filter(|s| !s.is_empty()).collect();
+    match encoded.split_last() {
+      // notica://{token}: the official service
+      None => Self::build(url, url.host.clone(), None, String::new()),
+      Some((_, dirs)) => {
+        let fullpath = if dirs.is_empty() { "/".to_string() } else { format!("/{}/", dirs.join("/")) };
+        Self::build(url, url.path_parts.last().cloned(), url.host.clone(), fullpath)
+      }
+    }
   }
+
+  fn build(url: &ParsedUrl, token: Option<String>, host: Option<String>, fullpath: String) -> Option<Self> {
+    let Some(token) = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) else {
+      tracing::warn!("An invalid Notica Token was specified.");
+      return None;
+    };
+    let selfhosted = host.is_some();
+    Some(Self {
+      token,
+      host,
+      port: url.port,
+      fullpath,
+      user: url.user.clone(),
+      password: url.password.clone(),
+      // Header overrides only apply to self-hosted servers
+      headers: if selfhosted { custom_args(url, '+') } else { Vec::new() },
+      secure: url.schema.ends_with('s'),
+      verify_certificate: url.verify_certificate(),
+      tags: url.tags(),
+    })
+  }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "Notica",
-      service_url: Some("https://notica.us"),
-      setup_url: None,
+      service_url: Some("https://notica.us/"),
+      setup_url: Some("https://appriseit.com/services/notica/"),
       protocols: vec!["notica", "noticas"],
       description: "Send push notifications via Notica.",
       attachment_support: false,
     }
   }
+
+  fn notify_url(&self) -> String {
+    match &self.host {
+      None => format!("{}/?{}", service_base("https://notica.us"), self.token),
+      Some(host) => {
+        let schema = if self.secure { "https" } else { "http" };
+        let port_str = self.port.map(|p| format!(":{}", p)).unwrap_or_default();
+        format!("{}://{}{}{}?token={}", schema, host, port_str, self.fullpath, self.token)
+      }
+    }
+  }
 }
+
 #[async_trait]
 impl Notify for Notica {
   fn schemas(&self) -> &[&str] {
@@ -41,16 +102,32 @@ impl Notify for Notica {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn title_maxlen(&self) -> usize {
+    0
+  }
+
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
-    let text = if ctx.title.is_empty() { ctx.body.clone() } else { format!("{}: {}", ctx.title, ctx.body) };
-    let url = format!("https://notica.us/?{}", self.token);
-    let params = [("d", text.as_str())];
+    let url = self.notify_url();
+    let headers = header_map(&[("User-Agent", APP_ID), ("Content-Type", "application/x-www-form-urlencoded")], &self.headers)?;
+
+    tracing::debug!("Notica POST URL: {} (cert_verify={})", url, self.verify_certificate);
     let client = build_client(self.verify_certificate)?;
-    let resp = client.post(&url).header("User-Agent", APP_ID).form(&params).send().await?;
-    if resp.status().is_success() {
+    // The body is sent as-is after "d:", not form encoded
+    let mut req = client.post(&url).headers(headers).body(format!("d:{}", ctx.body));
+    if self.host.is_some()
+      && let Some((user, password)) = basic_auth(&self.user, &self.password)
+    {
+      req = req.basic_auth(user, Some(password));
+    }
+
+    let resp = req.send().await?;
+    let status = resp.status().as_u16();
+    if status == 200 {
+      tracing::info!("Sent Notica notification.");
       Ok(true)
     } else {
-      Err(NotifyError::ServiceError { status: resp.status().as_u16(), body: resp.text().await.unwrap_or_default() })
+      tracing::warn!("Failed to send Notica notification: error={}.", status);
+      Err(NotifyError::ServiceError { status, body: resp.text().await.unwrap_or_default() })
     }
   }
 }
@@ -58,72 +135,93 @@ impl Notify for Notica {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
+  use wiremock::matchers::{header, method, path, query_param};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
 
   #[test]
-  fn test_invalid_urls() {
-    let urls = vec!["notica://", "notica://:@/"];
-    for url in &urls {
+  fn test_urls() {
+    for url in ["notica://", "notica://:@/", "https://notica.us/", "https://sub.notica.us/?abc"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
-  }
-
-  #[test]
-  fn test_valid_urls() {
     let urls = vec![
+      format!("https://notica.us/?{}", "z".repeat(6)),
+      format!("https://notica.us/?{}&overflow=upstream", "z".repeat(6)),
       format!("notica://{}", "a".repeat(6)),
       format!("notica://localhost/{}", "b".repeat(6)),
       format!("notica://user@localhost/{}", "c".repeat(6)),
       format!("notica://user:pass@localhost/{}/", "d".repeat(6)),
+      format!("notica://user:pass@localhost/a/path/{}/", "r".repeat(6)),
       format!("notica://localhost:8080/{}", "a".repeat(6)),
-      format!("noticas://localhost/{}", "j".repeat(6)),
-      format!("noticas://user:pass@localhost/{}", "e".repeat(6)),
       format!("noticas://localhost:8080/path/{}", "5".repeat(6)),
+      format!("notica://localhost:8080//{}/?+HeaderKey=HeaderValue", "7".repeat(6)),
     ];
     for url in &urls {
       assert!(from_url(url).is_some(), "Should parse: {}", url);
     }
   }
 
-  #[test]
-  fn test_from_url_fields_cloud_mode() {
-    let parsed = ParsedUrl::parse(&format!("notica://{}", "a".repeat(6))).unwrap();
-    let n = Notica::from_url(&parsed).unwrap();
-    assert_eq!(n.token, "a".repeat(6));
-    assert!(!n.secure);
-    assert!(n.host.is_none());
+  fn notica(url: &str) -> Notica {
+    Notica::from_url(&ParsedUrl::parse(url).unwrap()).unwrap()
   }
 
   #[test]
-  fn test_from_url_self_hosted() {
-    // In self-hosted mode, the host becomes the token (impl limitation)
-    let parsed = ParsedUrl::parse(&format!("notica://localhost/{}", "b".repeat(6))).unwrap();
-    let n = Notica::from_url(&parsed).unwrap();
-    // Current impl uses host as token
-    assert_eq!(n.token, "localhost");
+  fn test_parse() {
+    let n = notica("https://notica.us/?zzzzzz&overflow=upstream");
+    assert_eq!((n.token.as_str(), n.host.is_none()), ("zzzzzz", true));
+    let n = notica("notica://aaaaaa");
+    assert_eq!((n.token.as_str(), n.host.is_none()), ("aaaaaa", true));
+    let n = notica("noticas://user:pass@localhost:8080/a/path/rrrrrr/");
+    assert_eq!(n.notify_url(), "https://localhost:8080/a/path/?token=rrrrrr");
+    assert_eq!(notica("notica://localhost:8080//777777/").notify_url(), "http://localhost:8080/?token=777777");
   }
 
-  #[test]
-  fn test_secure_flag() {
-    let parsed = ParsedUrl::parse(&format!("noticas://localhost/{}", "j".repeat(6))).unwrap();
-    let n = Notica::from_url(&parsed).unwrap();
-    assert!(n.secure);
+  fn ctx() -> NotifyContext {
+    NotifyContext { title: String::new(), body: "body & text".into(), ..Default::default() }
   }
 
-  #[test]
-  fn test_port_parsing() {
-    let parsed = ParsedUrl::parse(&format!("notica://localhost:8080/{}", "a".repeat(6))).unwrap();
-    let n = Notica::from_url(&parsed).unwrap();
-    assert_eq!(n.port, Some(8080));
+  #[tokio::test]
+  async fn test_official() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/"))
+      .and(header("Content-Type", "application/x-www-form-urlencoded"))
+      .and(header("User-Agent", APP_ID))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let n = notica("notica://abc123");
+    assert!(crate::notify::with_test_base(server.uri(), n.send(&ctx())).await.unwrap());
+    let r = &requests_to(&server, "POST", "/").await[0];
+    assert_eq!(r.url.query(), Some("abc123"));
+    assert_eq!(r.body, b"d:body & text");
   }
 
-  #[test]
-  fn test_static_details() {
-    let details = Notica::static_details();
-    assert_eq!(details.service_name, "Notica");
-    assert_eq!(details.service_url, Some("https://notica.us"));
-    assert!(details.protocols.contains(&"notica"));
-    assert!(details.protocols.contains(&"noticas"));
-    assert!(!details.attachment_support);
+  #[tokio::test]
+  async fn test_selfhosted() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/a/path/"))
+      .and(query_param("token", "tok"))
+      .and(header("HeaderKey", "HeaderValue"))
+      .and(header("Authorization", "Basic dXNlcjpwYXNz"))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let n = notica(&format!("notica://user:pass@localhost:{}/a/path/tok/?+HeaderKey=HeaderValue", server.address().port()));
+    assert!(n.send(&ctx()).await.unwrap());
+    assert_eq!(requests_to(&server, "POST", "/a/path/").await[0].body, b"d:body & text");
+  }
+
+  #[tokio::test]
+  async fn test_failures() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(204)).expect(1).mount(&server).await;
+    let n = notica(&format!("notica://localhost:{}/tok", server.address().port()));
+    assert!(matches!(n.send(&ctx()).await, Err(NotifyError::ServiceError { status: 204, .. })));
+    assert!(notica("notica://127.0.0.1:1/tok").send(&ctx()).await.is_err());
   }
 }

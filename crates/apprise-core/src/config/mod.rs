@@ -580,7 +580,6 @@ mod tests {
   }
 
   #[cfg(feature = "yaml")]
-
   #[tokio::test]
   async fn test_format_selection() {
     let dir = tempfile::tempdir().unwrap();
@@ -629,7 +628,6 @@ mod tests {
   }
 
   #[cfg(feature = "yaml")]
-
   #[tokio::test]
   async fn test_text_handed_in_directly() {
     let loaded = load_config_text("urls:\n  - json://localhost\n", None, &opts(1)).await.unwrap();

@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use crate::Apprise;
 
 #[cfg(feature = "email")]
-
 #[test]
 fn test_add_splits_url_lists() {
   let mut a = Apprise::new();
@@ -50,7 +49,6 @@ async fn test_add_config_group_alias() {
 }
 
 #[cfg(feature = "yaml")]
-
 #[tokio::test]
 async fn test_add_config_yaml_groups() {
   let mut a = Apprise::new();
@@ -72,7 +70,6 @@ async fn test_add_config_malformed_yaml_fails_closed() {
 }
 
 #[cfg(feature = "yaml")]
-
 #[tokio::test]
 async fn test_templates_wait_for_values() {
   let yaml = "template:\n  - token\n  - host: localhost\nurls:\n  - json://${host}/${token}:\n      tag: t\n";
