@@ -280,6 +280,19 @@ pub trait Notify: Send + Sync {
     NotifyFormat::Text
   }
 
+  /// Every format the plugin can send, the default first (upstream's
+  /// `notify_format` tuple). A multi-format plugin overrides this and keeps
+  /// [`notify_format`](Self::notify_format) returning the first entry.
+  ///
+  /// The orchestrator picks one per send, as upstream `resolve_format` does:
+  /// a single-format plugin always gets its one format (`?format=` replaces
+  /// it); a multi-format plugin gets `?format=` when it is listed, else the
+  /// input format when it is listed, else the first entry. The choice is in
+  /// `ctx.body_format` when `send()` runs.
+  fn notify_formats(&self) -> Vec<NotifyFormat> {
+    vec![self.notify_format()]
+  }
+
   /// Maximum body length in characters (default: 32768, matching Python)
   fn body_maxlen(&self) -> usize {
     32768
@@ -307,6 +320,13 @@ pub trait Notify: Send + Sync {
   /// When > 0, truncate to N lines BEFORE overflow handling.
   fn body_max_line_count(&self) -> usize {
     0
+  }
+
+  /// Whether the title counts against [`body_maxlen`](Self::body_maxlen)
+  /// (upstream `overflow_amalgamate_title`): the service shows title and
+  /// body together, so `len(title) + len(body)` must fit the body limit.
+  fn overflow_amalgamate_title(&self) -> bool {
+    false
   }
 
   /// Convert one prepared body chunk into the service's own markup dialect

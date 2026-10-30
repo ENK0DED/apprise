@@ -158,6 +158,9 @@ impl Notify for ConfiguredService {
   fn notify_format(&self) -> NotifyFormat {
     self.inner.notify_format()
   }
+  fn notify_formats(&self) -> Vec<NotifyFormat> {
+    self.inner.notify_formats()
+  }
   fn body_maxlen(&self) -> usize {
     self.inner.body_maxlen()
   }
@@ -172,6 +175,9 @@ impl Notify for ConfiguredService {
   }
   fn body_max_line_count(&self) -> usize {
     self.inner.body_max_line_count()
+  }
+  fn overflow_amalgamate_title(&self) -> bool {
+    self.inner.overflow_amalgamate_title()
   }
   fn dialect_convert(&self, body: &str, body_format: &NotifyFormat) -> String {
     self.inner.dialect_convert(body, body_format)

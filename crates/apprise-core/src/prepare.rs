@@ -57,7 +57,7 @@ pub(crate) fn prepare_contexts(svc: &dyn Notify, ctx: &NotifyContext) -> Vec<Not
       if body_max == 0 || svc_ctx.body.len() <= body_max {
         return vec![svc_ctx];
       }
-      let chunks = smart_split(&svc_ctx.body, body_max);
+      let chunks = smart_split(&svc_ctx.body, body_max, &svc_ctx.body_format);
       let original_title = svc_ctx.title.clone();
       chunks
         .into_iter()

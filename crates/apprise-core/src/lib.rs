@@ -28,6 +28,7 @@
 pub mod asset;
 pub mod attachment;
 pub mod config;
+pub mod conversion;
 mod dispatch;
 pub mod error;
 pub mod notify;
