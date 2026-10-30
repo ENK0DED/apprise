@@ -455,6 +455,7 @@ impl Apprise {
   async fn dispatch(&self, ctx: &NotifyContext, opts: &dispatch::DispatchOptions, filter: &TagFilter) -> SendResult {
     let mut ctx = ctx.clone();
     ctx.asset = self.asset.clone();
+    ctx.interpret_escapes |= self.asset.interpret_escapes;
     // Names reach MIME and multipart headers; attachments built by a
     // library caller have not been through the loaders' cleanup.
     for attachment in &mut ctx.attachments {

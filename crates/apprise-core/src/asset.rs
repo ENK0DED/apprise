@@ -79,6 +79,9 @@ pub struct AppriseAsset {
   pub abort_on_chain_failure: bool,
   /// Follow HTTP 3xx redirects unless a URL sets `?redirect=`.
   pub http_redirects: bool,
+  /// Interpret backslash escapes (`\n`, `\t`, ...) in every notification,
+  /// as if each set `NotifyContext::interpret_escapes`.
+  pub interpret_escapes: bool,
   /// Seconds one service may take, retries and waits included; it reports
   /// a timeout after that. `0` disables the limit.
   pub service_timeout: f64,
@@ -111,6 +114,7 @@ impl Default for AppriseAsset {
       default_service_wait: 0.5,
       abort_on_chain_failure: false,
       http_redirects: true,
+      interpret_escapes: false,
       service_timeout: DEFAULT_SERVICE_TIMEOUT,
       storage_path: None,
       storage_mode: StorageMode::Auto,

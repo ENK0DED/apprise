@@ -620,16 +620,12 @@ fn apply_tokens(parsed: &mut ParsedUrl, tokens: Tokens, entry: usize, item: usiz
 
 /// Upstream asset keys the Rust asset does not model; accepted silently.
 const UNMODELLED_ASSET_KEYS: &[&str] = &[
-  "abort_on_chain_failure",
-  "async_mode",
   "default_ascii_chars",
   "default_extension",
   "default_html_color",
   "default_image_size",
   "encoding",
-  "http_redirects",
   "image_path_mask",
-  "interpret_escapes",
   "pem_autogen",
   "pgp_autogen",
   "storage_mode",
@@ -677,11 +673,23 @@ fn parse_asset(tokens: &Mapping, base: &AppriseAsset) -> AppriseAsset {
     };
 
     match key {
-      "secure_logging" => match v {
-        Value::Bool(b) => asset.secure_logging = *b,
-        Value::String(_) | Value::Null => asset.secure_logging = config_bool(text.as_deref().unwrap_or_default()),
-        _ => tracing::warn!("Invalid asset value to \"{}\".", key),
-      },
+      "secure_logging" | "async_mode" | "abort_on_chain_failure" | "http_redirects" | "interpret_escapes" => {
+        let value = match v {
+          Value::Bool(b) => *b,
+          Value::String(_) | Value::Null => config_bool(text.as_deref().unwrap_or_default()),
+          _ => {
+            tracing::warn!("Invalid asset value to \"{}\".", key);
+            continue;
+          }
+        };
+        match key {
+          "secure_logging" => asset.secure_logging = value,
+          "async_mode" => asset.async_mode = value,
+          "abort_on_chain_failure" => asset.abort_on_chain_failure = value,
+          "http_redirects" => asset.http_redirects = value,
+          _ => asset.interpret_escapes = value,
+        }
+      }
       "app_id" | "app_desc" | "app_url" | "theme" | "image_url_mask" | "image_url_logo" => {
         let Some(text) = text else {
           tracing::warn!("Invalid asset value to \"{}\".", key);
@@ -945,6 +953,15 @@ urls:
     assert_eq!(asset.theme, "dark");
     assert!(!asset.secure_logging);
     assert!(parse("urls:\n  - json://localhost\n").asset.is_none());
+
+    // Delivery settings the dispatcher reads
+    let out =
+      parse("asset:\n  async_mode: no\n  http_redirects: false\n  abort_on_chain_failure: yes\n  interpret_escapes: 'yes'\nurls:\n  - json://localhost\n");
+    let asset = out.asset.unwrap();
+    assert!(!asset.async_mode);
+    assert!(!asset.http_redirects);
+    assert!(asset.abort_on_chain_failure);
+    assert!(asset.interpret_escapes);
   }
 
   #[test]
