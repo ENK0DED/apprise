@@ -133,8 +133,12 @@ pub(crate) fn prepare_contexts(svc: &dyn Notify, ctx: &NotifyContext) -> Result<
 
   let overflow = opts.and_then(|o| o.overflow).filter(|_| svc.overflow_mode_overridable()).unwrap_or_else(|| svc.overflow_mode());
 
-  let pieces: Vec<Piece> =
-    apply_overflow(svc, &body, &title, overflow, &target).into_iter().flat_map(|p| apply_dialect_overflow(svc, p, overflow, &target)).collect();
+  // Some plugins size the limit by content (upstream Matrix).
+  let body_maxlen = svc.body_maxlen_for(&title, &body, &target);
+  let pieces: Vec<Piece> = apply_overflow(svc, &body, &title, overflow, &target, body_maxlen)
+    .into_iter()
+    .flat_map(|p| apply_dialect_overflow(svc, p, overflow, &target, body_maxlen))
+    .collect();
 
   // Truncate mode keeps only the first attachment, and only one piece
   // carries attachments so they are never repeated across a split.
@@ -158,11 +162,11 @@ pub(crate) fn prepare_contexts(svc: &dyn Notify, ctx: &NotifyContext) -> Result<
 }
 
 /// Upstream `_apply_overflow`: title blending, line count, limits and overflow.
-fn apply_overflow(svc: &dyn Notify, body: &str, title: &str, overflow: OverflowMode, body_format: &NotifyFormat) -> Vec<Piece> {
+fn apply_overflow(svc: &dyn Notify, body: &str, title: &str, overflow: OverflowMode, body_format: &NotifyFormat, body_maxlen: usize) -> Vec<Piece> {
   let mut title = pystr::strip(title).to_string();
   let mut body = pystr::rstrip(body).to_string();
   let svc_title_maxlen = svc.title_maxlen() as i64;
-  let svc_body_maxlen = svc.body_maxlen() as i64;
+  let svc_body_maxlen = body_maxlen as i64;
   let amalgamate = svc.overflow_amalgamate_title();
 
   // A service without a title field gets the title at the top of the body.
@@ -308,14 +312,13 @@ fn apply_overflow(svc: &dyn Notify, body: &str, title: &str, overflow: OverflowM
 
 /// Upstream `_apply_dialect_overflow`: convert one piece to the plugin's
 /// dialect and re-split or re-truncate it so the converted text fits.
-fn apply_dialect_overflow(svc: &dyn Notify, piece: Piece, overflow: OverflowMode, body_format: &NotifyFormat) -> Vec<Piece> {
+fn apply_dialect_overflow(svc: &dyn Notify, piece: Piece, overflow: OverflowMode, body_format: &NotifyFormat, limit: usize) -> Vec<Piece> {
   let converted = svc.dialect_convert(&piece.body, body_format);
   if !svc.has_dialect() && converted == piece.body {
     // No dialect: the piece is sent exactly as prepared.
     return vec![piece];
   }
   let convert = |body: &str| svc.dialect_convert(body, body_format);
-  let limit = svc.body_maxlen();
   let bodies = match overflow {
     OverflowMode::Split => split_dialect_chunk(&piece.body, limit, &convert, Some(body_format)),
     OverflowMode::Truncate => vec![truncate_dialect_chunk(&piece.body, limit, &convert, Some(body_format))],

@@ -396,6 +396,15 @@ pub trait Notify: Send + Sync {
     32768
   }
 
+  /// The body limit for one notification, given its converted title and
+  /// body (upstream plugins that size by content, such as Matrix, set it in
+  /// `_build_send_calls`). Preparation uses it in place of
+  /// [`body_maxlen`](Self::body_maxlen) for splitting, truncating and
+  /// dialect re-fitting. Default: [`body_maxlen`](Self::body_maxlen).
+  fn body_maxlen_for(&self, _title: &str, _body: &str, _body_format: &NotifyFormat) -> usize {
+    self.body_maxlen()
+  }
+
   /// Maximum title length in characters (default: 250, matching Python)
   /// Return 0 if the service doesn't support titles.
   fn title_maxlen(&self) -> usize {
