@@ -290,7 +290,7 @@ mod tests {
       (400, r#"{"status": "success"}"#, false),
     ] {
       let server = MockServer::start().await;
-      Mock::given(method("GET")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(1).mount(&server).await;
+      Mock::given(method("GET")).and(path("/api/v1/rest.php")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(1).mount(&server).await;
       assert_eq!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), expected, "{} {}", status, body);
     }
     // All targets dropped

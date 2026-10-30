@@ -15,6 +15,8 @@ pub use options::{ConfiguredService, ServiceOptions};
 
 // ── Plugin modules ────────────────────────────────────────────────────────────
 pub mod africas_talking;
+#[cfg(feature = "amqp")]
+pub mod amqp;
 pub mod apprise_api;
 pub mod aprs;
 pub mod bark;
@@ -33,6 +35,8 @@ pub mod custom_json;
 pub mod custom_xml;
 pub mod d7networks;
 pub mod dapnet;
+#[cfg(feature = "desktop")]
+pub mod desktop;
 pub mod dingtalk;
 pub mod discord;
 pub mod dot;
@@ -177,10 +181,6 @@ pub mod youlmk;
 pub mod zalo;
 pub mod zoom;
 pub mod zulip;
-
-// Platform-specific plugins
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub mod desktop;
 
 // ── Overflow mode ─────────────────────────────────────────────────────────────
 

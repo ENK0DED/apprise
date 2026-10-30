@@ -36,20 +36,29 @@ socket2.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
-rumqttc = { workspace = true, optional = true }
-notify-rust = { workspace = true, optional = true }
 hidapi = { workspace = true, optional = true }
+png = { workspace = true, optional = true }
+fe2o3-amqp = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
 
 [features]
-default = ["mqtt", "email", "yaml"]
-mqtt = ["dep:rumqttc"]
+default = ["mqtt", "amqp", "email", "yaml"]
+mqtt = []
+amqp = ["dep:fe2o3-amqp"]
 email = ["dep:lettre"]
 yaml = ["dep:serde_yaml"]
-desktop = ["dep:notify-rust"]
+desktop = ["dep:png", "dep:zbus", "dep:windows-sys"]
 blink1 = ["dep:hidapi"]
+
+[target.'cfg(unix)'.dependencies]
+# p2p lets the tests talk to a fake notification service
+zbus = { workspace = true, optional = true, features = ["p2p"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
 wiremock.workspace = true
 tokio-test.workspace = true
 tempfile.workspace = true
+fe2o3-amqp = { workspace = true, features = ["acceptor"] }

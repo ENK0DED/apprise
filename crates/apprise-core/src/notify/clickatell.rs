@@ -253,7 +253,7 @@ mod tests {
   async fn test_send_error_response() {
     let server = MockServer::start().await;
     let reply = r#"{"code": 21211, "message": "The 'To' number +1234567 is not a valid phone number."}"#;
-    Mock::given(method("GET")).respond_with(ResponseTemplate::new(400).set_body_string(reply)).expect(2).mount(&server).await;
+    Mock::given(method("GET")).and(path("/messages/http/send")).respond_with(ResponseTemplate::new(400).set_body_string(reply)).expect(2).mount(&server).await;
     let svc = from_url("clickatell://apikey123/15551231234/15557654321").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
   }
@@ -261,7 +261,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_201_is_failure() {
     let server = MockServer::start().await;
-    Mock::given(method("GET")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    Mock::given(method("GET")).and(path("/messages/http/send")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
     let svc = from_url("clickatell://apikey123/15551231234").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
   }
