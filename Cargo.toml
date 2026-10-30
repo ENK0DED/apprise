@@ -72,6 +72,9 @@ hex = "0.4"
 ring = { version = "0.17", default-features = false, features = ["alloc"] }
 # AES-GCM with 128/192/256-bit keys (Bark); ring has no AES-192
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
+# AES-256-CBC for Pushover end-to-end encryption (the aes cipher comes
+# from aes-gcm)
+cbc = { version = "0.2", default-features = false, features = ["block-padding", "alloc"] }
 # Simplepush end-to-end encryption (libsodium-compatible: Argon2id key
 # derivation, XChaCha20-Poly1305 fields, crypto_box organization key wraps)
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
