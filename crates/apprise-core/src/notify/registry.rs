@@ -45,6 +45,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(dingtalk::DingTalk::static_details());
   collect!(discord::Discord::static_details());
   collect!(dot::Dot::static_details());
+  collect!(eight00com::Eight00com::static_details());
   collect!(emby::Emby::static_details());
   collect!(enigma2::Enigma2::static_details());
   collect!(fcm::Fcm::static_details());
@@ -190,6 +191,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(dingtalk::DingTalk::from_url, "dingtalk");
   reg!(discord::Discord::from_url, "discord");
   reg!(dot::Dot::from_url, "dot");
+  reg!(eight00com::Eight00com::from_url, "eight00com");
   reg!(emby::Emby::from_url, "emby", "embys");
   reg!(enigma2::Enigma2::from_url, "enigma2", "enigma2s");
   reg!(fcm::Fcm::from_url, "fcm");

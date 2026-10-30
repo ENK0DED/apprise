@@ -33,6 +33,7 @@ pub mod dapnet;
 pub mod dingtalk;
 pub mod discord;
 pub mod dot;
+pub mod eight00com;
 #[cfg(feature = "email")]
 pub mod email;
 pub mod emby;
