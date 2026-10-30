@@ -4,14 +4,10 @@ use crate::types::NotifyFormat;
 use crate::utils::aws::{SigV4Request, sign};
 use crate::utils::email::{formataddr, header_encode, is_email, is_space, parse_emails, parse_emails_all, valid_addresses};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd::{Qsd, unquote, validate_token};
+use crate::utils::qsd::{unquote, validate_token};
 use async_trait::async_trait;
 use base64::Engine;
 use std::collections::HashMap;
-use std::time::Duration;
-
-/// Pause between requests (upstream `request_rate_per_sec`).
-const THROTTLE: Duration = Duration::from_millis(2500);
 
 /// Content type of the signed request body.
 const CONTENT_TYPE: &str = "application/x-www-form-urlencoded; charset=utf-8";
@@ -31,7 +27,6 @@ pub struct Ses {
   cc: Vec<String>,
   bcc: Vec<String>,
   names: HashMap<String, Option<String>>,
-  throttle: Duration,
   verify_certificate: bool,
   tags: Vec<String>,
 }
@@ -59,7 +54,7 @@ fn validate_region(value: &str) -> Option<String> {
 
 impl Ses {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let qsd = Qsd::from_url(url);
+    let qsd = |key: &str| url.get(key).filter(|v| !v.is_empty());
 
     // ses://{from}/{access_key}/{secret_key}/{region}/{targets}: the secret
     // may contain slashes, so it runs until the region (or a first email)
@@ -81,22 +76,22 @@ impl Ses {
       secret_parts.push(entry.clone());
     }
     let mut raw_targets: Vec<String> = entries[index..].to_vec();
-    if let Some(to) = qsd.value("to") {
+    if let Some(to) = qsd("to") {
       raw_targets.push(to.to_string());
     }
 
-    let access_key = qsd.value("key").or_else(|| qsd.value("access")).map(unquote).or(path_access_key);
+    let access_key = qsd("key").or_else(|| qsd("access")).map(unquote).or(path_access_key);
     let access_key = access_key.and_then(|k| validate_token(&k));
     let Some(access_key) = access_key else {
       tracing::warn!("An invalid AWS Access Key ID was specified.");
       return None;
     };
-    let secret_key = qsd.value("secret").map(unquote).or_else(|| (!secret_parts.is_empty()).then(|| secret_parts.join("/")));
+    let secret_key = qsd("secret").map(unquote).or_else(|| (!secret_parts.is_empty()).then(|| secret_parts.join("/")));
     let Some(secret_key) = secret_key.and_then(|s| validate_token(&s)) else {
       tracing::warn!("An invalid AWS Secret Access Key was specified.");
       return None;
     };
-    let region = match qsd.value("region") {
+    let region = match qsd("region") {
       Some(r) => validate_region(&unquote(r)),
       None => path_region,
     };
@@ -106,11 +101,11 @@ impl Ses {
     };
 
     // ses://user:{token}@host/... or ?token=; the query wins
-    let session_token = qsd.value("token").map(unquote).or_else(|| url.password.clone()).filter(|t| !t.is_empty());
+    let session_token = qsd("token").map(unquote).or_else(|| url.password.clone()).filter(|t| !t.is_empty());
 
     let user = url.user.clone().filter(|u| !u.is_empty());
     let host = url.host.clone().unwrap_or_default();
-    let from_email = match qsd.value("from") {
+    let from_email = match qsd("from") {
       Some(from) => Some(unquote(from)),
       None => user.as_ref().map(|u| format!("{}@{}", u, host)),
     };
@@ -118,9 +113,9 @@ impl Ses {
       tracing::warn!("An invalid AWS From ({}@{}) was specified.", user.unwrap_or_default(), host);
       return None;
     };
-    let from_name = qsd.value("name").map(unquote);
+    let from_name = qsd("name").map(unquote);
 
-    let reply_to = match qsd.value("reply").map(unquote) {
+    let reply_to = match qsd("reply").map(unquote) {
       Some(reply) => match is_email(&reply) {
         Some(e) => Some((e.display_name(), e.full_email)),
         None => {
@@ -140,7 +135,7 @@ impl Ses {
     let mut names = HashMap::new();
     let mut cc = Vec::new();
     let mut bcc = Vec::new();
-    for (list, raw, kind) in [(&mut cc, qsd.value("cc"), "Carbon Copy"), (&mut bcc, qsd.value("bcc"), "Blind Carbon Copy")] {
+    for (list, raw, kind) in [(&mut cc, qsd("cc"), "Carbon Copy"), (&mut bcc, qsd("bcc"), "Blind Carbon Copy")] {
       for e in valid_addresses(&parse_emails(raw.unwrap_or_default()), kind) {
         names.insert(e.full_email.clone(), e.display_name());
         if !list.contains(&e.full_email) {
@@ -161,7 +156,6 @@ impl Ses {
       cc,
       bcc,
       names,
-      throttle: THROTTLE,
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
     })
@@ -226,9 +220,10 @@ impl Notify for Ses {
     let client = build_client(self.verify_certificate)?;
     let mut has_error = false;
 
-    for (index, (to_name, to_addr)) in self.targets.iter().enumerate() {
-      if index > 0 {
-        tokio::time::sleep(self.throttle).await;
+    for (to_name, to_addr) in &self.targets {
+      // A retry skips recipients that already accepted the message
+      if crate::delivery::is_delivered(to_addr, false) {
+        continue;
       }
       let cc: Vec<String> = self.cc.iter().filter(|a| !self.bcc.contains(a) && *a != to_addr).map(|a| self.named(a)).collect();
       let bcc: Vec<String> = self.bcc.iter().filter(|a| *a != to_addr).map(|a| self.named(a)).collect();
@@ -285,8 +280,12 @@ impl Notify for Ses {
         request = request.header("X-Amz-Security-Token", token);
       }
 
+      crate::notify::throttle().await;
       match request.body(body).send().await {
-        Ok(resp) if resp.status().as_u16() == 200 => tracing::info!("Sent AWS SES notification to \"{}\".", to_addr),
+        Ok(resp) if resp.status().as_u16() == 200 => {
+          tracing::info!("Sent AWS SES notification to \"{}\".", to_addr);
+          crate::delivery::mark_delivered(to_addr, false);
+        }
         Ok(resp) => {
           let status = resp.status().as_u16();
           let detail = if status == 403 { "Unauthorized - Invalid Access/Secret Key Combination., " } else { "" };
@@ -296,7 +295,7 @@ impl Notify for Ses {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending AWS SES notification to \"{}\".", to_addr);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -464,8 +463,9 @@ fn quote_plus(value: &str) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::method;
+  use wiremock::matchers::{body_string_contains, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   const TEST_ACCESS_KEY_ID: &str = "AHIAJGNT76XIMXDBIJYA";
@@ -473,9 +473,7 @@ mod tests {
   const TEST_REGION: &str = "us-east-2";
 
   fn parse(url: &str) -> Ses {
-    let mut ses = Ses::from_url(&ParsedUrl::parse(url).unwrap()).unwrap_or_else(|| panic!("should parse: {}", url));
-    ses.throttle = Duration::ZERO;
-    ses
+    Ses::from_url(&ParsedUrl::parse(url).unwrap()).unwrap_or_else(|| panic!("should parse: {}", url))
   }
 
   fn form(body: &[u8]) -> Vec<(String, String)> {
@@ -500,7 +498,7 @@ mod tests {
 
   async fn mock(status: u16) -> MockServer {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
     server
   }
 
@@ -720,11 +718,9 @@ mod tests {
     let svc = parse("ses://sender@example.com/access123/secret123/us-east-1/target@example.com");
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("Test Subject", "hello"))).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = requests_to(&server, "POST", "/").await;
     assert_eq!(reqs.len(), 1);
     let req = &reqs[0];
-    assert_eq!(req.method.as_str(), "POST");
-    assert_eq!(req.url.path(), "/");
     assert_eq!(req.headers.get("content-type").unwrap(), CONTENT_TYPE);
     let amz_date = req.headers.get("x-amz-date").unwrap().to_str().unwrap().to_string();
     let auth = req.headers.get("authorization").unwrap().to_str().unwrap().to_string();
@@ -763,7 +759,7 @@ mod tests {
     ctx.attachments = vec![Attachment { name: "notes.txt".into(), data: b"plain text attachment\n".to_vec(), mime_type: "text/plain".into() }];
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = requests_to(&server, "POST", "/").await;
     assert_eq!(reqs.len(), 2);
     let fields = form(&reqs[1].body);
     let dest: Vec<&str> = fields.iter().filter(|(k, _)| k.starts_with("Destinations.member.")).map(|(_, v)| v.as_str()).collect();
@@ -782,8 +778,8 @@ mod tests {
     let mut ctx = ctx("t", "plain");
     ctx.body_format = NotifyFormat::Text;
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
-    let req = requests.iter().find(|r| r.method == wiremock::http::Method::POST).unwrap();
+    let requests = requests_to(&server, "POST", "/").await;
+    let req = &requests[0];
     assert_eq!(req.headers.get("x-amz-security-token").unwrap(), "sessiontoken123");
     // Temporary credentials only work when the token is part of the signature.
     let auth = req.headers.get("authorization").unwrap().to_str().unwrap();
@@ -809,6 +805,28 @@ mod tests {
     let server = mock(200).await;
     let svc = parse("ses://user@example.com/T1JJ3T3L2/A1BRTD4JD/TIiacevi7FQ/us-west-2/?to=invalid-email");
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", "b"))).await.unwrap());
-    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(requests_to(&server, "POST", "/").await.is_empty());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_recipients() {
+    let server = MockServer::start().await;
+    // The second recipient fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/"))
+      .and(body_string_contains("Destinations.member.1=b%40example.com"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("ses://sender@example.com/access123/secret123/us-east-1/a@example.com/b@example.com?retry=1&wait=0"));
+    let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    let to: Vec<String> =
+      requests_to(&server, "POST", "/").await.iter().map(|r| form(&r.body).into_iter().find(|(k, _)| k == "Destinations.member.1").unwrap().1).collect();
+    assert_eq!(to, vec!["a@example.com", "b@example.com", "b@example.com"]);
   }
 }

@@ -3,14 +3,10 @@ use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client,
 use crate::types::NotifyFormat;
 use crate::utils::email::{is_email, parse_list, valid_addresses};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd::{Qsd, unquote};
+use crate::utils::qsd::unquote;
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::{Map, Value, json};
-use std::time::Duration;
-
-/// Pause between requests (upstream `request_rate_per_sec`).
-const THROTTLE: Duration = Duration::from_millis(200);
 
 /// SendGrid rejects an empty subject.
 const DEFAULT_EMPTY_SUBJECT: &str = "<no subject>";
@@ -25,7 +21,6 @@ pub struct SendGrid {
   template: Option<String>,
   /// `+name=value` arguments, sent as `dynamic_template_data`.
   template_data: Vec<(String, String)>,
-  throttle: Duration,
   verify_certificate: bool,
   tags: Vec<String>,
 }
@@ -33,14 +28,16 @@ pub struct SendGrid {
 impl SendGrid {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // sendgrid://{apikey}:{from_user}@{from_domain}/{targets}
-    let qsd = Qsd::from_url(url);
+    let qsd = |key: &str| url.get(key).filter(|v| !v.is_empty());
+    // Upstream parses this URL with host verification
+    let host = url.verified_host()?;
     let apikey = url.user.clone().filter(|u| !u.is_empty())?;
     let password = url.password.clone().filter(|p| !p.is_empty())?;
     if !apikey.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
       tracing::warn!("An invalid SendGrid API Key was specified.");
       return None;
     }
-    let from = format!("{}@{}", password, unquote(url.host.as_deref().unwrap_or_default()));
+    let from = format!("{}@{}", password, host);
     let Some(from_email) = is_email(&from).map(|e| e.full_email) else {
       tracing::warn!("Invalid ~From~ email specified: {}", from);
       return None;
@@ -48,7 +45,7 @@ impl SendGrid {
 
     // Upstream runs every list through parse_list(), which sorts it
     let mut raw_targets = url.path_parts.clone();
-    if let Some(to) = qsd.value("to") {
+    if let Some(to) = qsd("to") {
       raw_targets.extend(parse_list(&[to]));
     }
     let targets = if raw_targets.is_empty() {
@@ -58,7 +55,7 @@ impl SendGrid {
     };
     let copies = |key: &str, kind: &str| -> Vec<String> {
       let mut list: Vec<String> = Vec::new();
-      for e in valid_addresses(&parse_list(&[qsd.value(key).unwrap_or_default()]), kind) {
+      for e in valid_addresses(&parse_list(&[qsd(key).unwrap_or_default()]), kind) {
         if !list.contains(&e.full_email) {
           list.push(e.full_email);
         }
@@ -72,9 +69,8 @@ impl SendGrid {
       targets,
       cc: copies("cc", "Carbon Copy"),
       bcc: copies("bcc", "Blind Carbon Copy"),
-      template: qsd.value("template").map(unquote),
-      template_data: qsd.prefixed('+'),
-      throttle: THROTTLE,
+      template: qsd("template").map(unquote),
+      template_data: url.qsd_add.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
     })
@@ -150,9 +146,10 @@ impl Notify for SendGrid {
     let url = format!("{}/v3/mail/send", service_base("https://api.sendgrid.com"));
     let client = build_client(self.verify_certificate)?;
     let mut has_error = false;
-    for (index, target) in self.targets.iter().enumerate() {
-      if index > 0 {
-        tokio::time::sleep(self.throttle).await;
+    for target in &self.targets {
+      // A retry skips recipients that already accepted the message
+      if crate::delivery::is_delivered(target, false) {
+        continue;
       }
       // To, Cc and Bcc must not repeat an address or SendGrid fails the request
       let emails = |list: Vec<&String>| Value::Array(list.into_iter().map(|e| json!({ "email": e })).collect());
@@ -173,6 +170,7 @@ impl Notify for SendGrid {
       let mut payload = base.clone();
       payload["personalizations"] = json!([personalization]);
 
+      crate::notify::throttle().await;
       let result = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -182,7 +180,10 @@ impl Notify for SendGrid {
         .send()
         .await;
       match result {
-        Ok(resp) if matches!(resp.status().as_u16(), 200 | 202) => tracing::info!("Sent SendGrid notification to {}.", target),
+        Ok(resp) if matches!(resp.status().as_u16(), 200 | 202) => {
+          tracing::info!("Sent SendGrid notification to {}.", target);
+          crate::delivery::mark_delivered(target, false);
+        }
         Ok(resp) => {
           let status = resp.status().as_u16();
           tracing::warn!("Failed to send SendGrid notification to {}: {}error={}.", target, status_message(status), status);
@@ -191,7 +192,7 @@ impl Notify for SendGrid {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending SendGrid notification to {}.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -214,31 +215,23 @@ fn status_message(status: u16) -> &'static str {
 mod tests {
   use super::*;
   use crate::notify::Attachment;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::method;
+  use wiremock::matchers::{body_string_contains, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> SendGrid {
-    let mut sg = SendGrid::from_url(&ParsedUrl::parse(url).unwrap()).unwrap_or_else(|| panic!("should parse: {}", url));
-    sg.throttle = Duration::ZERO;
-    sg
+    SendGrid::from_url(&ParsedUrl::parse(url).unwrap()).unwrap_or_else(|| panic!("should parse: {}", url))
   }
 
   async fn mock(status: u16) -> MockServer {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v3/mail/send")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
     server
   }
 
   async fn bodies(server: &MockServer) -> Vec<Value> {
-    server
-      .received_requests()
-      .await
-      .unwrap()
-      .iter()
-      .filter(|r| r.method == wiremock::http::Method::POST)
-      .map(|r| serde_json::from_slice(&r.body).unwrap())
-      .collect()
+    requests_to(server, "POST", "/v3/mail/send").await.iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect()
   }
 
   fn ctx(title: &str, body_format: NotifyFormat) -> NotifyContext {
@@ -272,6 +265,8 @@ mod tests {
       "sendgrid://abcd@host",
       "sendgrid://invalid-api-key+*-d:user@example.com",
       "sendgrid://abcd:!invalid@",
+      // The host must be a valid hostname
+      "sendgrid://abcd:user@-invalid-.com",
     ] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
@@ -311,10 +306,8 @@ mod tests {
     let svc = from_url("sendgrid://apikey:sender@domain.com/recipient@domain.com").unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("title", NotifyFormat::Html))).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = requests_to(&server, "POST", "/v3/mail/send").await;
     assert_eq!(reqs.len(), 1);
-    assert_eq!(reqs[0].method.as_str(), "POST");
-    assert_eq!(reqs[0].url.path(), "/v3/mail/send");
     assert_eq!(reqs[0].headers.get("authorization").unwrap(), "Bearer apikey");
     assert_eq!(reqs[0].headers.get("content-type").unwrap(), "application/json");
     assert_eq!(
@@ -387,6 +380,27 @@ mod tests {
     let server = mock(200).await;
     let svc = from_url("sendgrid://abcd:user@example.com/bademailaddress").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", NotifyFormat::Html))).await.unwrap());
-    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(bodies(&server).await.is_empty());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_recipients() {
+    let server = MockServer::start().await;
+    // The second recipient fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/v3/mail/send"))
+      .and(body_string_contains("b@example.com"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/v3/mail/send")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("sendgrid://abcd:user@example.com/a@example.com/b@example.com?retry=1&wait=0"));
+    let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    let to: Vec<Value> = bodies(&server).await.iter().map(|b| b["personalizations"][0]["to"][0]["email"].clone()).collect();
+    assert_eq!(to, vec![json!("a@example.com"), json!("b@example.com"), json!("b@example.com")]);
   }
 }

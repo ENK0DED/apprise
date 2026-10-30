@@ -3,15 +3,11 @@ use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client,
 use crate::types::NotifyFormat;
 use crate::utils::email::{formataddr, is_email, parse_emails_all, parse_list, valid_addresses};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd::{Qsd, unquote, validate_token};
+use crate::utils::qsd::{unquote, validate_token};
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::json;
 use std::collections::HashMap;
-use std::time::Duration;
-
-/// Pause between requests (upstream `request_rate_per_sec`).
-const THROTTLE: Duration = Duration::from_millis(1200);
 
 /// Subject used when the notification has no title.
 const DEFAULT_EMPTY_SUBJECT: &str = "<no subject>";
@@ -26,7 +22,6 @@ pub struct Postmark {
   bcc: Vec<String>,
   reply_to: Vec<String>,
   names: HashMap<String, Option<String>>,
-  throttle: Duration,
   verify_certificate: bool,
   tags: Vec<String>,
 }
@@ -35,16 +30,16 @@ impl Postmark {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // postmark://{apikey}:{from_user}@{from_domain}/{targets}
     // postmark://{apikey}@{target}?from={from}
-    let qsd = Qsd::from_url(url);
-    let apikey = qsd.value("apikey").map(unquote).unwrap_or_else(|| url.user.clone().unwrap_or_default());
+    let qsd = |key: &str| url.get(key).filter(|v| !v.is_empty());
+    let apikey = qsd("apikey").map(unquote).unwrap_or_else(|| url.user.clone().unwrap_or_default());
     let Some(apikey) = validate_token(&apikey) else {
       tracing::warn!("An invalid Postmark API Key was specified.");
       return None;
     };
 
-    let host = unquote(url.host.as_deref().unwrap_or_default());
+    let host = url.host.clone().unwrap_or_default();
     let mut raw_targets = Vec::new();
-    let from = match qsd.value("from") {
+    let from = match qsd("from") {
       Some(from) => {
         // The host is a recipient when ?from= names the sender
         if !host.is_empty() {
@@ -59,10 +54,10 @@ impl Postmark {
       return None;
     };
     // ?name= overrides a name given with the address
-    let from_name = qsd.value("name").map(unquote).or_else(|| sender.display_name());
+    let from_name = qsd("name").map(unquote).or_else(|| sender.display_name());
 
     raw_targets.extend(url.path_parts.iter().cloned());
-    if let Some(to) = qsd.value("to") {
+    if let Some(to) = qsd("to") {
       raw_targets.extend(parse_list(&[to]));
     }
 
@@ -80,9 +75,9 @@ impl Postmark {
       list
     };
     let targets = if raw_targets.is_empty() { vec![sender.full_email.clone()] } else { collect(raw_targets, "Postmark To", true) };
-    let cc = collect(qsd.value("cc").map(|v| parse_list(&[v])).unwrap_or_default(), "Postmark Carbon Copy", true);
-    let bcc = collect(qsd.value("bcc").map(|v| parse_list(&[v])).unwrap_or_default(), "Postmark Blind Carbon Copy", false);
-    let reply_to = collect(qsd.value("reply").map(|v| vec![v.to_string()]).unwrap_or_default(), "Postmark Reply To", true);
+    let cc = collect(qsd("cc").map(|v| parse_list(&[v])).unwrap_or_default(), "Postmark Carbon Copy", true);
+    let bcc = collect(qsd("bcc").map(|v| parse_list(&[v])).unwrap_or_default(), "Postmark Blind Carbon Copy", false);
+    let reply_to = collect(qsd("reply").map(|v| vec![v.to_string()]).unwrap_or_default(), "Postmark Reply To", true);
 
     Some(Self {
       apikey,
@@ -93,7 +88,6 @@ impl Postmark {
       bcc,
       reply_to,
       names,
-      throttle: THROTTLE,
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
     })
@@ -168,9 +162,10 @@ impl Notify for Postmark {
     let url = format!("{}/email", service_base("https://api.postmarkapp.com"));
     let client = build_client(self.verify_certificate)?;
     let mut has_error = false;
-    for (index, target) in self.targets.iter().enumerate() {
-      if index > 0 {
-        tokio::time::sleep(self.throttle).await;
+    for target in &self.targets {
+      // A retry skips recipients that already accepted the message
+      if crate::delivery::is_delivered(target, false) {
+        continue;
       }
       let mut payload = base.clone();
       payload["To"] = json!(target);
@@ -187,6 +182,7 @@ impl Notify for Postmark {
         payload["ReplyTo"] = json!(reply_to.join(","));
       }
 
+      crate::notify::throttle().await;
       let result = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -197,7 +193,10 @@ impl Notify for Postmark {
         .send()
         .await;
       match result {
-        Ok(resp) if resp.status().as_u16() == 200 => tracing::info!("Sent Postmark notification to {}.", target),
+        Ok(resp) if resp.status().as_u16() == 200 => {
+          tracing::info!("Sent Postmark notification to {}.", target);
+          crate::delivery::mark_delivered(target, false);
+        }
         Ok(resp) => {
           let status = resp.status().as_u16();
           tracing::warn!("Failed to send Postmark notification to {}: {}error={}.", target, status_message(status), status);
@@ -206,7 +205,7 @@ impl Notify for Postmark {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Postmark notification to {}.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -230,32 +229,24 @@ fn status_message(status: u16) -> &'static str {
 mod tests {
   use super::*;
   use crate::notify::Attachment;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
   use serde_json::Value;
-  use wiremock::matchers::method;
+  use wiremock::matchers::{body_partial_json, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> Postmark {
-    let mut p = Postmark::from_url(&ParsedUrl::parse(url).unwrap()).unwrap_or_else(|| panic!("should parse: {}", url));
-    p.throttle = Duration::ZERO;
-    p
+    Postmark::from_url(&ParsedUrl::parse(url).unwrap()).unwrap_or_else(|| panic!("should parse: {}", url))
   }
 
   async fn mock(status: u16) -> MockServer {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/email")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
     server
   }
 
   async fn bodies(server: &MockServer) -> Vec<Value> {
-    server
-      .received_requests()
-      .await
-      .unwrap()
-      .iter()
-      .filter(|r| r.method == wiremock::http::Method::POST)
-      .map(|r| serde_json::from_slice(&r.body).unwrap())
-      .collect()
+    requests_to(server, "POST", "/email").await.iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect()
   }
 
   fn ctx(title: &str, body_format: NotifyFormat) -> NotifyContext {
@@ -326,10 +317,8 @@ mod tests {
     assert_eq!(svc.notify_format(), NotifyFormat::Html);
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("apprise parity", NotifyFormat::Html))).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = requests_to(&server, "POST", "/email").await;
     assert_eq!(reqs.len(), 1);
-    assert_eq!(reqs[0].method.as_str(), "POST");
-    assert_eq!(reqs[0].url.path(), "/email");
     assert_eq!(reqs[0].headers.get("x-postmark-server-token").unwrap(), "apikey123");
     assert_eq!(reqs[0].headers.get("accept").unwrap(), "application/json");
     assert_eq!(reqs[0].headers.get("content-type").unwrap(), "application/json");
@@ -412,6 +401,27 @@ mod tests {
     let server = mock(200).await;
     let svc = from_url("postmark://abcd:user@example.com/bademailaddress").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", NotifyFormat::Html))).await.unwrap());
-    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(bodies(&server).await.is_empty());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_recipients() {
+    let server = MockServer::start().await;
+    // The second recipient fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/email"))
+      .and(body_partial_json(json!({ "To": "b@example.com" })))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/email")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("postmark://abcd:user@example.com/a@example.com/b@example.com?retry=1&wait=0"));
+    let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    let to: Vec<Value> = bodies(&server).await.iter().map(|b| b["To"].clone()).collect();
+    assert_eq!(to, vec![json!("a@example.com"), json!("b@example.com"), json!("b@example.com")]);
   }
 }

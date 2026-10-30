@@ -8,7 +8,8 @@ use tokio::sync::Mutex;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Attachment, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyFormat;
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::email::{is_email, parse_emails};
+use crate::utils::parse::{ParseOptions, ParsedUrl, parse_bool, unquote};
 
 const GRAPH_URL: &str = "https://graph.microsoft.com";
 const LOGIN_URL: &str = "https://login.microsoftonline.com";
@@ -132,13 +133,16 @@ enum From {
   },
 }
 
-/// Session state. Upstream caches the From address and the rotated
-/// refresh token in the persistent store; here they live in memory.
+/// Session state. The From address (org mode) and the rotated refresh
+/// token (personal mode) are also kept in the persistent store, as upstream
+/// does, so they survive between runs; without a store they live here only.
 struct State {
   token: Option<String>,
   token_expiry: Instant,
   refresh_token: Option<String>,
   from: From,
+  /// Whether the cached From address was read from the store yet.
+  store_loaded: bool,
 }
 
 pub struct Office365 {
@@ -163,16 +167,19 @@ pub struct Office365 {
 }
 
 impl Office365 {
-  pub fn from_url(url: &ParsedUrl) -> Option<Self> {
+  pub fn from_url(original: &ParsedUrl) -> Option<Self> {
     // {schema}://{source}/{tenant}/{client_id}/{secret}/{targets}   (org)
     // {schema}://{source}/{client_id}/{secret}/{targets}            (personal)
+    // Upstream reads this URL's query with `+` meaning a space.
+    let reparsed = ParsedUrl::parse_with(&original.raw, ParseOptions { plus_to_space: true, ..Default::default() });
+    let url = reparsed.as_ref().unwrap_or(original);
     let mut entries = url.path_parts.clone();
-    let host = url.host.as_deref().map(unquote).unwrap_or_default();
+    let host = url.host.clone().unwrap_or_default();
     let qsd = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote);
 
     let source = match (qsd("from"), url.user.as_deref().filter(|u| !u.is_empty())) {
       (Some(from), _) => from,
-      (None, Some(user)) => format!("{}@{}", unquote(user), host),
+      (None, Some(user)) => format!("{}@{}", user, host),
       (None, None) => host,
     };
 
@@ -204,7 +211,8 @@ impl Office365 {
     }
     let secret = qsd("oauth_secret").unwrap_or_else(|| entries.iter().map(|e| unquote(e)).collect::<Vec<_>>().join("/"));
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      raw_targets.extend(parse_list(to));
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      raw_targets.extend(crate::utils::parse::parse_list(to).iter().map(|t| unquote(t)));
     }
 
     let client_id = client_id.trim().to_string();
@@ -234,7 +242,7 @@ impl Office365 {
     if !raw_targets.is_empty() {
       for recipient in raw_targets.iter().flat_map(|t| parse_emails(t)) {
         match is_email(&recipient) {
-          Some(e) => targets.push((e.name, e.full_email)),
+          Some(e) => targets.push((e.display_name(), e.full_email)),
           None => tracing::warn!("Dropped invalid To email ({}) specified.", recipient),
         }
       }
@@ -249,7 +257,7 @@ impl Office365 {
       for recipient in url.get(key).map(parse_emails).unwrap_or_default() {
         match is_email(&recipient) {
           Some(e) => {
-            if let Some(name) = e.name {
+            if let Some(name) = e.display_name() {
               names.insert(e.full_email.clone(), name);
             } else {
               names.remove(&e.full_email);
@@ -271,7 +279,7 @@ impl Office365 {
         tracing::warn!("A valid source email address is required for personal mode; got ({}).", source);
         return None;
       }
-      (_, Some(e)) => From::Known { email: e.full_email, name: e.name },
+      (_, Some(e)) => From::Known { name: e.display_name(), email: e.full_email },
       (Mode::Org, None) => From::Unknown,
     };
     let source_is_object_id = matches!(from, From::Unknown) && is_object_id(&source);
@@ -290,8 +298,8 @@ impl Office365 {
       names,
       save_sent: url.get("savesent").map(parse_bool).unwrap_or(true),
       verify_certificate: url.verify_certificate(),
-      tags: url.tags(),
-      state: Mutex::new(State { token: None, token_expiry: Instant::now(), refresh_token: None, from }),
+      tags: original.tags(),
+      state: Mutex::new(State { token: None, token_expiry: Instant::now(), refresh_token: None, from, store_loaded: false }),
     })
   }
 
@@ -332,11 +340,12 @@ impl Office365 {
     if let Some(token) = &state.token {
       builder = builder.header("Authorization", format!("Bearer {}", token));
     }
+    crate::notify::throttle().await;
     let r = match builder.send().await {
       Ok(r) => r,
       Err(e) => {
         tracing::warn!("Exception received when sending Office 365 {} to {}: ", method, url);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return (false, json!({}));
       }
     };
@@ -374,7 +383,15 @@ impl Office365 {
         vec![
           ("grant_type", "refresh_token".into()),
           ("client_id", self.client_id.clone()),
-          ("refresh_token", state.refresh_token.clone().unwrap_or_else(|| self.secret.clone())),
+          // The most recently rotated token wins over the one in the URL
+          (
+            "refresh_token",
+            crate::storage::with_service_store(|s| s.get("refresh_token"))
+              .flatten()
+              .and_then(|v| v.as_str().filter(|t| !t.is_empty()).map(String::from))
+              .or_else(|| state.refresh_token.clone())
+              .unwrap_or_else(|| self.secret.clone()),
+          ),
           ("scope", PERSONAL_SCOPE.into()),
         ],
       ),
@@ -393,6 +410,7 @@ impl Office365 {
       && let Some(rotated) = response.get("refresh_token").and_then(Value::as_str).filter(|t| !t.is_empty())
     {
       state.refresh_token = Some(rotated.to_string());
+      crate::storage::with_service_store(|s| s.set("refresh_token", json!(rotated), None, true));
     }
     state.token = response.get("access_token").and_then(Value::as_str).filter(|t| !t.is_empty()).map(String::from);
     state.token.is_some()
@@ -416,7 +434,17 @@ impl Office365 {
     }
     let address = response.get("mail").and_then(Value::as_str).filter(|m| !m.is_empty()).or_else(|| response.get("userPrincipalName").and_then(Value::as_str));
     state.from = match address.and_then(is_email) {
-      Some(e) => From::Known { email: e.full_email, name: response.get("displayName").and_then(Value::as_str).filter(|n| !n.is_empty()).map(String::from) },
+      Some(e) => {
+        // Remember the sender for future runs
+        let name = response.get("displayName").and_then(Value::as_str).filter(|n| !n.is_empty()).map(String::from);
+        crate::storage::with_service_store(|s| {
+          s.set("from", json!(e.full_email), None, true);
+          if let Some(name) = &name {
+            s.set("name", json!(name), None, true);
+          }
+        });
+        From::Known { email: e.full_email, name }
+      }
       None => {
         tracing::warn!("Could not get From email from the Azure endpoint.");
         From::Unavailable
@@ -497,6 +525,15 @@ impl Notify for Office365 {
   fn notify_format(&self) -> NotifyFormat {
     NotifyFormat::Html
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    0.2
+  }
+  fn url_identifier(&self) -> Option<Vec<String>> {
+    let mut id = vec!["azure".to_string(), self.source.clone()];
+    id.extend(self.tenant.clone());
+    id.extend([self.client_id.clone(), self.secret.clone()]);
+    Some(id)
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     if self.targets.is_empty() {
@@ -505,6 +542,23 @@ impl Notify for Office365 {
     }
     let client = build_client(self.verify_certificate)?;
     let mut state = self.state.lock().await;
+
+    // Org mode reuses the sender found by an earlier run
+    if self.mode == Mode::Org && !state.store_loaded {
+      state.store_loaded = true;
+      let text = |v: Option<Value>| v.and_then(|v| v.as_str().filter(|t| !t.is_empty()).map(String::from));
+      if let Some((email, name)) = crate::storage::with_service_store(|s| (text(s.get("from")), text(s.get("name")))) {
+        match &mut state.from {
+          From::Unknown => {
+            if let Some(email) = email {
+              state.from = From::Known { email, name };
+            }
+          }
+          From::Known { name: known @ None, .. } => *known = name,
+          _ => {}
+        }
+      }
+    }
 
     if self.mode == Mode::Org && state.from == From::Unknown && !self.resolve_from(&client, &mut state).await {
       return Ok(false);
@@ -548,6 +602,10 @@ impl Notify for Office365 {
       if !self.authenticate(&client, &mut state).await {
         return Ok(false);
       }
+      // A retry skips recipients that already accepted the message
+      if crate::delivery::is_delivered(to_addr, false) {
+        continue;
+      }
 
       let mut msg = message.clone();
       let mut to = Map::new();
@@ -573,6 +631,7 @@ impl Notify for Office365 {
         continue;
       }
       if large.is_empty() {
+        crate::delivery::mark_delivered(to_addr, false);
         continue;
       }
 
@@ -599,7 +658,9 @@ impl Notify for Office365 {
       if !self.fetch(&client, &state, reqwest::Method::POST, &send_url, Body::Json(Value::Null)).await.0 {
         tracing::warn!("Could not send drafted email id: {}", message_id);
         has_error = true;
+        continue;
       }
+      crate::delivery::mark_delivered(to_addr, false);
     }
     Ok(!has_error)
   }
@@ -619,147 +680,11 @@ fn is_object_id(s: &str) -> bool {
   parts.len() == 5 && parts.iter().zip([8, 4, 4, 4, 12]).all(|(p, n)| p.len() == n && p.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
-/// Upstream `parse_list()`: split on `[]`, `;`, `,` and whitespace, then
-/// de-duplicate and sort.
-fn parse_list(s: &str) -> Vec<String> {
-  let mut out: Vec<String> = split_delimiters(s);
-  out.sort();
-  out.dedup();
-  out
-}
-
-fn split_delimiters(s: &str) -> Vec<String> {
-  s.split(|c: char| c == '[' || c == ']' || c == ';' || c == ',' || c.is_whitespace()).filter(|t| !t.is_empty()).map(String::from).collect()
-}
-
-// Email parsing below mirrors upstream `is_email()` / `parse_emails()`
-// (apprise/utils/parse.py), which accept "Name <user@domain>",
-// "Name:user@domain" and label+user@domain forms.
-
-struct Email {
-  name: Option<String>,
-  full_email: String,
-  domain: String,
-}
-
-/// Upstream `is_email()`: an optional display name, then the address.
-fn is_email(input: &str) -> Option<Email> {
-  const SEP: &[char] = &[':', '<', '"', '\''];
-  let is_sep = |c: char| SEP.contains(&c) || c.is_whitespace();
-
-  // The name is greedy, so prefer the latest start that works
-  let starts: Vec<usize> = input.char_indices().filter(|(_, c)| is_sep(*c)).map(|(i, c)| i + c.len_utf8()).collect();
-  for &p in starts.iter().rev() {
-    let prefix = input[..p].trim_start_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
-    let name = prefix.trim_end_matches(is_sep);
-    if name.contains(SEP) || name.chars().count() > 128 {
-      continue;
-    }
-    if let Some((full_email, domain)) = match_full_email(&input[p..]) {
-      let name = name.trim_end_matches([' ', '\t', '\r', '\n', '\x0b', '\x0c', '+']);
-      return Some(Email { name: (!name.is_empty()).then(|| name.to_string()), full_email, domain });
-    }
-  }
-  match_full_email(input).map(|(full_email, domain)| Email { name: None, full_email, domain })
-}
-
-/// Match `[label+]userid@domain` at the start of `s`.
-fn match_full_email(s: &str) -> Option<(String, String)> {
-  let at = s.find('@')?;
-  let local = &s[..at];
-  let userid = match local.split_once('+') {
-    Some((label, user)) if !label.is_empty() && label.chars().count() <= 128 && !label.chars().any(char::is_whitespace) => user,
-    _ => local,
-  };
-  let user_char = |c: char| c.is_ascii_alphanumeric() || "_!#$%&*/=?`{|}~^-".contains(c);
-  let mut parts = userid.split('.');
-  let first = parts.next().unwrap_or_default();
-  if first.is_empty() || !first.chars().all(user_char) || !parts.all(|p| !p.is_empty() && p.chars().all(|c| user_char(c) || c == '\'')) {
-    return None;
-  }
-  let domain = match_domain(&s[at + 1..])?;
-  Some((format!("{}@{}", local, domain), domain.to_string()))
-}
-
-/// The longest domain at the start of `s`: dotted labels with a final label
-/// of 2+ characters, or else a single label of 6+ characters.
-fn match_domain(s: &str) -> Option<&str> {
-  let run_len = s.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')).unwrap_or(s.len());
-  let run = &s[..run_len];
-  let label_ok = |l: &str| {
-    let b = l.as_bytes();
-    !b.is_empty() && b[0].is_ascii_alphanumeric() && b[b.len() - 1].is_ascii_alphanumeric()
-  };
-  let dotted = (1..=run.len()).rev().map(|end| &run[..end]).find(|d| {
-    let labels: Vec<&str> = d.split('.').collect();
-    labels.len() >= 2 && labels.iter().all(|l| label_ok(l)) && labels.last().is_some_and(|l| l.len() >= 2)
-  });
-  if dotted.is_some() {
-    return dotted;
-  }
-  let single_len = run.find('.').unwrap_or(run.len());
-  let single = &run[..single_len];
-  (single.len() >= 6 && single.as_bytes()[0].is_ascii_alphanumeric()).then_some(single)
-}
-
-/// Upstream `parse_emails()`: find each address (with any display name)
-/// in a string; text without an `@` is split on the usual delimiters.
-fn parse_emails(s: &str) -> Vec<String> {
-  if !s.contains('@') {
-    return split_delimiters(s);
-  }
-  let mut out = Vec::new();
-  for segment in s.split([',', ';', '\r', '\n']) {
-    let mut rest = segment;
-    loop {
-      let trimmed = rest.trim_start();
-      let Some(at) = trimmed.find('@') else { break };
-      if at == 0 {
-        rest = &trimmed[1..];
-        continue;
-      }
-      let Some(dlen) = detection_domain_len(&trimmed[at + 1..]) else {
-        rest = &trimmed[at + 1..];
-        continue;
-      };
-      let mut end = at + 1 + dlen;
-      if trimmed[..at].contains('<') && trimmed[end..].starts_with('>') {
-        end += 1;
-      }
-      out.push(trimmed[..end].to_string());
-      rest = &trimmed[end..];
-    }
-  }
-  out
-}
-
-/// Length of `(?:[a-z0-9][a-z0-9_-]{0,62}\.){1,10}[a-z]{2,63}` at the start of `s`.
-fn detection_domain_len(s: &str) -> Option<usize> {
-  let mut best = None;
-  let mut offset = 0;
-  for _ in 0..10 {
-    let label_len = s[offset..].find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).unwrap_or(s.len() - offset);
-    if label_len == 0 || label_len > 63 || !s.as_bytes()[offset].is_ascii_alphanumeric() || !s[offset + label_len..].starts_with('.') {
-      break;
-    }
-    offset += label_len + 1;
-    let tld = s[offset..].find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(s.len() - offset).min(63);
-    if tld >= 2 {
-      best = Some(offset + tld);
-    }
-  }
-  best
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::matchers::{body_partial_json, body_string, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   const SECRET_PATH: &str = "abcd/123/3343/@jack/test";
@@ -870,17 +795,13 @@ mod tests {
   }
 
   #[test]
-  fn test_email_helpers() {
-    let e = is_email("John Doe <john@example.com>").unwrap();
-    assert_eq!((e.name.as_deref(), e.full_email.as_str(), e.domain.as_str()), (Some("John Doe"), "john@example.com", "example.com"));
-    let e = is_email("Jane:label+jane@example.co.uk").unwrap();
-    assert_eq!((e.name.as_deref(), e.full_email.as_str()), (Some("Jane"), "label+jane@example.co.uk"));
-    assert_eq!(is_email("user@localhost1").unwrap().domain, "localhost1");
-    assert!(is_email("@test").is_none());
-    assert!(is_email("abcd").is_none());
-    assert!(is_email("user@a.b").is_none());
-    assert_eq!(parse_emails("a@b.com, Name <c@d.org>;e@f.net g@h.io"), vec!["a@b.com", "Name <c@d.org>", "e@f.net", "g@h.io"]);
-    assert_eq!(parse_emails("one two"), vec!["one", "two"]);
+  fn test_url_decoding() {
+    // The query reads `+` as a space; user and host are decoded only once
+    let o = parse_o365("azure://jo%2541@example.com/tenant/client123/secret/target@example.com?cc=Chris+Doe<cc@example.com>&to=x%2540y.com");
+    assert_eq!(o.source, "jo%41@example.com");
+    assert_eq!(o.names.get("cc@example.com").map(String::as_str), Some("Chris Doe"));
+    // Entries of ?to= are unquoted once more, as upstream's parse_list() does
+    assert!(o.targets.iter().any(|(_, a)| a == "x@y.com"), "{:?}", o.targets);
   }
 
   #[tokio::test]
@@ -983,7 +904,7 @@ mod tests {
   async fn test_send_object_id_lookup_failure() {
     let server = MockServer::start().await;
     mount_token(&server, "tenant").await;
-    Mock::given(method("GET")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+    Mock::given(method("GET")).and(path("/v1.0/users/01234567-89ab-cdef-0123-456789abcdef")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
     Mock::given(method("POST"))
       .and(path("/v1.0/users/01234567-89ab-cdef-0123-456789abcdef/sendMail"))
       .respond_with(ResponseTemplate::new(200))
@@ -1050,7 +971,7 @@ mod tests {
     let reqs = server.received_requests().await.unwrap();
     let session = json_bodies(&reqs, &format!("{}/message/draft1/attachments/createUploadSession", base));
     assert_eq!(session[0], json!({"AttachmentItem": {"attachmentType": "file", "name": "big.bin", "contentType": "application/octet-stream", "size": size}}));
-    let put = reqs.iter().find(|r| r.method.as_str() == "PUT").unwrap();
+    let put = reqs.iter().find(|r| r.method.as_str() == "PUT" && r.url.path() == "/upload/session1").unwrap();
     assert_eq!(put.headers.get("content-range").unwrap(), format!("bytes 0-{}/{}", size - 1, size).as_str());
     assert_eq!(put.headers.get("authorization").unwrap(), "Bearer abcd1234");
     assert!(put.headers.get("content-type").is_none());
@@ -1091,5 +1012,76 @@ mod tests {
     assert_eq!(details.service_name, "Office 365");
     assert_eq!(details.protocols, vec!["azure", "o365"]);
     assert!(details.attachment_support);
+  }
+
+  #[tokio::test]
+  async fn test_store_keeps_sender_and_rotated_token() {
+    let server = MockServer::start().await;
+    mount_token(&server, "tenant").await;
+    // Org mode looks the sender up once; the next run reads it from the store
+    Mock::given(method("GET"))
+      .and(path("/v1.0/users/hg-fe-dc-ba"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"mail": "user@example.ca", "displayName": "John"})))
+      .expect(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/v1.0/users/hg-fe-dc-ba/sendMail")).respond_with(ResponseTemplate::new(202)).expect(2).mount(&server).await;
+    // Personal mode sends the rotated refresh token on the next run
+    for (sent, rotated) in [("seed", "rotated"), ("rotated", "rotated2")] {
+      Mock::given(method("POST"))
+        .and(path("/consumers/oauth2/v2.0/token"))
+        .and(body_string(format!(
+          "grant_type=refresh_token&client_id=client123&refresh_token={}&scope=https%3A%2F%2Fgraph.microsoft.com%2FMail.Send+offline_access",
+          sent
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"expires_in": 2000, "access_token": "token", "refresh_token": rotated})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    }
+    Mock::given(method("POST")).and(path("/v1.0/me/sendMail")).respond_with(ResponseTemplate::new(202)).expect(2).mount(&server).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let asset = crate::AppriseAsset { storage_path: Some(tmp.path().to_path_buf()), ..Default::default() };
+    let mut a = crate::Apprise::with_asset(asset);
+    let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };
+    for _ in 0..2 {
+      // A fresh instance each time, as a new run would load it
+      a.clear();
+      assert!(a.add(&format!("o365://hg-fe-dc-ba/tenant/ab-cd-ef-gh/{}/email1@test.ca", SECRET_PATH)));
+      assert!(a.add("azure://sender@outlook.com/client123/seed/target@example.com"));
+      assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    }
+    let reqs = server.received_requests().await.unwrap();
+    for mail in json_bodies(&reqs, "/v1.0/users/hg-fe-dc-ba/sendMail") {
+      assert_eq!(mail["message"]["from"], json!({"emailAddress": {"address": "user@example.ca", "name": "John"}}));
+    }
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_recipients() {
+    let server = MockServer::start().await;
+    mount_token(&server, "tenant123").await;
+    let mail = "/v1.0/users/sender@example.com/sendMail";
+    // The second recipient fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path(mail))
+      .and(body_partial_json(json!({"message": {"toRecipients": [{"emailAddress": {"address": "b@example.com"}}]}})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path(mail)).respond_with(ResponseTemplate::new(202)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("azure://sender@example.com/tenant123/client123/secret123/a@example.com/b@example.com?retry=1&wait=0"));
+    let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    let to: Vec<Value> = json_bodies(&server.received_requests().await.unwrap(), mail)
+      .iter()
+      .map(|b| b["message"]["toRecipients"][0]["emailAddress"]["address"].clone())
+      .collect();
+    // Trailing path addresses are read from the end, as upstream does
+    assert_eq!(to, vec![json!("b@example.com"), json!("a@example.com"), json!("b@example.com")]);
   }
 }

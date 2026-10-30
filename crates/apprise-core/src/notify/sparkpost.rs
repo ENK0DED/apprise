@@ -3,7 +3,7 @@ use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client,
 use crate::types::NotifyFormat;
 use crate::utils::email::{formataddr, is_email, parse_emails, parse_emails_all, valid_addresses};
 use crate::utils::parse::{ParsedUrl, parse_bool};
-use crate::utils::qsd::{Qsd, unquote, validate_token};
+use crate::utils::qsd::{unquote, validate_token};
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::{Map, Value, json};
@@ -13,10 +13,7 @@ use std::time::Duration;
 /// Recipients per request in batch mode.
 const BATCH_SIZE: usize = 2000;
 
-/// Pause between requests (upstream `request_rate_per_sec`).
-const THROTTLE: Duration = Duration::from_millis(200);
-
-/// Wait after a 429 before trying again.
+/// Wait after a 429 before trying again (upstream `sparkpost_retry_wait_sec`).
 const RETRY_WAIT: Duration = Duration::from_secs(5);
 
 /// Attempts made while SparkPost keeps answering 429.
@@ -37,7 +34,6 @@ pub struct SparkPost {
   tokens: Vec<(String, String)>,
   region: String,
   batch: bool,
-  throttle: Duration,
   retry_wait: Duration,
   verify_certificate: bool,
   tags: Vec<String>,
@@ -45,14 +41,14 @@ pub struct SparkPost {
 
 impl SparkPost {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let qsd = Qsd::from_url(url);
+    let qsd = |key: &str| url.get(key).filter(|v| !v.is_empty());
 
     // The first path entry is the API key; the rest are recipients
     let mut path = url.path_parts.iter();
     let apikey = path.next().and_then(|k| validate_token(k))?;
     let user = url.user.clone().filter(|u| !u.is_empty())?;
 
-    let region = match qsd.value("region") {
+    let region = match qsd("region") {
       Some(r) => unquote(r).to_lowercase(),
       None => "us".to_string(),
     };
@@ -61,7 +57,7 @@ impl SparkPost {
       return None;
     }
 
-    let from_name = qsd.value("name").map(unquote);
+    let from_name = qsd("name").map(unquote);
     let from_email = format!("{}@{}", user, url.host.clone().unwrap_or_default());
     if is_email(&from_email).is_none() {
       tracing::warn!("Invalid ~From~ email format: {}", from_email);
@@ -69,7 +65,7 @@ impl SparkPost {
     }
 
     let mut raw_targets: Vec<String> = path.cloned().collect();
-    if let Some(to) = qsd.value("to") {
+    if let Some(to) = qsd("to") {
       raw_targets.push(to.to_string());
     }
     let targets = if raw_targets.is_empty() {
@@ -81,7 +77,7 @@ impl SparkPost {
     let mut names = HashMap::new();
     let mut cc = Vec::new();
     let mut bcc = Vec::new();
-    for (list, raw, kind) in [(&mut cc, qsd.value("cc"), "Carbon Copy"), (&mut bcc, qsd.value("bcc"), "Blind Carbon Copy")] {
+    for (list, raw, kind) in [(&mut cc, qsd("cc"), "Carbon Copy"), (&mut bcc, qsd("bcc"), "Blind Carbon Copy")] {
       for e in valid_addresses(&parse_emails(raw.unwrap_or_default()), kind) {
         names.insert(e.full_email.clone(), e.display_name());
         if !list.contains(&e.full_email) {
@@ -90,7 +86,7 @@ impl SparkPost {
       }
     }
 
-    let unquote_pair = |(k, v): (String, String)| (unquote(&k), unquote(&v));
+    let unquote_pair = |(k, v): (&String, &String)| (unquote(k), unquote(v));
     Some(Self {
       apikey,
       from_name,
@@ -99,11 +95,10 @@ impl SparkPost {
       cc,
       bcc,
       names,
-      headers: qsd.prefixed('+').into_iter().map(unquote_pair).collect(),
-      tokens: qsd.prefixed(':').into_iter().map(unquote_pair).collect(),
+      headers: url.qsd_add.iter().map(unquote_pair).collect(),
+      tokens: url.qsd_colon.iter().map(unquote_pair).collect(),
       region,
-      batch: qsd.get("batch").map(parse_bool).unwrap_or(false),
-      throttle: THROTTLE,
+      batch: url.get("batch").map(parse_bool).unwrap_or(false),
       retry_wait: RETRY_WAIT,
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
@@ -128,7 +123,9 @@ impl SparkPost {
   /// POST one transmission, retrying while SparkPost rate-limits us (429).
   async fn post(&self, client: &reqwest::Client, url: &str, payload: &Value, dest: &str) -> bool {
     let body = payload.to_string();
+    let mut wait = None;
     for attempt in 1..=RETRY_ATTEMPTS {
+      crate::notify::throttle_for(wait).await;
       let result = client
         .post(url)
         .header("User-Agent", APP_ID)
@@ -150,11 +147,11 @@ impl SparkPost {
           if status != 429 || attempt == RETRY_ATTEMPTS {
             return false;
           }
-          tokio::time::sleep(self.retry_wait).await;
+          wait = Some(self.retry_wait);
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending SparkPost notification");
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           return false;
         }
       }
@@ -223,8 +220,10 @@ impl Notify for SparkPost {
     let mut has_error = false;
 
     for (index, batch) in self.targets.chunks(batch_size).enumerate() {
-      if index > 0 {
-        tokio::time::sleep(self.throttle).await;
+      // A retry skips batches that already accepted the message
+      let key = index.to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
       }
       let in_batch = |addr: &String| batch.iter().any(|(_, t)| t == addr);
       let header_to = &batch[0].1;
@@ -270,7 +269,9 @@ impl Notify for SparkPost {
       } else {
         format!("{} recipients", recipients.len())
       };
-      if !self.post(&client, &url, &payload, &dest).await {
+      if self.post(&client, &url, &payload, &dest).await {
+        crate::delivery::mark_delivered(&key, false);
+      } else {
         has_error = true;
       }
     }
@@ -297,32 +298,31 @@ fn status_message(status: u16) -> &'static str {
 mod tests {
   use super::*;
   use crate::notify::Attachment;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::method;
+  use wiremock::matchers::{body_partial_json, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
+
+  const TRANSMISSIONS: &str = "/api/v1/transmissions/";
 
   fn parse(url: &str) -> SparkPost {
     let mut sp = SparkPost::from_url(&ParsedUrl::parse(url).unwrap()).unwrap_or_else(|| panic!("should parse: {}", url));
-    sp.throttle = Duration::ZERO;
     sp.retry_wait = Duration::ZERO;
     sp
   }
 
   async fn mock(status: u16) -> MockServer {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(r#"{"results":{"id":"1"}}"#)).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path(TRANSMISSIONS))
+      .respond_with(ResponseTemplate::new(status).set_body_string(r#"{"results":{"id":"1"}}"#))
+      .mount(&server)
+      .await;
     server
   }
 
   async fn bodies(server: &MockServer) -> Vec<Value> {
-    server
-      .received_requests()
-      .await
-      .unwrap()
-      .iter()
-      .filter(|r| r.method == wiremock::http::Method::POST)
-      .map(|r| serde_json::from_slice(&r.body).unwrap())
-      .collect()
+    requests_to(server, "POST", TRANSMISSIONS).await.iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect()
   }
 
   fn ctx(title: &str, body_format: NotifyFormat) -> NotifyContext {
@@ -403,10 +403,8 @@ mod tests {
     let svc = from_url("sparkpost://sender@domain.com/apikey/recipient@domain.com").unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("title", NotifyFormat::Html))).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = requests_to(&server, "POST", TRANSMISSIONS).await;
     assert_eq!(reqs.len(), 1);
-    assert_eq!(reqs[0].method.as_str(), "POST");
-    assert_eq!(reqs[0].url.path(), "/api/v1/transmissions/");
     assert_eq!(reqs[0].headers.get("authorization").unwrap(), "apikey");
     assert_eq!(reqs[0].headers.get("accept").unwrap(), "application/json");
     assert_eq!(reqs[0].headers.get("content-type").unwrap(), "application/json");
@@ -473,19 +471,19 @@ mod tests {
   async fn test_send_retries_rate_limits() {
     // Upstream test_plugin_sparkpost_throttling: two 429s then a 200 succeeds
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(429)).up_to_n_times(2).mount(&server).await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    Mock::given(method("POST")).and(path(TRANSMISSIONS)).respond_with(ResponseTemplate::new(429)).up_to_n_times(2).mount(&server).await;
+    Mock::given(method("POST")).and(path(TRANSMISSIONS)).respond_with(ResponseTemplate::new(200)).mount(&server).await;
     let svc = parse("sparkpost://user@localhost.localdomain/abc123");
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", NotifyFormat::Html))).await.unwrap());
-    let bodies = bodies(&server).await;
-    assert_eq!(bodies.len(), 3);
+    let sent = bodies(&server).await;
+    assert_eq!(sent.len(), 3);
     // Every retry carries the recipients again
-    assert!(bodies.iter().all(|b| b["recipients"] == json!([{ "address": { "email": "user@localhost.localdomain" } }])));
+    assert!(sent.iter().all(|b| b["recipients"] == json!([{ "address": { "email": "user@localhost.localdomain" } }])));
 
     // Three 429s in a row fail
     let server = mock(429).await;
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", NotifyFormat::Html))).await.unwrap());
-    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    assert_eq!(bodies(&server).await.len(), 3);
   }
 
   #[tokio::test]
@@ -495,11 +493,52 @@ mod tests {
       let svc = parse(&format!("sparkpost://user@localhost.localdomain/{}", "n".repeat(32)));
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", NotifyFormat::Html))).await.unwrap(), "status {}", status);
       // Only a 429 is retried
-      assert_eq!(server.received_requests().await.unwrap().len(), 1);
+      assert_eq!(bodies(&server).await.len(), 1);
     }
     let server = mock(200).await;
     let svc = parse(&format!("sparkpost://user@localhost.localdomain/{}/invalid", "i".repeat(32)));
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", NotifyFormat::Html))).await.unwrap());
-    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(bodies(&server).await.is_empty());
+  }
+
+  #[tokio::test]
+  async fn test_rate_limit_forces_a_wait() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path(TRANSMISSIONS)).respond_with(ResponseTemplate::new(429)).up_to_n_times(1).mount(&server).await;
+    Mock::given(method("POST")).and(path(TRANSMISSIONS)).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut svc = parse("sparkpost://user@localhost.localdomain/abc123");
+    svc.retry_wait = Duration::from_millis(300);
+    let started = std::time::Instant::now();
+    let sent = crate::notify::with_throttling_in_tests(crate::notify::with_throttle(
+      0.0,
+      Default::default(),
+      crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", NotifyFormat::Html))),
+    ))
+    .await;
+    assert!(sent.unwrap());
+    assert_eq!(bodies(&server).await.len(), 2);
+    // The retry after the 429 waited even though throttling is off
+    assert!(started.elapsed() >= Duration::from_millis(300));
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_batches() {
+    let server = MockServer::start().await;
+    // The second recipient fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path(TRANSMISSIONS))
+      .and(body_partial_json(json!({ "recipients": [{ "address": { "email": "b@example.com" } }] })))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path(TRANSMISSIONS)).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("sparkpost://user@example.com/abc123/a@example.com/b@example.com?retry=1&wait=0"));
+    let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    let to: Vec<Value> = bodies(&server).await.iter().map(|b| b["recipients"][0]["address"]["email"].clone()).collect();
+    assert_eq!(to, vec![json!("a@example.com"), json!("b@example.com"), json!("b@example.com")]);
   }
 }
