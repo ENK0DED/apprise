@@ -57,6 +57,7 @@ pub mod github;
 pub mod google_chat;
 pub mod gorush;
 pub mod gotify;
+pub mod groundmail;
 pub mod groupme;
 pub mod growl;
 pub mod guilded;
