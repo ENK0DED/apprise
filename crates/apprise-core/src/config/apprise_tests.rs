@@ -163,3 +163,23 @@ async fn test_unresolved_template_entries_count_as_failures() {
   a.set_tag_strings(&["other".to_string()]);
   assert_eq!(a.pending_matching(a.tag_filter()).count(), 0);
 }
+
+#[tokio::test]
+async fn test_attachment_names_are_cleaned_before_plugins_see_them() {
+  use wiremock::matchers::{method, path};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
+
+  let server = MockServer::start().await;
+  Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+  let mut a = Apprise::new();
+  assert!(a.add(&format!("json://{}/", server.address())));
+  let ctx = crate::NotifyContext {
+    body: "body".into(),
+    attachments: vec![crate::Attachment { name: "a.txt\r\nX-Injected: yes".into(), data: b"x".to_vec(), mime_type: "text/plain".into() }],
+    ..Default::default()
+  };
+  assert!(a.notify(&ctx).await.is_success());
+  let request = server.received_requests().await.unwrap().into_iter().find(|r| r.method == wiremock::http::Method::POST).unwrap();
+  let payload: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+  assert_eq!(payload["attachments"][0]["filename"], "a.txtX-Injected: yes");
+}

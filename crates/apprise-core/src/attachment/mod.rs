@@ -194,9 +194,16 @@ pub fn guess_extension(mime: &str) -> Option<String> {
 pub(crate) fn final_name(forced: Option<&str>, detected: Option<&str>, mime: &str) -> String {
   forced
     .or(detected)
+    .map(safe_name)
     .filter(|n| !n.is_empty())
-    .map(str::to_string)
     .unwrap_or_else(|| format!("{}{}", UNKNOWN_FILENAME, guess_extension(mime).unwrap_or_else(|| ".obj".to_string())))
+}
+
+/// `name` without control characters. Names end up in MIME and multipart
+/// headers, where a CR/LF (for instance from `%0d%0a` in an attachment URL)
+/// would inject headers; upstream's email package refuses such names.
+pub fn safe_name(name: &str) -> String {
+  name.chars().filter(|c| !c.is_control()).collect()
 }
 
 #[cfg(test)]

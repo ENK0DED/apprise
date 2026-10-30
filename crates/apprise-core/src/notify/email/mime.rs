@@ -197,7 +197,19 @@ impl Part {
 /// `Header(value)` UTF-8 fallback uses Python's default `SHORTEST`).
 pub fn encode_header_value(value: &str) -> String {
   if value.is_ascii() {
-    return value.replace("\r\n", "\n").replace('\r', "\n");
+    let value = value.replace("\r\n", "\n").replace('\r', "\n");
+    // A line break is only a fold when whitespace follows; any other one
+    // would start a new header, so it becomes a space.
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+      if c == '\n' && !matches!(chars.peek(), Some(' ' | '\t')) {
+        out.push(' ');
+      } else {
+        out.push(c);
+      }
+    }
+    return out;
   }
   let bytes = value.as_bytes();
   let len64 = bytes.len().div_ceil(3) * 4;
@@ -402,5 +414,13 @@ mod tests {
     assert_eq!(encode_header_value("attachment; filename=\"café résumé.txt\""), "=?utf-8?b?YXR0YWNobWVudDsgZmlsZW5hbWU9ImNhZsOpIHLDqXN1bcOpLnR4dCI=?=");
     assert_eq!(encode_header_value_qp("café"), "=?utf-8?q?caf=C3=A9?=");
     assert_eq!(encode_header_value_qp("日本"), "=?utf-8?q?=E6=97=A5=E6=9C=AC?=");
+  }
+
+  #[test]
+  fn test_header_values_cannot_start_a_new_header() {
+    assert_eq!(encode_header_value("name\r\nX-Injected: yes"), "name X-Injected: yes");
+    assert_eq!(encode_header_value("a\nb\rc"), "a b c");
+    // A real fold (line break plus whitespace) is kept
+    assert_eq!(encode_header_value("a,\n b"), "a,\n b");
   }
 }

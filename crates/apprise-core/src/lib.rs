@@ -455,6 +455,11 @@ impl Apprise {
   async fn dispatch(&self, ctx: &NotifyContext, opts: &dispatch::DispatchOptions, filter: &TagFilter) -> SendResult {
     let mut ctx = ctx.clone();
     ctx.asset = self.asset.clone();
+    // Names reach MIME and multipart headers; attachments built by a
+    // library caller have not been through the loaders' cleanup.
+    for attachment in &mut ctx.attachments {
+      attachment.name = attachment::safe_name(&attachment.name);
+    }
     let result = dispatch::notify(&self.services, filter, &ctx, opts).await;
     self.with_unresolved(result, filter)
   }

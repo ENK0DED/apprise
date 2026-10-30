@@ -106,3 +106,12 @@ fn test_mime_helpers() {
   assert_eq!(guess_mime("a.csv").as_deref(), Some("text/csv"));
   assert_eq!(final_name(None, None, "bogus/none"), "apprise-attachment.obj");
 }
+
+#[test]
+fn test_names_lose_control_characters() {
+  // %0d%0a in an attachment URL decodes to CR/LF, which would inject headers
+  assert_eq!(safe_name("a.txt\"\r\nContent-Type: text/html\r\n\r\nX"), "a.txt\"Content-Type: text/htmlX");
+  assert_eq!(final_name(Some("bad\r\n\u{0}name.txt"), None, "text/plain"), "badname.txt");
+  // A name of nothing but control characters falls back to the default
+  assert_eq!(final_name(Some("\r\n"), None, "text/plain"), "apprise-attachment.txt");
+}
