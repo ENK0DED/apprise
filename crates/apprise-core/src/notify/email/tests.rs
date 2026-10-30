@@ -1144,3 +1144,14 @@ async fn dump_pgp_artifacts() {
     std::fs::write(out.join(name), raw).unwrap();
   }
 }
+
+#[tokio::test]
+async fn test_custom_headers_cannot_inject_headers() {
+  let server = FakeSmtp::start(ServerConfig::default()).await;
+  let url = "mailtos://user:pass@example.com/to@example.org?+X-Custom=a%0D%0AX-Injected:%20yes&+X-Key%0D%0AInjected-Name=v";
+  let (ok, _) = against(&server, email(url).send(&ctx("title", "body", NotifyFormat::Text))).await;
+  assert!(ok.unwrap());
+  let mail = &server.mails()[0];
+  assert!(mail.text.lines().all(|l| !l.starts_with("X-Injected") && !l.starts_with("Injected-Name")), "{}", mail.text);
+  assert!(mail.text.contains("X-Custom: a X-Injected: yes"), "{}", mail.text);
+}

@@ -172,7 +172,9 @@ impl Part {
       self.set_boundary(&b);
     }
     for (name, value, charset) in &self.headers {
-      out.push_str(name);
+      // A line break in a name (`?+X-A%0d%0aX-B=...`) would start another
+      // header.
+      out.extend(name.chars().filter(|c| !c.is_control()));
       out.push_str(": ");
       out.push_str(&match charset {
         Charset::Str => encode_header_value(value),
