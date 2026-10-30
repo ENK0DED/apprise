@@ -47,6 +47,8 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(cm::Cm::static_details());
   collect!(d7networks::D7Networks::static_details());
   collect!(dapnet::Dapnet::static_details());
+  #[cfg(feature = "email")]
+  collect!(deltachat::DeltaChat::static_details());
   #[cfg(all(feature = "desktop", unix))]
   collect!(desktop::dbus::DBus::static_details());
   #[cfg(all(feature = "desktop", unix))]
@@ -244,6 +246,8 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(cm::Cm::from_url, "cm");
   reg!(d7networks::D7Networks::from_url, "d7sms");
   reg!(dapnet::Dapnet::from_url, "dapnet");
+  #[cfg(feature = "email")]
+  reg!(deltachat::DeltaChat::from_url, "deltachat", "deltachats");
   #[cfg(all(feature = "desktop", unix))]
   reg!(desktop::dbus::DBus::from_url, "dbus", "kde", "qt");
   #[cfg(all(feature = "desktop", unix))]
