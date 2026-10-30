@@ -387,10 +387,12 @@ impl PersistentStore {
       return None;
     }
     let present = self.cache.as_ref().is_some_and(|c| c.contains_key(key));
-    if present && self.mode != StorageMode::Memory && !self.dirty {
-      if let Some(f) = self.cache_file() {
-        self.renew.insert(f);
-      }
+    if present
+      && self.mode != StorageMode::Memory
+      && !self.dirty
+      && let Some(f) = self.cache_file()
+    {
+      self.renew.insert(f);
     }
     self.cache.as_ref()?.get(key).filter(|co| co.is_live()).map(|co| co.value.clone())
   }
@@ -935,7 +937,10 @@ fn list_files(dir: &Path) -> Vec<PathBuf> {
 /// The stores of one `Apprise` instance's services, by namespace, so a
 /// service sees the same store on every notification.
 #[derive(Clone, Default)]
-pub struct StoreRegistry(Arc<Mutex<HashMap<(String, Option<PathBuf>, String), Arc<Mutex<PersistentStore>>>>>);
+pub struct StoreRegistry(Arc<Mutex<HashMap<StoreKey, Arc<Mutex<PersistentStore>>>>>);
+
+/// Namespace, storage path and mode of a registered store.
+type StoreKey = (String, Option<PathBuf>, String);
 
 impl std::fmt::Debug for StoreRegistry {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

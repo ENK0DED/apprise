@@ -136,12 +136,9 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
         break;
       }
     }
-    if let Some(chunk) = chunks.last()
-      && chunk.chars().count() > width
-    {
+    if let Some(chunk) = chunks.pop_if(|c| c.chars().count() > width) {
       // Break a word that can never fit, filling the current line.
       let space = width.saturating_sub(len).max(1);
-      let chunk = chunks.pop().unwrap();
       let head: String = chunk.chars().take(space).collect();
       let tail: String = chunk.chars().skip(space).collect();
       line.push(head);

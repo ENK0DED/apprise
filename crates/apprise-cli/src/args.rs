@@ -295,10 +295,10 @@ fn matched(a: &[char], b: &[char]) -> usize {
   }
   let (mut best_i, mut best_j, mut best) = (0, 0, 0);
   let mut prev = vec![0usize; b.len() + 1];
-  for i in 0..a.len() {
+  for (i, ca) in a.iter().enumerate() {
     let mut cur = vec![0usize; b.len() + 1];
-    for j in 0..b.len() {
-      if a[i] == b[j] {
+    for (j, cb) in b.iter().enumerate() {
+      if ca == cb {
         cur[j + 1] = prev[j] + 1;
         let k = cur[j + 1];
         let (si, sj) = (i + 1 - k, j + 1 - k);

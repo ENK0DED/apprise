@@ -366,6 +366,19 @@ impl Apprise {
   }
 }
 
+/// Default persistent storage path, as upstream: `~/.local/share/apprise/cache`
+/// (`%APPDATA%/Apprise/cache` on Windows). `APPRISE_STORAGE_PATH` is not
+/// consulted here.
+pub fn default_storage_path() -> String {
+  if cfg!(windows) {
+    let appdata = std::env::var("APPDATA").ok().filter(|v| !v.is_empty());
+    return appdata.map(|a| format!("{a}/Apprise/cache")).unwrap_or_else(|| "%APPDATA%/Apprise/cache".to_string());
+  }
+  dirs::home_dir()
+    .map(|h| h.join(".local").join("share").join("apprise").join("cache").to_string_lossy().into_owned())
+    .unwrap_or_else(|| "~/.local/share/apprise/cache".to_string())
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -386,17 +399,4 @@ mod tests {
     assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     drop(a);
   }
-}
-
-/// Default persistent storage path, as upstream: `~/.local/share/apprise/cache`
-/// (`%APPDATA%/Apprise/cache` on Windows). `APPRISE_STORAGE_PATH` is not
-/// consulted here.
-pub fn default_storage_path() -> String {
-  if cfg!(windows) {
-    let appdata = std::env::var("APPDATA").ok().filter(|v| !v.is_empty());
-    return appdata.map(|a| format!("{a}/Apprise/cache")).unwrap_or_else(|| "%APPDATA%/Apprise/cache".to_string());
-  }
-  dirs::home_dir()
-    .map(|h| h.join(".local").join("share").join("apprise").join("cache").to_string_lossy().into_owned())
-    .unwrap_or_else(|| "~/.local/share/apprise/cache".to_string())
 }
