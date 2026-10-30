@@ -2,7 +2,6 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use crate::utils::phone::{is_phone_no, parse_phone_no};
-use crate::utils::urlbase::{url_credentials, url_host};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -20,7 +19,7 @@ pub struct ClickSend {
 
 impl ClickSend {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (user, password) = url_credentials(url);
+    let (user, password) = (url.user.clone(), url.password.clone());
     // ?key= is the API key, which is the password
     let password = url.get("key").filter(|k| !k.is_empty()).map(str::to_string).or(password);
     let (Some(user), Some(password)) = (user.filter(|u| !u.is_empty()), password.filter(|p| !p.is_empty())) else {
@@ -28,7 +27,7 @@ impl ClickSend {
       return None;
     };
 
-    let mut raw_targets = vec![url_host(url)];
+    let mut raw_targets = vec![url.host.clone().unwrap_or_default()];
     raw_targets.extend(url.path_parts.iter().cloned());
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
       raw_targets.extend(parse_phone_no(&[to]));
@@ -95,11 +94,19 @@ impl Notify for ClickSend {
     let batch_size = if self.batch { DEFAULT_BATCH_SIZE } else { 1 };
     let mut has_error = false;
 
-    for batch in self.targets.chunks(batch_size) {
+    for (index, batch) in self.targets.chunks(batch_size).enumerate() {
+      // Skip a batch that already went out so a retry does not deliver it
+      // to those recipients twice
+      let key = (index * batch_size).to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
+
       let messages: Vec<_> = batch.iter().map(|to| json!({ "source": "php", "body": ctx.body, "to": format!("+{}", to) })).collect();
       let payload = json!({ "messages": messages });
       let p_target = if batch_size == 1 { format!(" to {}", batch[0]) } else { "(s)".to_string() };
 
+      crate::notify::throttle().await;
       let resp = match client
         .post(&notify_url)
         .header("User-Agent", APP_ID)
@@ -112,7 +119,7 @@ impl Notify for ClickSend {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending {} ClickSend notification(s).", batch.len());
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -127,6 +134,7 @@ impl Notify for ClickSend {
         continue;
       }
       tracing::info!("Sent {} ClickSend notification{}.", batch.len(), p_target);
+      crate::delivery::mark_delivered(&key, false);
     }
 
     Ok(!has_error)
@@ -137,7 +145,7 @@ impl Notify for ClickSend {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> ClickSend {
@@ -242,15 +250,28 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(401)).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v3/sms/send")).respond_with(ResponseTemplate::new(401)).expect(2).mount(&server).await;
     let svc = from_url("clicksend://user:pass@15551231234/15557654321").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
   }
 
   #[tokio::test]
+  async fn test_retry_skips_accepted_batches() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/v3/sms/send"));
+    send().and(body_string_contains("+15551231234")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    send().and(body_string_contains("+15557654321")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(body_string_contains("+15557654321")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("clicksend://user:pass@15551231234/15557654321?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("body"))).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_only_200_succeeds() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v3/sms/send")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
     let svc = from_url("clicksend://user:pass@15551231234").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
   }

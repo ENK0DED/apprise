@@ -2,7 +2,6 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use crate::utils::phone::{is_phone_no, parse_phone_no};
-use crate::utils::urlbase::{url_credentials, url_host};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -36,9 +35,9 @@ fn group_name(target: &str) -> Option<&str> {
 
 impl BulkSms {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (user, password) = url_credentials(url);
+    let (user, password) = (url.user.clone(), url.password.clone());
 
-    let mut raw_targets = vec![url_host(url)];
+    let mut raw_targets = vec![url.host.clone().unwrap_or_default()];
     raw_targets.extend(url.path_parts.iter().cloned());
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
       raw_targets.extend(parse_phone_no(&[to]));
@@ -150,6 +149,13 @@ impl Notify for BulkSms {
     let mut has_error = false;
 
     for (to, p_target) in self.recipients() {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      let key = to.to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
+
       let mut payload = json!({
         "to": to,
         "body": ctx.body,
@@ -161,11 +167,12 @@ impl Notify for BulkSms {
         payload["from"] = json!(source);
       }
 
+      crate::notify::throttle().await;
       let resp = match client.post(&notify_url).header("User-Agent", APP_ID).basic_auth(user, Some(password)).json(&payload).send().await {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending BulkSMS: to {}", p_target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -179,6 +186,7 @@ impl Notify for BulkSms {
         continue;
       }
       tracing::info!("Sent BulkSMS notification to {}.", p_target);
+      crate::delivery::mark_delivered(&key, false);
     }
 
     Ok(!has_error)
@@ -189,7 +197,7 @@ impl Notify for BulkSms {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> BulkSms {
@@ -353,15 +361,29 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure_continues() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500)).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/messages")).respond_with(ResponseTemplate::new(500)).expect(2).mount(&server).await;
     let svc = from_url("bulksms://a:b@15551231234/15555555555").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
   }
 
   #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    let server = MockServer::start().await;
+    let messages = || Mock::given(method("POST")).and(path("/v1/messages"));
+    messages().and(body_partial_json(json!({"to": "+15551231234"}))).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    // The group fails once, then accepts the retry
+    let group = json!({"to": {"type": "GROUP", "name": "grp"}});
+    messages().and(body_partial_json(&group)).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    messages().and(body_partial_json(&group)).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("bulksms://a:b@15551231234/@grp?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("body"))).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_only_200_and_201_succeed() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(202)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/messages")).respond_with(ResponseTemplate::new(202)).expect(1).mount(&server).await;
     let svc = from_url("bulksms://a:b@15551231234").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
   }

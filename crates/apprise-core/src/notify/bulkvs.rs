@@ -2,7 +2,6 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use crate::utils::phone::{is_phone_no, parse_phone_no};
-use crate::utils::urlbase::{url_credentials, url_host};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -21,13 +20,13 @@ pub struct BulkVs {
 
 impl BulkVs {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (user, password) = url_credentials(url);
+    let (user, password) = (url.user.clone(), url.password.clone());
     let (Some(user), Some(password)) = (user.filter(|u| !u.is_empty()), password.filter(|p| !p.is_empty())) else {
       tracing::warn!("A BulkVS user/pass was not provided.");
       return None;
     };
 
-    let host = url_host(url);
+    let host = url.host.clone().unwrap_or_default();
     let (source, mut raw_targets) = match url.get("from").filter(|f| !f.is_empty()) {
       // The host is a target when ?from= names the source
       Some(from) => (from.to_string(), parse_phone_no(&[host])),
@@ -124,7 +123,15 @@ impl Notify for BulkVs {
     let mut has_error = false;
 
     for (to, p_target) in self.recipients() {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      let key = to.to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
+
       let payload = json!({ "From": self.source, "To": to, "Message": ctx.body });
+      crate::notify::throttle().await;
       let resp = match client
         .post(&notify_url)
         .header("User-Agent", APP_ID)
@@ -137,7 +144,7 @@ impl Notify for BulkVs {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending BulkVS: to {}", p_target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -151,6 +158,7 @@ impl Notify for BulkVs {
         continue;
       }
       tracing::info!("Sent BulkVS notification to {}.", p_target);
+      crate::delivery::mark_delivered(&key, false);
     }
 
     Ok(!has_error)
@@ -161,7 +169,7 @@ impl Notify for BulkVs {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> BulkVs {
@@ -280,9 +288,22 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/api/v1.0/messageSend"));
+    send().and(body_partial_json(json!({"To": "15551231234"}))).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    send().and(body_partial_json(json!({"To": "15555555555"}))).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(body_partial_json(json!({"To": "15555555555"}))).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("bulkvs://u:p@14051231234/15551231234/15555555555?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("body"))).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_only_200_succeeds() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(201)).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api/v1.0/messageSend")).respond_with(ResponseTemplate::new(201)).expect(2).mount(&server).await;
     let svc = from_url("bulkvs://u:p@14051231234/15551231234/15555555555").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
   }
