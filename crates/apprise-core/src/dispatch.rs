@@ -55,6 +55,12 @@ pub(crate) struct DispatchOptions {
   pub http_redirects: bool,
   /// Mask secrets in log output.
   pub secure_logging: bool,
+  /// Persistent storage settings and the instance's open stores.
+  pub storage_path: Option<std::path::PathBuf>,
+  pub storage_mode: crate::types::StorageMode,
+  pub storage_salt: Vec<u8>,
+  pub storage_idlen: usize,
+  pub stores: crate::storage::StoreRegistry,
 }
 
 impl DispatchOptions {
@@ -68,6 +74,11 @@ impl DispatchOptions {
       default_wait: asset.default_service_wait,
       http_redirects: asset.http_redirects,
       secure_logging: asset.secure_logging,
+      storage_path: asset.storage_path.clone(),
+      storage_mode: asset.storage_mode.clone(),
+      storage_salt: asset.storage_salt.clone(),
+      storage_idlen: asset.storage_idlen,
+      stores: crate::storage::StoreRegistry::default(),
     }
   }
 }
@@ -373,7 +384,20 @@ async fn run_service(call: &Call<'_>, ctx: &NotifyContext, opts: &DispatchOption
   };
 
   // Plugins can only track targets across attempts when retries are on.
-  if retry > 0 { DELIVERY.scope(DeliveryState::default(), run).await } else { run.await }
+  let run = async move { if retry > 0 { DELIVERY.scope(DeliveryState::default(), run).await } else { run.await } };
+  crate::storage::with_store_slot(store_slot(call, opts), run).await
+}
+
+/// Where this service's persistent store lives: its URL ID's namespace, in
+/// memory only with `?store=no`.
+fn store_slot(call: &Call<'_>, opts: &DispatchOptions) -> crate::storage::StoreSlot {
+  let disabled = call.svc.service_options().and_then(|o| o.store) == Some(false);
+  crate::storage::StoreSlot {
+    registry: opts.stores.clone(),
+    namespace: crate::notify::options::url_id(call.svc, &opts.storage_salt, opts.storage_idlen),
+    path: opts.storage_path.clone(),
+    mode: if disabled { crate::types::StorageMode::Memory } else { opts.storage_mode.clone() },
+  }
 }
 
 /// Log a failed `send()` without leaking secrets from URLs in the error.
@@ -936,5 +960,51 @@ mod tests {
     // Without retries nothing is tracked.
     assert!(!crate::delivery::is_delivered("t1", false));
     assert_eq!(crate::delivery::recall("upload", true), None);
+  }
+
+  /// A plugin that counts its sends in its persistent store.
+  struct Counting;
+
+  #[async_trait]
+  impl Notify for Counting {
+    fn schemas(&self) -> &[&str] {
+      &["count"]
+    }
+    fn service_name(&self) -> &str {
+      "Counting"
+    }
+    fn details(&self) -> ServiceDetails {
+      ServiceDetails { service_name: "Counting", service_url: None, setup_url: None, protocols: vec!["count"], description: "", attachment_support: false }
+    }
+    async fn send(&self, _ctx: &NotifyContext) -> Result<bool, NotifyError> {
+      let stored = crate::storage::with_service_store(|s| {
+        let n = s.get("sent").and_then(|v| v.as_u64()).unwrap_or(0) + 1;
+        s.set("sent", serde_json::json!(n), None, true);
+        n
+      });
+      Ok(stored.is_some())
+    }
+  }
+
+  fn counting(url: &str) -> Box<dyn Notify> {
+    let options = ServiceOptions::from_url(&ParsedUrl::parse(url).unwrap()).unwrap();
+    Box::new(ConfiguredService::new(Box::new(Counting), options).with_url(url))
+  }
+
+  #[tokio::test]
+  async fn test_plugins_reach_their_persistent_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = apprise(vec![counting("count://host/a"), counting("count://host/b?store=no")]);
+    a.asset.storage_path = Some(tmp.path().to_path_buf());
+    assert!(a.notify(&ctx()).await.is_success());
+    assert!(a.notify(&ctx()).await.is_success());
+    a.flush_stores();
+    let id = a.url_id(a.services[0].as_ref()).unwrap();
+    assert_eq!(id.len(), 8);
+    let mut store = crate::storage::PersistentStore::new(Some(tmp.path()), &id, crate::types::StorageMode::Auto).unwrap();
+    assert_eq!(store.get("sent"), Some(serde_json::json!(2)));
+    // store=no keeps the second service in memory only.
+    let other = a.url_id(a.services[1].as_ref()).unwrap();
+    assert!(!tmp.path().join(other).exists());
   }
 }

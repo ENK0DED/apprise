@@ -26,21 +26,23 @@ async fn main() {
   if let Some(Commands::Storage(storage_args)) = &cli.command {
     let storage_path = storage_args.storage_path.clone().or_else(|| cli.storage_path.clone()).unwrap_or_else(default_storage_path);
     let storage_mode = cli.storage_mode.parse::<StorageMode>().unwrap_or(StorageMode::Auto);
-    let store =
-      PersistentStore::new(std::path::PathBuf::from(&storage_path), storage_args.storage_uid_length as usize, storage_args.storage_prune_days, storage_mode);
+    let path = std::path::PathBuf::from(&storage_path);
+    let _ = (storage_args.storage_uid_length, storage_mode);
+    let namespaces: Vec<String> = storage_args.uids.clone();
     match storage_args.action.as_str() {
       "list" => {
-        let entries = store.list().await;
-        if entries.is_empty() {
-          println!("No entries.");
-        } else {
-          for e in entries {
-            println!("{}\t{}\t{}", e.uid, e.url_hash, e.last_used.format("%Y-%m-%d %H:%M:%S"));
-          }
+        for ns in PersistentStore::disk_scan(&path, &namespaces, true) {
+          println!("{}", ns);
         }
       }
-      "prune" => println!("Pruned {} entries.", store.prune().await),
-      "clean" => println!("Cleaned {} entries.", store.clean().await),
+      "prune" => {
+        let removed = PersistentStore::disk_prune(&path, Some(&namespaces), Some(storage_args.storage_prune_days as u64 * 86400), true);
+        println!("Pruned {} entries.", removed.values().map(Vec::len).sum::<usize>());
+      }
+      "clean" => {
+        let removed = PersistentStore::disk_prune(&path, Some(&namespaces), Some(0), true);
+        println!("Cleaned {} entries.", removed.values().map(Vec::len).sum::<usize>());
+      }
       other => {
         eprintln!("Unknown storage action: {}", other);
         std::process::exit(2);

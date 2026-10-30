@@ -70,6 +70,7 @@ pub struct Apprise {
   asset: AppriseAsset,
   tag_filter: TagFilter,
   timeout: Option<std::time::Duration>,
+  stores: storage::StoreRegistry,
 }
 
 impl Default for Apprise {
@@ -87,7 +88,7 @@ impl Apprise {
   /// Create with a custom asset (branding, delivery and storage settings).
   pub fn with_asset(asset: AppriseAsset) -> Self {
     ensure_crypto_provider();
-    Self { services: Vec::new(), asset, tag_filter: TagFilter::All, timeout: None }
+    Self { services: Vec::new(), asset, tag_filter: TagFilter::All, timeout: None, stores: storage::StoreRegistry::default() }
   }
 
   /// Set the asset (branding/theming) for this instance.
@@ -260,17 +261,34 @@ impl Apprise {
   /// groups only run if a more urgent one failed. Plugins see the asset of
   /// this instance in `ctx.asset`.
   pub async fn notify(&self, ctx: &NotifyContext) -> SendResult {
-    let mut opts = dispatch::DispatchOptions::from_asset(&self.asset);
-    opts.call_timeout = self.timeout;
-    self.dispatch(ctx, &opts).await
+    self.dispatch(ctx, &self.dispatch_options()).await
   }
 
   /// [`notify`](Self::notify), but one service at a time.
   pub async fn notify_sequential(&self, ctx: &NotifyContext) -> SendResult {
-    let mut opts = dispatch::DispatchOptions::from_asset(&self.asset);
-    opts.call_timeout = self.timeout;
+    let mut opts = self.dispatch_options();
     opts.sequential = true;
     self.dispatch(ctx, &opts).await
+  }
+
+  fn dispatch_options(&self) -> dispatch::DispatchOptions {
+    let mut opts = dispatch::DispatchOptions::from_asset(&self.asset);
+    opts.call_timeout = self.timeout;
+    opts.stores = self.stores.clone();
+    opts
+  }
+
+  /// Write the services' pending persistent storage to disk. Stores also
+  /// flush when the instance is dropped; call this before exiting the
+  /// process without unwinding.
+  pub fn flush_stores(&self) {
+    self.stores.flush();
+  }
+
+  /// The persistent storage namespace (URL ID) of a loaded service, or
+  /// `None` when it has no URL.
+  pub fn url_id(&self, svc: &dyn Notify) -> Option<String> {
+    notify::options::url_id(svc, &self.asset.storage_salt, self.asset.storage_idlen)
   }
 
   async fn dispatch(&self, ctx: &NotifyContext, opts: &dispatch::DispatchOptions) -> SendResult {
@@ -285,7 +303,15 @@ impl Apprise {
   }
 }
 
-/// Default storage path for persistent cache.
+/// Default persistent storage path, as upstream: `~/.local/share/apprise/cache`
+/// (`%APPDATA%/Apprise/cache` on Windows). `APPRISE_STORAGE_PATH` is not
+/// consulted here.
 pub fn default_storage_path() -> String {
-  dirs::data_local_dir().map(|p| p.join("apprise").join("cache").to_string_lossy().to_string()).unwrap_or_else(|| "/tmp/apprise/cache".to_string())
+  if cfg!(windows) {
+    let appdata = std::env::var("APPDATA").ok().filter(|v| !v.is_empty());
+    return appdata.map(|a| format!("{a}/Apprise/cache")).unwrap_or_else(|| "%APPDATA%/Apprise/cache".to_string());
+  }
+  dirs::home_dir()
+    .map(|h| h.join(".local").join("share").join("apprise").join("cache").to_string_lossy().into_owned())
+    .unwrap_or_else(|| "~/.local/share/apprise/cache".to_string())
 }
