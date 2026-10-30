@@ -88,6 +88,7 @@ pub mod opsgenie;
 pub mod pagerduty;
 pub mod pagertree;
 pub mod parseplatform;
+pub mod pinglet;
 pub mod plivo;
 pub mod popcorn_notify;
 pub mod prowl;

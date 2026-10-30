@@ -101,6 +101,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(pagerduty::PagerDuty::static_details());
   collect!(pagertree::PagerTree::static_details());
   collect!(parseplatform::ParsePlatform::static_details());
+  collect!(pinglet::Pinglet::static_details());
   collect!(plivo::Plivo::static_details());
   collect!(popcorn_notify::PopcornNotify::static_details());
   collect!(prowl::Prowl::static_details());
@@ -253,6 +254,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(pagerduty::PagerDuty::from_url, "pagerduty");
   reg!(pagertree::PagerTree::from_url, "pagertree");
   reg!(parseplatform::ParsePlatform::from_url, "parsep", "parseps");
+  reg!(pinglet::Pinglet::from_url, "pinglet", "pinglets");
   reg!(plivo::Plivo::from_url, "plivo");
   reg!(popcorn_notify::PopcornNotify::from_url, "popcorn");
   reg!(prowl::Prowl::from_url, "prowl");
