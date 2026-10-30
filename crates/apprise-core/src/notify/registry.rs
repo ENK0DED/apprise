@@ -98,6 +98,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(lauther::Lauther::static_details());
   collect!(lfgalarm::LfgAlarm::static_details());
   collect!(line::Line::static_details());
+  collect!(mailersend::MailerSend::static_details());
   collect!(mailgun::Mailgun::static_details());
   collect!(mastodon::Mastodon::static_details());
   collect!(matrix::Matrix::static_details());
@@ -287,6 +288,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(lauther::Lauther::from_url, "lauther");
   reg!(lfgalarm::LfgAlarm::from_url, "lfg");
   reg!(line::Line::from_url, "line");
+  reg!(mailersend::MailerSend::from_url, "mailersend");
   reg!(mailgun::Mailgun::from_url, "mailgun");
   reg!(mastodon::Mastodon::from_url, "mastodon", "toot", "mastodons", "toots");
   reg!(matrix::Matrix::from_url, "matrix", "matrixs");

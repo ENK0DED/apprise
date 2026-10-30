@@ -78,6 +78,7 @@ pub mod lark;
 pub mod lauther;
 pub mod lfgalarm;
 pub mod line;
+pub mod mailersend;
 pub mod mailgun;
 pub mod mastodon;
 pub mod matrix;
