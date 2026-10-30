@@ -120,7 +120,7 @@ mod tests {
   async fn test_send_failure() {
     for status in [500, 999, 204] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1/sender/token/")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), from_url("chanify://token").unwrap().send(&ctx)).await.is_err());
     }

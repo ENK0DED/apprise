@@ -458,11 +458,9 @@ impl Notify for Ntfy {
       if crate::delivery::is_delivered(topic, false) {
         continue;
       }
-      if ctx.attachments.is_empty() {
-        if !self.send_one(&client, ctx, topic, (&ctx.title, &ctx.body), None, icon.as_deref()).await? {
-          has_error = true;
-          continue;
-        }
+      if ctx.attachments.is_empty() && !self.send_one(&client, ctx, topic, (&ctx.title, &ctx.body), None, icon.as_deref()).await? {
+        has_error = true;
+        continue;
       }
       // One upload per attachment; the first carries the title and body
       for (no, att) in ctx.attachments.iter().enumerate() {

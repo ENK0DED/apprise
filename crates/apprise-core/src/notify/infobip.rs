@@ -305,6 +305,7 @@ mod tests {
     // No sender unless one was given
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/sms/3/messages"))
       .and(body_json(json!({"messages": [{"destinations": [{"to": "15551234567"}], "content": {"text": "B"}}]})))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)

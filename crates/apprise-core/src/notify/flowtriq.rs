@@ -210,7 +210,7 @@ mod tests {
   async fn test_send_accepted_codes() {
     for code in [201u16, 202, 204] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/hooks/abc")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let addr = server.address();
       let svc = from_url(&format!("flowtriq://key@{}:{}/hooks/abc", addr.ip(), addr.port())).unwrap();
       assert!(svc.send(&NotifyContext { body: "body".into(), ..Default::default() }).await.unwrap(), "code {}", code);
@@ -222,7 +222,7 @@ mod tests {
     // Only 200/201/202/204 count as success
     for code in [500u16, 203, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/hooks/abc")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let addr = server.address();
       let svc = from_url(&format!("flowtriq://key@{}:{}/hooks/abc", addr.ip(), addr.port())).unwrap();
       assert!(svc.send(&NotifyContext { body: "body".into(), ..Default::default() }).await.is_err(), "code {}", code);

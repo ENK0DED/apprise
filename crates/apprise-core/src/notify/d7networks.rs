@@ -319,6 +319,7 @@ mod tests {
     // A failed batch is reported as a failure (upstream 5e4d74d2), sent once
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/messages/v1/send"))
       .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"message": "Insufficient credit"}"#))
       .expect(1)
       .mount(&server)

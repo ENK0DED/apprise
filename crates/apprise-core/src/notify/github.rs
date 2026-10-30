@@ -101,8 +101,9 @@ impl GitHub {
 
     // The token is stored in the user field; ?token= overrides it
     let mut token = url.user.clone();
+    // Upstream unquotes this a second time
     if let Some(t) = url.get("token").filter(|t| !t.is_empty()) {
-      token = Some(t.to_string());
+      token = Some(crate::utils::parse::unquote(t));
     }
     let token = token.filter(|t| matches_all(t, |c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))?;
     if !matches_all(&owner, |c| c.is_ascii_alphanumeric() || c == '-') {
@@ -111,11 +112,7 @@ impl GitHub {
     }
 
     // The remaining path follows a GitHub browser URL
-    let mut entries = url
-      .path
-      .split([' ', '\t', '\r', '\n', ',', '\\', '/'])
-      .filter(|s| !s.is_empty())
-      .map(|s| urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string()));
+    let mut entries = url.path_parts.iter().cloned();
 
     let repo = entries.next()?;
     if !matches_all(&repo, |c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) {

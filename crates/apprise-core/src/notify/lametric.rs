@@ -417,6 +417,7 @@ mod tests {
     // apprise-go parity golden "lametric-default": dev:{apikey}
     let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
+      .and(path("/api/v2/device/notifications"))
       .and(header("authorization", "Basic ZGV2OmFwaWtleQ=="))
       .and(body_json(json!({"priority": "info", "icon_type": "none", "lifetime": 120000, "model": {"cycles": 1, "frames": [{"icon": "i620", "text": "B"}]}})))
       .respond_with(ResponseTemplate::new(200))

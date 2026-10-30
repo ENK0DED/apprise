@@ -377,6 +377,7 @@ mod tests {
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path("/v1.0/message"))
       .and(body_json(message(&["SMS"], "Apprise", &["0015551234568"], "B")))
       .respond_with(ok_response())
       .expect(1)
@@ -393,6 +394,7 @@ mod tests {
     // comes first here (verified with pycapture.py)
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v1.0/message"))
       .and(body_json(message(&["WhatsApp", "SMS"], "Alerts", &["0015551234567", "0015551234568"], "B")))
       .respond_with(ok_response())
       .expect(1)

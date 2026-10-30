@@ -717,7 +717,7 @@ mod tests {
         Mock::given(method("GET")).and(path("/did:plc:123")).respond_with(ResponseTemplate::new(200).set_body_json(document)).mount(&server).await;
       }
       // Our login details are never sent anywhere
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
+      Mock::given(method("POST")).and(path(XRPC_SESSION)).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
       let svc = from_url("bsky://handle@token").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "{:?}", identity);
     }
