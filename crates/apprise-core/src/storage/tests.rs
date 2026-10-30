@@ -287,3 +287,25 @@ async fn test_service_store_slot() {
   registry.flush();
   assert!(tmp.path().join("abcd1234").join("cache.psdata").is_file());
 }
+
+#[cfg(unix)]
+#[test]
+fn test_store_files_are_owner_only() {
+  use std::os::unix::fs::PermissionsExt;
+  let tmp = tempfile::tempdir().unwrap();
+  let mut store = PersistentStore::new(Some(tmp.path()), "secrets", StorageMode::Flush).unwrap();
+  assert!(store.set("token", json!("s3cret"), None, true));
+  assert!(store.write(b"key material", Some("key1"), false).unwrap());
+  let mut files = Vec::new();
+  let mut dirs = vec![tmp.path().to_path_buf()];
+  while let Some(dir) = dirs.pop() {
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+      if entry.file_type().unwrap().is_dir() { dirs.push(entry.path()) } else { files.push(entry.path()) }
+    }
+  }
+  assert!(files.len() >= 2, "{:?}", files);
+  for file in files {
+    let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "{}", file.display());
+  }
+}

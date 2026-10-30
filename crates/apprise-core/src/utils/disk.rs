@@ -131,6 +131,19 @@ fn dir_size_inner(path: &Path, max_depth: u32, depth: u32) -> std::io::Result<u6
   Ok(total)
 }
 
+/// Write `data` to `path`, readable and writable by the owner only on Unix
+/// (keys and credentials).
+pub fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+  use std::io::Write;
+  let mut options = std::fs::OpenOptions::new();
+  options.write(true).create(true).truncate(true);
+  #[cfg(unix)]
+  std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+  let mut file = options.open(path)?;
+  file.write_all(data)?;
+  file.sync_all()
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -194,5 +207,16 @@ mod tests {
     let result = dir_size(Path::new("/nonexistent/path/xyz"), 3);
     // Non-existent paths return 0 (not an error) since is_dir/is_file are false
     assert_eq!(result.unwrap(), 0);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn test_write_private_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("private_key.pem");
+    write_private(&path, b"secret").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"secret");
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
   }
 }

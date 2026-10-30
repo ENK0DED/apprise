@@ -860,7 +860,12 @@ fn write_temp(dir: &Path, data: &[u8], compress: bool) -> std::io::Result<PathBu
   let name = format!("{:016x}{:08x}", rand::random::<u64>(), std::process::id());
   let path = dir.join(name);
   let result = (|| {
-    let file = fs::File::options().write(true).create_new(true).open(&path)?;
+    let mut options = fs::File::options();
+    options.write(true).create_new(true);
+    // Stores hold tokens and keys: owner-only, as upstream's temp files are.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let file = options.open(&path)?;
     if compress {
       let mut enc = flate2::write::GzEncoder::new(file, flate2::Compression::best());
       enc.write_all(data)?;

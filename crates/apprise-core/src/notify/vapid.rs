@@ -511,7 +511,7 @@ fn store_private_key(dir: &Path) -> Option<EcdsaKeyPair> {
     let _ = std::fs::remove_file(&public_path);
     return None;
   }
-  if let Err(e) = std::fs::write(&private_path, pem_encode("PRIVATE KEY", pkcs8.as_ref())) {
+  if let Err(e) = crate::utils::disk::write_private(&private_path, pem_encode("PRIVATE KEY", pkcs8.as_ref()).as_bytes()) {
     tracing::warn!("Error writing Private PEM file {}", private_path.display());
     tracing::debug!("I/O Exception: {}", e);
     let _ = std::fs::remove_file(&public_path);
