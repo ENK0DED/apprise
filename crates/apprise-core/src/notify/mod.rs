@@ -126,6 +126,7 @@ pub mod synology;
 pub mod syslog;
 pub mod techuluspush;
 pub mod telegram;
+pub mod telesign;
 pub mod telnyx;
 pub mod threema;
 pub mod twilio;
