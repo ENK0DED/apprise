@@ -196,7 +196,7 @@ impl AppriseAsset {
 
   /// The per-service time limit, or `None` when disabled.
   pub fn service_timeout(&self) -> Option<std::time::Duration> {
-    (self.service_timeout.is_finite() && self.service_timeout > 0.0).then(|| std::time::Duration::from_secs_f64(self.service_timeout))
+    (self.service_timeout.is_finite() && self.service_timeout > 0.0).then(|| crate::utils::time::secs(self.service_timeout))
   }
 }
 

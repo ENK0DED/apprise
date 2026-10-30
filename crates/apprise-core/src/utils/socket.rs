@@ -88,16 +88,16 @@ impl TimeoutConfig {
   /// Get the connect timeout as a `Duration`, or `None` for no limit.
   pub fn connect_timeout(&self) -> Option<Duration> {
     match self {
-      TimeoutConfig::Single(secs) => Some(Duration::from_secs_f64(*secs)),
-      TimeoutConfig::Split { connect, .. } => connect.map(Duration::from_secs_f64),
+      TimeoutConfig::Single(secs) => Some(crate::utils::time::secs(*secs)),
+      TimeoutConfig::Split { connect, .. } => connect.map(crate::utils::time::secs),
     }
   }
 
   /// Get the read timeout as a `Duration`, or `None` for no limit.
   pub fn read_timeout(&self) -> Option<Duration> {
     match self {
-      TimeoutConfig::Single(secs) => Some(Duration::from_secs_f64(*secs)),
-      TimeoutConfig::Split { read, .. } => read.map(Duration::from_secs_f64),
+      TimeoutConfig::Single(secs) => Some(crate::utils::time::secs(*secs)),
+      TimeoutConfig::Split { read, .. } => read.map(crate::utils::time::secs),
     }
   }
 }

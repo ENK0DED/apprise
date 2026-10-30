@@ -190,8 +190,8 @@ impl Amqp {
       user: url.user.clone().filter(|u| !u.is_empty()),
       password: url.password.clone(),
       vhost,
-      connect_timeout: Duration::from_secs_f64(options.cto.unwrap_or(DEFAULT_TIMEOUT_SECS)),
-      read_timeout: Duration::from_secs_f64(options.rto.unwrap_or(DEFAULT_TIMEOUT_SECS)),
+      connect_timeout: crate::utils::time::secs(options.cto.unwrap_or(DEFAULT_TIMEOUT_SECS)),
+      read_timeout: crate::utils::time::secs(options.rto.unwrap_or(DEFAULT_TIMEOUT_SECS)),
       exchange,
       mandatory,
     };

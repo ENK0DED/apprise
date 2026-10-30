@@ -155,8 +155,8 @@ impl Mqtt {
     let retain = url.get("retain").is_some_and(parse_bool);
 
     let options = ServiceOptions::from_url(url).unwrap_or_default();
-    let connect_timeout = Duration::from_secs_f64(options.cto.unwrap_or(DEFAULT_TIMEOUT_SECS));
-    let read_timeout = Duration::from_secs_f64(options.rto.unwrap_or(DEFAULT_TIMEOUT_SECS));
+    let connect_timeout = crate::utils::time::secs(options.cto.unwrap_or(DEFAULT_TIMEOUT_SECS));
+    let read_timeout = crate::utils::time::secs(options.rto.unwrap_or(DEFAULT_TIMEOUT_SECS));
 
     Some(Self {
       port: url.port.unwrap_or(if secure { MQTT_SECURE_PORT } else { MQTT_PORT }),

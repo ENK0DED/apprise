@@ -8,6 +8,19 @@
 
 use chrono::FixedOffset;
 
+/// Longest duration built from user-supplied seconds: ten years. Upstream
+/// accepts any float; clamping keeps `Duration` and `Instant` arithmetic
+/// from overflowing (`?cto=1e300`, `--limit 1e19`).
+pub const MAX_SECS: f64 = 10.0 * 365.0 * 86_400.0;
+
+/// `value` seconds as a `Duration`, clamped to `0..=MAX_SECS` (NaN is 0).
+pub fn secs(value: f64) -> std::time::Duration {
+  if value.is_nan() || value <= 0.0 {
+    return std::time::Duration::ZERO;
+  }
+  std::time::Duration::from_secs_f64(value.min(MAX_SECS))
+}
+
 /// A resolved timezone — either UTC or a fixed UTC offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Timezone {
@@ -160,5 +173,16 @@ mod tests {
         assert!(zoneinfo("America/New_York").is_some());
       }
     }
+  }
+
+  #[test]
+  fn test_secs_is_clamped() {
+    assert_eq!(secs(2.5), std::time::Duration::from_millis(2500));
+    assert_eq!(secs(-1.0), std::time::Duration::ZERO);
+    assert_eq!(secs(f64::NAN), std::time::Duration::ZERO);
+    assert_eq!(secs(1e300), std::time::Duration::from_secs_f64(MAX_SECS));
+    assert_eq!(secs(f64::INFINITY), std::time::Duration::from_secs_f64(MAX_SECS));
+    // Deadlines built from the clamped value cannot overflow
+    let _ = std::time::Instant::now() + secs(1e19);
   }
 }

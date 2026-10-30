@@ -101,7 +101,7 @@ pub(crate) fn validate_timeout(seconds: f64) -> Result<Option<Duration>, String>
   if !seconds.is_finite() || seconds < 0.0 {
     return Err("timeout must be >= 0 and finite.".to_string());
   }
-  Ok((seconds > 0.0).then(|| Duration::from_secs_f64(seconds)))
+  Ok((seconds > 0.0).then(|| crate::utils::time::secs(seconds)))
 }
 
 /// Send `ctx` to the services selected by `filter`.

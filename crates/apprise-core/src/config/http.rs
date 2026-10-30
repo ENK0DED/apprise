@@ -48,7 +48,7 @@ pub(crate) fn headers(parsed: &ParsedUrl, asset: &AppriseAsset) -> Vec<(String, 
 
 fn timeout(parsed: &ParsedUrl, key: &str, default: f64) -> Duration {
   let secs = parsed.get(key).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(default);
-  Duration::from_secs_f64(secs)
+  crate::utils::time::secs(secs)
 }
 
 /// Upstream MIME_IS_YAML / MIME_IS_TEXT (matched at the start).

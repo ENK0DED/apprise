@@ -177,7 +177,7 @@ impl Irc {
       join,
       channels,
       users,
-      timeout: Duration::from_secs_f64(rto),
+      timeout: crate::utils::time::secs(rto),
       join_timeout: Duration::from_secs_f64(rto.clamp(6.0, 12.0)),
       send_timeout: Duration::from_secs_f64(rto.clamp(4.0, 10.0)),
       tags: url.tags(),

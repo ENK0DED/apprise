@@ -193,3 +193,13 @@ fn test_multibyte_urls_do_not_panic() {
     let _ = crate::notify::registry::from_url(url);
   }
 }
+
+#[tokio::test]
+async fn test_huge_timeouts_do_not_panic() {
+  let mut a = Apprise::new();
+  assert!(a.add("json://127.0.0.1:1/?cto=1e300&rto=1e300"));
+  a.set_timeout(1e19).unwrap();
+  let ctx = crate::NotifyContext { body: "body".into(), ..Default::default() };
+  // Nothing listens on port 1; the send fails instead of panicking
+  assert!(!a.notify(&ctx).await.is_success());
+}

@@ -688,8 +688,8 @@ pub fn client_builder(verify_cert: bool, defaults: ClientDefaults) -> reqwest::C
   let verify = verify_cert && options.verify.unwrap_or(true);
   let redirect = if options.redirect.unwrap_or(true) { reqwest::redirect::Policy::limited(MAX_REDIRECTS) } else { reqwest::redirect::Policy::none() };
   reqwest::Client::builder()
-    .connect_timeout(std::time::Duration::from_secs_f64(connect))
-    .read_timeout(std::time::Duration::from_secs_f64(read))
+    .connect_timeout(crate::utils::time::secs(connect))
+    .read_timeout(crate::utils::time::secs(read))
     .redirect(redirect)
     .danger_accept_invalid_certs(!verify)
 }
