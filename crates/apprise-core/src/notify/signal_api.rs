@@ -14,7 +14,7 @@ use crate::utils::plugin_args::{qsd_bool, split_path};
 use crate::utils::qsd;
 use async_trait::async_trait;
 use base64::Engine;
-use serde_json::{Value, json};
+use serde_json::json;
 
 /// Recipients per request in batch mode (upstream `default_batch_size`).
 const BATCH_SIZE: usize = 10;
@@ -551,6 +551,7 @@ mod tests {
   use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
   use crate::types::NotifyType;
+  use serde_json::Value;
   use wiremock::matchers::{method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 

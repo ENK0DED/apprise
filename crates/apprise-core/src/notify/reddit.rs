@@ -7,7 +7,7 @@ use crate::utils::parse::{ParseOptions, ParsedUrl};
 use crate::utils::plugin_args::{qsd_bool, split_path};
 use crate::utils::qsd;
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -390,6 +390,7 @@ mod tests {
   use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
   use crate::notify::with_test_base;
+  use serde_json::json;
   use wiremock::matchers::{header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 

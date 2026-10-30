@@ -376,7 +376,7 @@ impl Mastodon {
     let headers = resp.headers().clone();
     let text = resp.text().await.unwrap_or_default();
     let content = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({}));
-    if !matches!(status.as_u16(), 200 | 201 | 202) {
+    if !(200..=202).contains(&status.as_u16()) {
       let reason = status.canonical_reason().unwrap_or("");
       tracing::warn!("Failed to send Mastodon {} to {}: {}{}error={}.", method, url, reason, if reason.is_empty() { "" } else { ", " }, status.as_u16());
       tracing::debug!("Response Details:\r\n{}", text);
