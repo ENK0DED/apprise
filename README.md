@@ -336,7 +336,7 @@ The package has the default features; the desktop and Blink(1) services are not 
 
 ## Cargo Features
 
-`apprise-core` has the features below, and the CLI forwards each of them under the same name (except `simplepush-encryption`; use `apprise-core/simplepush-encryption`). The size column is how much each one adds to the x86-64 Linux release binary of the CLI, which is about 10.5 MB with the default features and 7.3 MB with none of them. Sizes vary by platform.
+`apprise-core` has the features below, and the CLI forwards each of them under the same name. The size column is how much each one adds to the x86-64 Linux release binary of the CLI, which is about 10.5 MB with the default features and 7.3 MB with none of them. Sizes vary by platform.
 
 | Feature | Default | What it enables | Release size |
 | ------- | ------- | --------------- | ------------ |
@@ -356,7 +356,7 @@ A program that uses the library picks its features in its own `Cargo.toml`:
 apprise-core = { git = "https://github.com/ENK0DED/apprise", default-features = false, features = ["email", "yaml"] }
 ```
 
-`--no-default-features` currently has no effect on the CLI or the Node.js package: the root `Cargo.toml` depends on `apprise-core` with its default features. To build a smaller CLI, add `default-features = false` to the `apprise-core` entry under `[workspace.dependencies]` first.
+To build a smaller CLI, turn the defaults off and pick what you need, for example `cargo install --path crates/apprise-cli --no-default-features --features email,yaml`.
 
 # Command Line Usage
 

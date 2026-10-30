@@ -120,7 +120,7 @@ hidapi = { version = "2", default-features = false, features = ["linux-native-ba
 clap = { version = "4", features = ["derive", "env"] }
 
 # Internal crate
-apprise-core = { path = "crates/apprise-core" }
+apprise-core = { path = "crates/apprise-core", default-features = false }
 
 # Dev dependencies
 wiremock = "0.6"
