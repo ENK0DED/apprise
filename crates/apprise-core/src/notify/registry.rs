@@ -34,6 +34,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(apprise_api::AppriseApi::static_details());
   collect!(aprs::Aprs::static_details());
   collect!(bark::Bark::static_details());
+  collect!(betterstack::BetterStack::static_details());
   collect!(blink1::Blink1::static_details());
   collect!(bluesky::BlueSky::static_details());
   collect!(brevo::Brevo::static_details());
@@ -71,6 +72,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(fortysixelks::FortySixElks::static_details());
   collect!(freemobile::FreeMobile::static_details());
   collect!(github::GitHub::static_details());
+  collect!(goalert::GoAlert::static_details());
   collect!(google_chat::GoogleChat::static_details());
   collect!(gorush::Gorush::static_details());
   collect!(gotify::Gotify::static_details());
@@ -226,6 +228,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(apprise_api::AppriseApi::from_url, "apprise", "apprises");
   reg!(aprs::Aprs::from_url, "aprs");
   reg!(bark::Bark::from_url, "bark", "barks");
+  reg!(betterstack::BetterStack::from_url, "betterstack");
   reg!(blink1::Blink1::from_url, "blink1");
   reg!(bluesky::BlueSky::from_url, "bsky", "bluesky");
   reg!(brevo::Brevo::from_url, "brevo");
@@ -263,6 +266,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(fortysixelks::FortySixElks::from_url, "46elks", "elks");
   reg!(freemobile::FreeMobile::from_url, "freemobile");
   reg!(github::GitHub::from_url, "github");
+  reg!(goalert::GoAlert::from_url, "goalert", "goalerts");
   reg!(google_chat::GoogleChat::from_url, "gchat");
   reg!(gorush::Gorush::from_url, "gorush", "gorushs");
   reg!(gotify::Gotify::from_url, "gotify", "gotifys");
