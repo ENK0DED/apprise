@@ -53,6 +53,7 @@ urlencoding = "2"
 
 # Regular expressions (email address parsing)
 regex-lite = "0.1"
+indexmap = "2"
 
 # Cryptographic primitives
 hmac = "0.13"

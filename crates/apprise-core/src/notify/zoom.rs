@@ -238,7 +238,6 @@ mod tests {
       "zoom://:@/".to_string(),
       format!("zoom://{}", WEBHOOK_ID),
       format!("zoom://{}/{}?mode=invalid", WEBHOOK_ID, TOKEN),
-      format!("zoom://{}/{}?mode=%20", WEBHOOK_ID, TOKEN),
       format!("zoom://bad!id/{}", TOKEN),
       // A native URL needs the token in ?token=
       format!("https://inbots.zoom.us/incoming/hook/{}", WEBHOOK_ID),
@@ -356,5 +355,12 @@ mod tests {
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
     }
+  }
+
+  #[test]
+  fn test_blank_option_value_loads() {
+    // Upstream trims query values, so a whitespace-only value counts as unset.
+    let url = format!("zoom://{}/{}?mode=%20", WEBHOOK_ID, TOKEN);
+    assert!(crate::notify::registry::from_url(&url).is_some(), "Should parse: {}", url);
   }
 }

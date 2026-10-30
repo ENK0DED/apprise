@@ -35,7 +35,7 @@ impl SendPulse {
         to.extend(t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
       }
       (cid, cs, from, to)
-    } else if url.host.is_some() && !url.path_parts.is_empty() && url.user.is_none() {
+    } else if url.host.is_some() && !url.path_parts.is_empty() && (url.user.is_none() || url.get("user").is_some()) {
       // sendpulse://client_id/client_secret/?user=chris@example.ca
       // or sendpulse://domain/client_id/client_secret/?user=chris
       let host = url.host.clone()?;

@@ -103,6 +103,7 @@ dependencies = [
  "hex",
  "hidapi",
  "hmac",
+ "indexmap",
  "lettre",
  "png",
  "rand 0.10.1",

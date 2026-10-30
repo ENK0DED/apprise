@@ -230,7 +230,6 @@ mod tests {
       // Missing login
       "smsc://:password@+71234567890",
       // Whitespace-only sender
-      "smsc://login:password@+71234567890?sender=%20%20",
     ] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
@@ -372,5 +371,12 @@ mod tests {
     let svc = from_url("smsc://login:password@+71234567890").unwrap();
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx("Hello"))).await.unwrap());
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&mms)).await.unwrap());
+  }
+
+  #[test]
+  fn test_blank_option_value_loads() {
+    // Upstream trims query values, so a whitespace-only value counts as unset.
+    let url = "smsc://login:password@+71234567890?sender=%20%20";
+    assert!(crate::notify::registry::from_url(&url).is_some(), "Should parse: {}", url);
   }
 }

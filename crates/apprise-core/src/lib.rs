@@ -44,6 +44,8 @@ pub use notify::registry;
 pub use notify::{Attachment, Notify, NotifyContext, OverflowMode, ServiceDetails};
 pub use types::{NotifyFormat, NotifyType, StorageMode};
 
+use utils::parse::{parse_list, parse_urls};
+
 /// Install the ring crypto provider for rustls. Safe to call multiple times.
 pub fn ensure_crypto_provider() {
   let _ = rustls::crypto::ring::default_provider().install_default();
@@ -69,6 +71,20 @@ pub struct Apprise {
   services: Vec<Box<dyn Notify>>,
   asset: AppriseAsset,
   tag_groups: Vec<Vec<String>>,
+  config: ConfigState,
+}
+
+/// Configuration and template settings of an [`Apprise`] instance.
+#[derive(Default)]
+struct ConfigState {
+  /// YAML entries still waiting for template values.
+  pending: Vec<config::PendingService>,
+  /// Values for `${NAME}` template variables.
+  template_values: std::collections::HashMap<String, String>,
+  /// Ignore YAML `template:` sections (upstream `allow_templates=False`).
+  templates_disabled: bool,
+  /// Let any configuration include a local file.
+  insecure_includes: bool,
 }
 
 impl Default for Apprise {
@@ -81,12 +97,12 @@ impl Apprise {
   /// Create a new empty Apprise instance.
   pub fn new() -> Self {
     ensure_crypto_provider();
-    Self { services: Vec::new(), asset: AppriseAsset::default(), tag_groups: Vec::new() }
+    Self { services: Vec::new(), asset: AppriseAsset::default(), tag_groups: Vec::new(), config: ConfigState::default() }
   }
 
   /// Create with a custom asset (branding/theming).
   pub fn with_asset(asset: AppriseAsset) -> Self {
-    Self { services: Vec::new(), asset, tag_groups: Vec::new() }
+    Self { services: Vec::new(), asset, tag_groups: Vec::new(), config: ConfigState::default() }
   }
 
   /// Set the asset (branding/theming) for this instance.
@@ -94,85 +110,146 @@ impl Apprise {
     self.asset = asset;
   }
 
-  /// Add a notification service from a URL string.
-  /// Returns `true` if the URL was successfully parsed and added.
-  pub fn add(&mut self, url: &str) -> bool {
-    if let Some(svc) = registry::from_url(url) {
-      self.services.push(svc);
-      true
-    } else {
-      false
-    }
+  /// Add the notification services in `urls`: one URL, or several
+  /// separated by commas, semicolons and/or whitespace (upstream
+  /// `Apprise.add()` with `parse_urls()`). Returns `true` only when every
+  /// URL loaded; the ones that did load are kept either way.
+  pub fn add(&mut self, urls: &str) -> bool {
+    self.add_with_tags(urls, &[])
   }
 
-  /// Add multiple URLs from a raw string (separated by `;`, `,`, or newlines).
-  /// Returns the number of services successfully added.
-  pub fn add_urls(&mut self, raw: &str) -> usize {
-    let mut count = 0;
-    for url in raw.split([';', ',', '\n', '\r']) {
-      let url = url.trim();
-      if url.is_empty() || !url.contains("://") {
-        continue;
+  /// [`Apprise::add`], giving each new service `tags` (raw strings; a
+  /// `priority:tag` form is kept as written). Tags are never read from the
+  /// URL itself: `?tag=`/`?tags=` belong to the plugin.
+  pub fn add_with_tags(&mut self, urls: &str, tags: &[&str]) -> bool {
+    let entries = parse_urls(urls);
+    if entries.is_empty() {
+      return false;
+    }
+    let tags: Vec<String> = parse_list(&tags.join(","));
+    let mut all = true;
+    for url in entries {
+      let service = registry::parse_service_url(&url).and_then(|mut parsed| {
+        parsed.assigned_tags = Some(tags.clone());
+        registry::from_parsed(&parsed)
+      });
+      match service {
+        Some(svc) => self.services.push(svc),
+        None => all = false,
       }
-      if self.add(url) {
-        count += 1;
+    }
+    all
+  }
+
+  /// Add every URL in a list string (see [`Apprise::add`]). Returns the
+  /// number of services added.
+  pub fn add_urls(&mut self, raw: &str) -> usize {
+    let before = self.services.len();
+    self.add(raw);
+    self.services.len() - before
+  }
+
+  /// Load services from a configuration source: a local path, `file://`,
+  /// `http://` or `https://` URL. `recursion` is how many levels of
+  /// `include` to follow (zero ignores them).
+  ///
+  /// Returns the number of services loaded. YAML entries still waiting for
+  /// a template value are kept aside (see [`Apprise::pending_templates`])
+  /// and load as soon as [`Apprise::set_template_values`] supplies one.
+  pub async fn add_config(&mut self, source: &str, recursion: u32) -> Result<usize, ConfigError> {
+    let loaded = config::load_config(source, &self.load_options(recursion)).await?;
+    Ok(self.take_loaded(loaded))
+  }
+
+  /// Load services from configuration text (upstream
+  /// `AppriseConfig.add_config()`). The format is detected when `None`.
+  pub async fn add_config_text(&mut self, content: &str, format: Option<config::ConfigFormat>, recursion: u32) -> Result<usize, ConfigError> {
+    let loaded = config::load_config_text(content, format, &self.load_options(recursion)).await?;
+    Ok(self.take_loaded(loaded))
+  }
+
+  /// Load every default configuration file that exists (upstream CLI
+  /// `DEFAULT_CONFIG_PATHS`). Returns the number of services loaded.
+  pub async fn load_default_configs(&mut self, recursion: u32) -> usize {
+    let mut count = 0;
+    for path in default_config_paths() {
+      if path.is_file() {
+        match self.add_config(&path.to_string_lossy(), recursion).await {
+          Ok(n) => count += n,
+          Err(e) => tracing::warn!("Could not load configuration {}: {}", path.display(), e),
+        }
       }
     }
     count
   }
 
-  /// Load services from a config file or URL.
-  /// Returns the number of services loaded.
-  pub async fn add_config(&mut self, source: &str, recursion_depth: u32) -> Result<usize, ConfigError> {
-    let (mut svcs, parsed_asset) = config::load_config(source, recursion_depth).await?;
-    let count = svcs.len();
-    self.services.append(&mut svcs);
-    if let Some(asset) = parsed_asset {
-      self.asset = asset;
+  /// Supply values for `${NAME}` template variables (names are
+  /// case-insensitive). Pending YAML entries that now have every value are
+  /// loaded; returns how many were. A value not given here falls back to
+  /// the configuration default, then to `APPRISE_TEMPLATE_<NAME>`.
+  pub fn set_template_values(&mut self, values: std::collections::HashMap<String, String>) -> Result<usize, ConfigError> {
+    config::template::validate_overrides(&values).map_err(|e| ConfigError::Other(e.to_string()))?;
+    self.config.template_values = values;
+    let pending = std::mem::take(&mut self.config.pending);
+    let before = self.services.len();
+    for entry in pending {
+      self.resolve_pending(entry);
     }
-    Ok(count)
+    Ok(self.services.len() - before)
   }
 
-  /// Try loading from default config file paths (~/.apprise, /etc/apprise, etc.).
-  /// Stops at the first path that yields services.
-  pub async fn load_default_configs(&mut self, recursion_depth: u32) -> usize {
-    let mut default_paths: Vec<std::path::PathBuf> = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-      for name in &["apprise", "apprise.conf", "apprise.yml", "apprise.yaml"] {
-        default_paths.push(home.join(format!(".{}", name)));
-      }
-      for name in &["apprise", "apprise.conf", "apprise.yml", "apprise.yaml"] {
-        default_paths.push(home.join(".apprise").join(name));
+  /// Number of loaded services the current tag filter selects.
+  pub fn filtered_len(&self) -> usize {
+    self.filtered_indices().len()
+  }
+
+  /// YAML entries waiting for a template value.
+  pub fn pending_templates(&self) -> &[config::PendingService] {
+    &self.config.pending
+  }
+
+  /// Turn YAML `template:` sections on (the default) or off. With them off,
+  /// `${NAME}` text is kept literally.
+  pub fn set_allow_templates(&mut self, allow: bool) {
+    self.config.templates_disabled = !allow;
+  }
+
+  /// Let configuration from any source include local files. Only for
+  /// trusted configuration.
+  pub fn set_insecure_includes(&mut self, insecure: bool) {
+    self.config.insecure_includes = insecure;
+  }
+
+  fn load_options(&self, recursion: u32) -> config::LoadOptions {
+    config::LoadOptions {
+      recursion,
+      insecure_includes: self.config.insecure_includes,
+      allow_templates: !self.config.templates_disabled,
+      asset: self.asset.clone(),
+    }
+  }
+
+  /// Keep what a configuration produced; returns the services added.
+  fn take_loaded(&mut self, loaded: config::Loaded) -> usize {
+    if let Some(asset) = loaded.asset {
+      self.asset = asset;
+    }
+    let before = self.services.len();
+    for item in loaded.items {
+      match item {
+        config::ConfigItem::Service(svc) => self.services.push(svc),
+        config::ConfigItem::Pending(entry) => self.resolve_pending(*entry),
       }
     }
-    if let Some(cfg) = dirs::config_dir() {
-      for name in &["apprise", "apprise.conf", "apprise.yml", "apprise.yaml"] {
-        default_paths.push(cfg.join("apprise").join(name));
-      }
+    self.services.len() - before
+  }
+
+  /// Build a pending entry now if its values are available, else keep it.
+  fn resolve_pending(&mut self, entry: config::PendingService) {
+    match entry.resolve(&self.config.template_values, &config::template::process_env) {
+      Some(svc) => self.services.push(svc),
+      None => self.config.pending.push(entry),
     }
-    for name in &[
-      "/etc/apprise",
-      "/etc/apprise.conf",
-      "/etc/apprise.yml",
-      "/etc/apprise.yaml",
-      "/etc/apprise/apprise",
-      "/etc/apprise/apprise.conf",
-      "/etc/apprise/apprise.yml",
-      "/etc/apprise/apprise.yaml",
-    ] {
-      default_paths.push(std::path::PathBuf::from(name));
-    }
-    for path in &default_paths {
-      if path.exists() {
-        let path_str = path.to_string_lossy().to_string();
-        if let Ok(count) = self.add_config(&path_str, recursion_depth).await {
-          if count > 0 {
-            return count;
-          }
-        }
-      }
-    }
-    0
   }
 
   /// Set tag filter groups.
@@ -239,6 +316,47 @@ impl Apprise {
   fn filtered_indices(&self) -> Vec<usize> {
     self.services.iter().enumerate().filter(|(_, svc)| tag::is_match(&svc.tags(), &self.tag_groups)).map(|(i, _)| i).collect()
   }
+}
+
+/// Default configuration files, in the order upstream's CLI checks them.
+pub fn default_config_paths() -> Vec<std::path::PathBuf> {
+  use std::path::PathBuf;
+  if cfg!(windows) {
+    let mut out = Vec::new();
+    for var in ["APPDATA", "LOCALAPPDATA", "ALLUSERSPROFILE", "PROGRAMFILES", "COMMONPROGRAMFILES"] {
+      if let Ok(base) = std::env::var(var) {
+        for name in ["apprise", "apprise.conf", "apprise.yml", "apprise.yaml"] {
+          out.push(PathBuf::from(&base).join("Apprise").join(name));
+        }
+      }
+    }
+    return out;
+  }
+
+  let home = dirs::home_dir().unwrap_or_default();
+  let mut out = Vec::new();
+  for dir in [".apprise", ".config/apprise"] {
+    for ext in ["", ".conf", ".yml", ".yaml"] {
+      out.push(home.join(format!("{}{}", dir, ext)));
+    }
+  }
+  for dir in [".apprise", ".config/apprise"] {
+    for name in ["apprise", "apprise.conf", "apprise.yml", "apprise.yaml"] {
+      out.push(home.join(dir).join(name));
+    }
+  }
+  for path in [
+    "/etc/apprise",
+    "/etc/apprise.yml",
+    "/etc/apprise.yaml",
+    "/etc/apprise/apprise",
+    "/etc/apprise/apprise.conf",
+    "/etc/apprise/apprise.yml",
+    "/etc/apprise/apprise.yaml",
+  ] {
+    out.push(PathBuf::from(path));
+  }
+  out
 }
 
 /// Default storage path for persistent cache.

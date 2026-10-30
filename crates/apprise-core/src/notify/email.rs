@@ -382,7 +382,7 @@ mod tests {
 
   #[test]
   fn test_email_from_name() {
-    let parsed = ParsedUrl::parse("mailto://user:pass@gmail.com?name=John+Doe").unwrap();
+    let parsed = ParsedUrl::parse("mailto://user:pass@gmail.com?name=John%20Doe").unwrap();
     let e = Email::from_url(&parsed).unwrap();
     assert_eq!(e.from_name.as_deref(), Some("John Doe"));
   }

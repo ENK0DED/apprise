@@ -30,12 +30,12 @@ impl Reddit {
       }
     }
 
-    let app_id = url.user.clone().or_else(|| url.get("app_id").map(|s| s.to_string()))?;
+    let app_id = url.get("app_id").map(|s| s.to_string()).or_else(|| url.user.clone())?;
     // Validate app_id (reject invalid percent-encoding)
     if app_id.contains('%') {
       return None;
     }
-    let app_secret = url.password.clone().or_else(|| url.get("app_secret").map(|s| s.to_string()))?;
+    let app_secret = url.get("app_secret").map(|s| s.to_string()).or_else(|| url.password.clone())?;
 
     let (user, password) = if let Some(ref h) = url.host {
       // Reject invalid percent-encoding in host

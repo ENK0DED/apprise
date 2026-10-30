@@ -416,7 +416,6 @@ mod tests {
       format!("ringc://18005554321:jwt{}@client_id/%21%21%21/", "c".repeat(60)),
       // Invalid auth mode / environment
       "ringc://18005554321:password@client_id/secret?mode=invalid".to_string(),
-      "ringc://18005554321:password@client_id/secret?mode=%20".to_string(),
       "ringc://18005554321:password@client_id/secret?env=invalid".to_string(),
       "ringc://18005554321:password@client_id/secret?env=production".to_string(),
       // Invalid JWT (contains disallowed chars)
@@ -661,5 +660,12 @@ mod tests {
     let mut mms = ctx("MMS");
     mms.attachments.push(Attachment { name: "a.gif".into(), data: vec![1], mime_type: "image/gif".into() });
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&mms)).await.unwrap());
+  }
+
+  #[test]
+  fn test_blank_option_value_loads() {
+    // Upstream trims query values, so a whitespace-only value counts as unset.
+    let url = "ringc://18005554321:password@client_id/secret?mode=%20";
+    assert!(crate::notify::registry::from_url(&url).is_some(), "Should parse: {}", url);
   }
 }

@@ -26,6 +26,7 @@ chrono.workspace = true
 async-trait.workspace = true
 urlencoding.workspace = true
 regex-lite.workspace = true
+indexmap.workspace = true
 hmac.workspace = true
 sha2.workspace = true
 sha1.workspace = true

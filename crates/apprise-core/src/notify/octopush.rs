@@ -263,10 +263,8 @@ mod tests {
       "octopush://%20:user@myaccount.com/apikey",
       // Invalid purpose
       "octopush://?login=user@myaccount.com&key=key&to=9999999999&purpose=invalid",
-      "octopush://?login=user@myaccount.com&key=key&to=9999999999&purpose=%20",
       // Invalid type
       "octopush://?login=user@myaccount.com&key=key&to=9999999999&type=invalid",
-      "octopush://?login=user@myaccount.com&key=key&to=9999999999&type=%20",
     ] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
@@ -423,5 +421,14 @@ mod tests {
 
     let svc = from_url("octopush://user@myaccount.com/apikey/1234567890").unwrap();
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx("body"))).await.unwrap());
+  }
+
+  #[test]
+  fn test_blank_option_value_loads() {
+    // Upstream trims query values, so a whitespace-only value counts as unset.
+    for url in ["octopush://?login=user@myaccount.com&key=key&to=9999999999&purpose=%20", "octopush://?login=user@myaccount.com&key=key&to=9999999999&type=%20"]
+    {
+      assert!(crate::notify::registry::from_url(url).is_some(), "Should parse: {}", url);
+    }
   }
 }

@@ -6,7 +6,7 @@ use cli::{Cli, Commands};
 
 #[tokio::main]
 async fn main() {
-  let cli = Cli::parse();
+  let cli = Cli::parse_from(cli::expand_template_var_alias(std::env::args_os()));
 
   // Configure tracing
   let level = if cli.debug || cli.verbose >= 3 {
@@ -70,6 +70,32 @@ async fn main() {
 
   // Build Apprise instance
   let mut apprise = Apprise::new();
+
+  // --template-var NAME=VALUE (before any configuration is read)
+  if !cli.template_var.is_empty() {
+    let mut values = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for entry in &cli.template_var {
+      let (name, value) = entry.split_once('=').unwrap_or((entry.as_str(), ""));
+      let name = name.trim();
+      // Only the name is echoed; the value may be a secret.
+      if !entry.contains('=') || !apprise_core::config::template::is_template_name(name) {
+        println!("The --template-var (-tv) name '{}' is not in the expected NAME=VALUE format.", name);
+        println!("Try 'apprise --help' for more information.");
+        std::process::exit(2);
+      }
+      if !seen.insert(name.to_lowercase()) {
+        println!("The --template-var (-tv) name '{}' was provided more than once.", name);
+        println!("Try 'apprise --help' for more information.");
+        std::process::exit(2);
+      }
+      values.insert(name.to_string(), value.to_string());
+    }
+    if let Err(e) = apprise.set_template_values(values) {
+      eprintln!("{}", e);
+      std::process::exit(2);
+    }
+  }
 
   // Add URLs from CLI
   for raw in &cli.urls {

@@ -8,22 +8,9 @@ use crate::utils::parse::ParsedUrl;
 /// replaces the user, and when that leaves no password the user written in
 /// the URL becomes the password (`PASSWORD@host?user=name`).
 pub fn url_credentials(url: &ParsedUrl) -> (Option<String>, Option<String>) {
-  let mut password = url.password.clone();
-  if let Some(p) = url.get("password") {
-    password = Some(p.to_string());
-  }
-  if let Some(p) = url.get("pass") {
-    password = Some(p.to_string());
-  }
-
-  let mut user = url.user.clone();
-  if let Some(u) = url.get("user") {
-    if password.is_none() {
-      password = url.user.clone();
-    }
-    user = Some(u.to_string());
-  }
-  (user, password)
+  // `ParsedUrl::parse` already applies upstream's `?user=`/`?password=`/
+  // `?pass=` overrides, including the URL user becoming the password.
+  (url.user.clone(), url.password.clone())
 }
 
 /// The host, percent-decoded as upstream's `unquote(results["host"])`

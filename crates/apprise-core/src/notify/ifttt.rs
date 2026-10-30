@@ -33,9 +33,10 @@ impl Ifttt {
     } else {
       let host = url.host.as_deref().map(unquote).unwrap_or_default();
       match url.user.as_deref().filter(|u| !u.is_empty()) {
-        // ifttt://{webhook_id}@{event}/{events}
+        // ifttt://{webhook_id}@{event}/{events}, or ifttt://{webhook_id}@/{events}
+        // (the form upstream builds from a native URL)
         Some(user) => {
-          let mut events = vec![host];
+          let mut events: Vec<String> = Some(host).filter(|h| !h.is_empty()).into_iter().collect();
           events.extend(url.path_parts.iter().cloned());
           (unquote(user), events)
         }

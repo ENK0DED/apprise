@@ -30,21 +30,7 @@ pub(super) fn unquoted_host(url: &crate::utils::parse::ParsedUrl) -> Option<Stri
 /// `?pass=` replace the password and `?user=` the user; when that leaves no
 /// password, the user written in the URL becomes it (`PASSWORD@host?user=`).
 pub(super) fn url_credentials(url: &crate::utils::parse::ParsedUrl) -> (Option<String>, Option<String>) {
-  let mut password = url.password.clone();
-  if let Some(p) = url.get("password") {
-    password = Some(p.trim().to_string());
-  }
-  if let Some(p) = url.get("pass") {
-    password = Some(p.trim().to_string());
-  }
-  let mut user = url.user.clone();
-  if let Some(u) = url.get("user") {
-    if password.is_none() {
-      password = url.user.clone();
-    }
-    user = Some(u.trim().to_string());
-  }
-  (user, password)
+  crate::utils::urlbase::url_credentials(url)
 }
 
 fn is_list_delim(c: char, allow_whitespace: bool) -> bool {

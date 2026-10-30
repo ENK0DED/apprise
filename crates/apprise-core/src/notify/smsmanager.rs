@@ -242,7 +242,8 @@ mod tests {
     let svc = from_url("smsmgr://keyabc@+15551231234/15551231235?from=MySenderNameXYZ&gateway=LOW&batch=yes").unwrap();
     let ctx = NotifyContext { body: "Hi there~*".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let req = &server.received_requests().await.unwrap()[0];
+    let requests = server.received_requests().await.unwrap();
+    let req = requests.iter().find(|r| r.url.path() == "/Send").unwrap();
     assert_eq!(req.url.query().unwrap(), "apikey=keyabc&gateway=low&number=%2B15551231234%3B15551231235&message=Hi+there~%2A&sender=MySenderNam");
   }
 

@@ -1,0 +1,3500 @@
+{
+ "parse_bool": [
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "Enabled"
+  },
+  {
+   "default_false": false,
+   "default_true": false,
+   "input": "Disabled"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "Allow"
+  },
+  {
+   "default_false": false,
+   "default_true": false,
+   "input": "Deny"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "Yes"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "YES"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "Always"
+  },
+  {
+   "default_false": false,
+   "default_true": false,
+   "input": "No"
+  },
+  {
+   "default_false": false,
+   "default_true": false,
+   "input": "NO"
+  },
+  {
+   "default_false": false,
+   "default_true": false,
+   "input": "NEVER"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "TrUE"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "tRUe"
+  },
+  {
+   "default_false": false,
+   "default_true": false,
+   "input": "FAlse"
+  },
+  {
+   "default_false": false,
+   "default_true": false,
+   "input": "F"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "T"
+  },
+  {
+   "default_false": false,
+   "default_true": false,
+   "input": "0"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "1"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "True"
+  },
+  {
+   "default_false": false,
+   "default_true": true,
+   "input": "OhYeah"
+  },
+  {
+   "default_false": false,
+   "default_true": true,
+   "input": ""
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "on"
+  },
+  {
+   "default_false": false,
+   "default_true": false,
+   "input": "off"
+  },
+  {
+   "default_false": false,
+   "default_true": false,
+   "input": "of"
+  },
+  {
+   "default_false": false,
+   "default_true": true,
+   "input": "active"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "enable"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "y"
+  },
+  {
+   "default_false": false,
+   "default_true": false,
+   "input": "n"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "ye"
+  },
+  {
+   "default_false": true,
+   "default_true": true,
+   "input": "yesss"
+  },
+  {
+   "default_false": false,
+   "default_true": true,
+   "input": "nah"
+  },
+  {
+   "default_false": false,
+   "default_true": true,
+   "input": "2"
+  },
+  {
+   "default_false": false,
+   "default_true": true,
+   "input": "-1"
+  },
+  {
+   "default_false": false,
+   "default_true": true,
+   "input": " yes"
+  },
+  {
+   "default_false": false,
+   "default_true": true,
+   "input": "random"
+  }
+ ],
+ "parse_list": [
+  {
+   "input": "",
+   "output": []
+  },
+  {
+   "input": ".mkv, .iso, .avi",
+   "output": [
+    ".avi",
+    ".iso",
+    ".mkv"
+   ]
+  },
+  {
+   "input": "a b  c",
+   "output": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  {
+   "input": "c,b,a,a",
+   "output": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  {
+   "input": "[a];b , c\td\ne",
+   "output": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e"
+   ]
+  },
+  {
+   "input": "tag1, tag2 ,TAG1",
+   "output": [
+    "TAG1",
+    "tag1",
+    "tag2"
+   ]
+  },
+  {
+   "input": "2:endpoint, other",
+   "output": [
+    "2:endpoint",
+    "other"
+   ]
+  },
+  {
+   "input": ",,,",
+   "output": []
+  },
+  {
+   "input": "x",
+   "output": [
+    "x"
+   ]
+  },
+  {
+   "input": "a　b",
+   "output": [
+    "a",
+    "b"
+   ]
+  }
+ ],
+ "parse_url": [
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "5t4m59hl-34343.euw.devtunnels.ms",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "5t4m59hl-34343.euw.devtunnels.ms",
+   "strict_ok": true,
+   "url": "http://5t4m59hl-34343.euw.devtunnels.ms"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname/"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "hostname:",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://hostname:"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "hostname:invalid",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://hostname:invalid"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 0,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname:0"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": -92,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname:-92"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 65535,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname:65535"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 1,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname:1"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "hostname:4.2",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://hostname:4.2"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 123,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname:0123"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "[2001:db8:002a:3256:adfe:05c0:0003:0006]",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 8080,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "[2001:db8:002a:3256:adfe:05c0:0003:0006]",
+   "strict_ok": true,
+   "url": "http://[2001:db8:002a:3256:adfe:05c0:0003:0006]:8080"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "[::1]",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 80,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "[::1]",
+   "strict_ok": true,
+   "url": "http://[::1]:80/"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "[2001:DB8::1]:80",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://[2001:DB8::1]:80"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "[2001:db8::1]",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "[2001:db8::1]",
+   "strict_ok": true,
+   "url": "http://[2001:db8::1]"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "[fe80::1%25eth0]:80",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://[fe80::1%25eth0]:80"
+  },
+  {
+   "loose": null,
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://[1.2.3.4]:80"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "[v1.fe]",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://[v1.fe]/"
+  },
+  {
+   "loose": null,
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://[::1]x:80"
+  },
+  {
+   "loose": null,
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://a[::1]:80"
+  },
+  {
+   "loose": null,
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://[foo"
+  },
+  {
+   "loose": null,
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://foo]"
+  },
+  {
+   "loose": null,
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://us[er]@host/"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "hostname",
+    "order": {
+     "qsd": [
+      "-key"
+     ],
+     "qsd+": [],
+     "qsd-": [
+      "KeY"
+     ],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "-key": "Value"
+    },
+    "qsd+": {},
+    "qsd-": {
+     "KeY": "Value"
+    },
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname/?-KeY=Value"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "hostname",
+    "order": {
+     "qsd": [
+      "+key"
+     ],
+     "qsd+": [
+      "KeY"
+     ],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "+key": "Value"
+    },
+    "qsd+": {
+     "KeY": "Value"
+    },
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname/?+KeY=Value"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "hostname",
+    "order": {
+     "qsd": [
+      ":key"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": [
+      "kEy"
+     ]
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     ":key": "vALUE"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {
+     "kEy": "vALUE"
+    },
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname/?:kEy=vALUE"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "hostname",
+    "order": {
+     "qsd": [
+      "+key",
+      "-key",
+      "key",
+      ":colon"
+     ],
+     "qsd+": [
+      "KeY"
+     ],
+     "qsd-": [
+      "kEy"
+     ],
+     "qsd:": [
+      "colon"
+     ]
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "+key": "ValueA",
+     "-key": "ValueB",
+     ":colon": "y",
+     "key": "Value +C"
+    },
+    "qsd+": {
+     "KeY": "ValueA"
+    },
+    "qsd-": {
+     "kEy": "ValueB"
+    },
+    "qsd:": {
+     "colon": "y"
+    },
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname/?+KeY=ValueA&-kEy=ValueB&KEY=Value%20+C&:colon=y"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname////"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 40,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "http://hostname:40////"
+  },
+  {
+   "loose": {
+    "fullpath": "/test.php",
+    "host": "HoStNaMe",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 40,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": "HoStNaMe",
+   "strict_ok": true,
+   "url": "HTTP://HoStNaMe:40/test.php"
+  },
+  {
+   "loose": {
+    "fullpath": "/test.py",
+    "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "https",
+    "user": "user"
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "HTTPS://user@hostname/test.py"
+  },
+  {
+   "loose": {
+    "fullpath": "/test.py",
+    "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "https",
+    "user": "user"
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "  HTTPS://///user@@@hostname///test.py  "
+  },
+  {
+   "loose": {
+    "fullpath": "/full/path/name/",
+    "host": "otherHost",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "password",
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "https",
+    "user": "user"
+   },
+   "strict_host": "otherHost",
+   "strict_ok": true,
+   "url": "HTTPS://user:password@otherHost/full///path/name/"
+  },
+  {
+   "loose": {
+    "fullpath": "/a/path/ending/with/slash/",
+    "host": "hostname",
+    "order": {
+     "qsd": [
+      "key"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "key": "value"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "https",
+    "user": null
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "HTTPS://hostname/a/path/ending/with/slash/?key=value"
+  },
+  {
+   "loose": {
+    "fullpath": "/lead2gold@gmail.com",
+    "host": "otherHost",
+    "order": {
+     "qsd": [
+      "from",
+      "name",
+      "format"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "password",
+    "port": null,
+    "qsd": {
+     "format": "text",
+     "from": "test@test.com",
+     "name": "Chris Caron"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "mailto",
+    "user": "user"
+   },
+   "strict_host": "otherHost",
+   "strict_ok": true,
+   "url": "mailto://user:password@otherHost/lead2gold@gmail.com?from=test@test.com&name=Chris%20Caron&format=text"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "user:pass.with.",
+    "order": {
+     "qsd": [
+      "question@host"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "question@host": ""
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "http",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "http://user:pass.with.?question@host"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "test",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "test://"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "",
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "test",
+    "user": ""
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "test://:@/"
+  },
+  {
+   "loose": {
+    "fullpath": "/_/@%5E&/jack.json",
+    "host": "",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "",
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "crazy",
+    "user": ""
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "crazy://:@//_/@^&/jack.json"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "localhost",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "localhost",
+   "strict_ok": true,
+   "url": "json://localhost"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "localhost",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "localhost",
+   "strict_ok": true,
+   "url": "json://localhost/"
+  },
+  {
+   "loose": {
+    "fullpath": "/a/b/",
+    "host": "localhost",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "localhost",
+   "strict_ok": true,
+   "url": "json://localhost//a//b//"
+  },
+  {
+   "loose": {
+    "fullpath": "/a%2Fb/c%20d/~x",
+    "host": "h",
+    "order": {
+     "qsd": [
+      "a",
+      "b",
+      "c"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "p",
+    "port": 80,
+    "qsd": {
+     "a": "1",
+     "b": "+x+",
+     "c": ""
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": "u"
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://u:p@h:80/a%2Fb/c d/~x?A=1&b=+x+&c"
+  },
+  {
+   "loose": {
+    "fullpath": "/lead/",
+    "host": "123:abc",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "tgram",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "tgram://123:abc/lead/"
+  },
+  {
+   "loose": {
+    "fullpath": "/lead2gold/",
+    "host": "123456789:abcdefg_hijklmnop",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "tgram",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "tgram://123456789:abcdefg_hijklmnop/lead2gold/"
+  },
+  {
+   "loose": {
+    "fullpath": "/%23chan/",
+    "host": "123456789:AAF0abc-def",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "tgram",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "tgram://123456789:AAF0abc-def/%23chan/"
+  },
+  {
+   "loose": {
+    "fullpath": "/x",
+    "host": "b",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": "a"
+   },
+   "strict_host": "b",
+   "strict_ok": true,
+   "url": "json://a@b@c/x"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "pa",
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": "u"
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://u:pa:ss@h"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "dbus",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "dbus://"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h:abc",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "json://h:abc"
+  },
+  {
+   "loose": {
+    "fullpath": "/path/%23chan",
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json://host/path/#chan"
+  },
+  {
+   "loose": {
+    "fullpath": "/path/%23chan",
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json://host/path/%23chan"
+  },
+  {
+   "loose": {
+    "fullpath": "/a%2Cb%3Bc/@x!$&()*+=",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/a,b;c/@x!$&()*+="
+  },
+  {
+   "loose": {
+    "fullpath": "/a%3Bb/c",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/a;b/c;d"
+  },
+  {
+   "loose": {
+    "fullpath": "/a/b",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/a/b;c"
+  },
+  {
+   "loose": {
+    "fullpath": "/a",
+    "host": "h;x",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "json://h;x/a"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "x",
+      "y",
+      "z"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "x": "1",
+     "y": "2",
+     "z": ""
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h?x=1;y=2&z"
+  },
+  {
+   "loose": {
+    "fullpath": "/~user/",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/~user/"
+  },
+  {
+   "loose": {
+    "fullpath": "/~user",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/%7Euser"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 70000,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h:70000"
+  },
+  {
+   "loose": null,
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "json://h?"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h? "
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "x": "1"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "json://?x=1"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json:/host"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "host\\path",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "json:\\\\host\\path"
+  },
+  {
+   "loose": {
+    "fullpath": "/a%5Cb%5Cc/",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/a\\\\b\\c/"
+  },
+  {
+   "loose": {
+    "fullpath": "/a/",
+    "host": "h",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "x": "/"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/a?x=/"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "x": "/"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h?x=/"
+  },
+  {
+   "loose": {
+    "fullpath": "/%25zz/A%2F",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/%zz/%41%2f"
+  },
+  {
+   "loose": {
+    "fullpath": "/caf%C3%A9/%C3%BC",
+    "host": "h",
+    "order": {
+     "qsd": [
+      "n"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "n": "é"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/café/ü?n=é"
+  },
+  {
+   "loose": {
+    "fullpath": "/%E2%82%AC/%EF%BF%BD",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/%E2%82%AC/%ff"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "a",
+      "b"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "a": "€",
+     "b": "�"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h?a=%E2%82%AC&b=%ff"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "",
+      "a",
+      "b"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "": "",
+     "a": "",
+     "b": "c=d"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h?=x&&a&b=c=d"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "a"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "a": "2"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h?A=1&a=2"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "a b",
+      "+c d"
+     ],
+     "qsd+": [
+      "c d"
+     ],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "+c d": "2",
+     "a b": "1"
+    },
+    "qsd+": {
+     "c d": "2"
+    },
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h?a+b=1&+c+d=2"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "sp",
+      "- m"
+     ],
+     "qsd+": [
+      "sp"
+     ],
+     "qsd-": [
+      " m"
+     ],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "- m": "2",
+     "sp": "1"
+    },
+    "qsd+": {
+     "sp": "1"
+    },
+    "qsd-": {
+     " m": "2"
+    },
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h?%20sp=1&-%20m=2"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "k"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "k": "v"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h?k=%20v%20"
+  },
+  {
+   "loose": {
+    "fullpath": "/path",
+    "host": "h",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "x": "1#frag"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/path?x=1#frag"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h#frag/x"
+  },
+  {
+   "loose": {
+    "fullpath": "/path",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/\tp\na\rth"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "x": "1"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h?x=1\n"
+  },
+  {
+   "loose": null,
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "json://h?x=1\ny"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "x": "1"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h\n?x=1"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": ":80",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": "user"
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "json://user@:80/"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": ""
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://@h/"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "",
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": ""
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://:@h/"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "",
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": "u"
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://u:@h/"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "p",
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": ""
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://:p@h/"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "hostname",
+    "order": {
+     "qsd": [
+      "user"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "PASSWORD",
+    "port": null,
+    "qsd": {
+     "user": "admin@mail-domain.com"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "mailtos",
+    "user": "admin@mail-domain.com"
+   },
+   "strict_host": "hostname",
+   "strict_ok": true,
+   "url": "mailtos://PASSWORD@hostname?user=admin@mail-domain.com"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "user"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "p",
+    "port": null,
+    "qsd": {
+     "user": "other"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "mailtos",
+    "user": "other"
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "mailtos://u:p@h?user=other"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "pass"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "secret",
+    "port": null,
+    "qsd": {
+     "pass": "secret"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "mailtos",
+    "user": "u"
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "mailtos://u@h?pass=secret"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "password"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "new",
+    "port": null,
+    "qsd": {
+     "password": "new"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "mailtos",
+    "user": "u"
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "mailtos://u:p@h?password=new"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "port"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": "8080",
+    "qsd": {
+     "port": "8080"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h?port=8080"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "port"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": "abc",
+    "qsd": {
+     "port": "abc"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h:80?port=abc"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "port"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": "",
+    "qsd": {
+     "port": ""
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h:80?port="
+  },
+  {
+   "loose": {
+    "fullpath": "/path",
+    "host": "localhost",
+    "order": {
+     "qsd": [
+      "format"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 8080,
+    "qsd": {
+     "format": "HTML"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "localhost",
+   "strict_ok": true,
+   "url": "json://localhost:8080/path?Format=HTML"
+  },
+  {
+   "loose": {
+    "fullpath": "/b/c@d/e",
+    "host": "a",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "napi",
+    "user": null
+   },
+   "strict_host": "a",
+   "strict_ok": true,
+   "url": "napi://a/b/c@d/e"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "host",
+    "order": {
+     "qsd": [
+      "url"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "url": "https://localhost"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "discord",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "discord://host?url=https://localhost"
+  },
+  {
+   "loose": {
+    "fullpath": "/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/%23general",
+    "host": "T1JJ3T3L2",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "slack",
+    "user": null
+   },
+   "strict_host": "T1JJ3T3L2",
+   "strict_ok": true,
+   "url": "slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/#general"
+  },
+  {
+   "loose": {
+    "fullpath": "/%23chan",
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "irc",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "irc://host/#chan"
+  },
+  {
+   "loose": {
+    "fullpath": "/chan",
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "irc",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "irc://host/chan#x"
+  },
+  {
+   "loose": {
+    "fullpath": "/a%2Cb/c%3Bd/a@b",
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json://host/a%2Cb/c%3Bd/a%40b"
+  },
+  {
+   "loose": {
+    "fullpath": "/a'b(c)*d+e=f&g$h!i:j",
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json://host/a'b(c)*d+e=f&g$h!i:j"
+  },
+  {
+   "loose": {
+    "fullpath": "/%5B%5D/%7Bx%7D/a%7Cb/a%5Eb/a%60b",
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json://host/%5B%5D/%7Bx%7D/a|b/a^b/a`b"
+  },
+  {
+   "loose": {
+    "fullpath": "/a%22b%3Cc%3Ed",
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json://host/a\"b<c>d"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json://host/ "
+  },
+  {
+   "loose": {
+    "fullpath": "/path/to/xml.php",
+    "host": "host",
+    "order": {
+     "qsd": [
+      ":key",
+      "+header",
+      "-remove"
+     ],
+     "qsd+": [
+      "Header"
+     ],
+     "qsd-": [
+      "Remove"
+     ],
+     "qsd:": [
+      "key"
+     ]
+    },
+    "password": "pass",
+    "port": 8000,
+    "qsd": {
+     "+header": "abc",
+     "-remove": "",
+     ":key": "value"
+    },
+    "qsd+": {
+     "Header": "abc"
+    },
+    "qsd-": {
+     "Remove": ""
+    },
+    "qsd:": {
+     "key": "value"
+    },
+    "schema": "xml",
+    "user": "user"
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "xml://user:pass@host:8000/path/to/xml.php?:key=value&+Header=abc&-Remove"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": "pass",
+    "port": 8080,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "kodi",
+    "user": "user"
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "kodi://user:pass@host:8080"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "t",
+    "order": {
+     "qsd": [
+      "priority",
+      "tags"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "priority": "high",
+     "tags": "a,b"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "pover",
+    "user": "u"
+   },
+   "strict_host": "t",
+   "strict_ok": true,
+   "url": "pover://u@t/?priority=high&tags=a,b"
+  },
+  {
+   "loose": {
+    "fullpath": "/topic",
+    "host": "localhost",
+    "order": {
+     "qsd": [
+      "tag",
+      "tags"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "tag": "cool,rust",
+     "tags": "x"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "ntfy",
+    "user": null
+   },
+   "strict_host": "localhost",
+   "strict_ok": true,
+   "url": "ntfy://localhost/topic?tag=cool,rust&tags=x"
+  },
+  {
+   "loose": {
+    "fullpath": "/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z",
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json://host/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z"
+  },
+  {
+   "loose": null,
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "**bold** and [link](https://example.com)"
+  },
+  {
+   "loose": null,
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "text with [unclosed bracket"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "h",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "x": "?y=1"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/?x=%3Fy%3D1"
+  },
+  {
+   "loose": {
+    "fullpath": "/a%3Fb",
+    "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h/a%3Fb"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "h:80:90",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "json://h:80:90/"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "[::1]:80:90",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "json://[::1]:80:90/"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 80,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json://host:080"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 80,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json://host:+80"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 80,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json://host:8_0"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": 80,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "host",
+   "strict_ok": true,
+   "url": "json://host: 80"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "host:80a",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "json://host:80a"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "hö st",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {},
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": null,
+   "strict_ok": false,
+   "url": "json://hö st/"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "h",
+    "order": {
+     "qsd": [
+      "k"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "k": "w"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "h",
+   "strict_ok": true,
+   "url": "json://h?k=v&k=w"
+  },
+  {
+   "loose": {
+    "fullpath": null,
+    "host": "H",
+    "order": {
+     "qsd": [
+      "k"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "k": "V"
+    },
+    "qsd+": {},
+    "qsd-": {},
+    "qsd:": {},
+    "schema": "json",
+    "user": null
+   },
+   "strict_host": "H",
+   "strict_ok": true,
+   "url": "json://H?K=V"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "id",
+    "order": {
+     "qsd": [
+      ":2",
+      ":1",
+      "z",
+      "a",
+      "m",
+      "+b",
+      "+a",
+      "-y",
+      "-x"
+     ],
+     "qsd+": [
+      "B",
+      "a"
+     ],
+     "qsd-": [
+      "y",
+      "x"
+     ],
+     "qsd:": [
+      "2",
+      "1"
+     ]
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "+a": "2",
+     "+b": "1",
+     "-x": "",
+     "-y": "",
+     ":1": "first",
+     ":2": "second",
+     "a": "2",
+     "m": "4",
+     "z": "3"
+    },
+    "qsd+": {
+     "B": "1",
+     "a": "2"
+    },
+    "qsd-": {
+     "x": "",
+     "y": ""
+    },
+    "qsd:": {
+     "1": "first",
+     "2": "second"
+    },
+    "schema": "whatsapp",
+    "user": "t"
+   },
+   "strict_host": "id",
+   "strict_ok": true,
+   "url": "whatsapp://t@id/?:2=second&:1=first&z=1&a=2&Z=3;m=4&+B=1&+a=2&-y&-x"
+  }
+ ],
+ "parse_urls": [
+  {
+   "input": "",
+   "output": []
+  },
+  {
+   "input": ",  ,, , ,,, ",
+   "output": []
+  },
+  {
+   "input": ",",
+   "output": []
+  },
+  {
+   "input": "this is not a parseable url at all",
+   "output": [
+    "this",
+    "is",
+    "not",
+    "a",
+    "parseable",
+    "url",
+    "at",
+    "all"
+   ]
+  },
+  {
+   "input": "windows://",
+   "output": [
+    "windows://"
+   ]
+  },
+  {
+   "input": "windows:// gnome://",
+   "output": [
+    "windows://",
+    "gnome://"
+   ]
+  },
+  {
+   "input": "discord://host?url=https://localhost",
+   "output": [
+    "discord://host?url=https://localhost"
+   ]
+  },
+  {
+   "input": "mailgun://noreply@sandbox.mailgun.org/apikey/?to=test@example.com,test2@example.com,, abcd@example.com, mailgun://noreply@sandbox.another.mailgun.org/apikey/?to=hello@example.com,,hmmm@example.com,, abcd@example.com, ,, windows://",
+   "output": [
+    "mailgun://noreply@sandbox.mailgun.org/apikey/?to=test@example.com,test2@example.com,, abcd@example.com",
+    "mailgun://noreply@sandbox.another.mailgun.org/apikey/?to=hello@example.com,,hmmm@example.com,, abcd@example.com",
+    "windows://"
+   ]
+  },
+  {
+   "input": "http://hostname?password=,abcd,",
+   "output": [
+    "http://hostname?password=,abcd,"
+   ]
+  },
+  {
+   "input": "schema1://hostname?password=,abcd,, schema2://hostname?password=,abcd,",
+   "output": [
+    "schema1://hostname?password=,abcd",
+    "schema2://hostname?password=,abcd,"
+   ]
+  },
+  {
+   "input": "json://a/;json://b/",
+   "output": [
+    "json://a/",
+    "json://b/"
+   ]
+  },
+  {
+   "input": "json://a/ ; json://b/",
+   "output": [
+    "json://a/",
+    "json://b/"
+   ]
+  },
+  {
+   "input": "json://a/; json://b/",
+   "output": [
+    "json://a/",
+    "json://b/"
+   ]
+  },
+  {
+   "input": "json://a/,;  json://b/",
+   "output": [
+    "json://a/",
+    "json://b/"
+   ]
+  },
+  {
+   "input": "json://a/ ,; json://b/",
+   "output": [
+    "json://a/",
+    "json://b/"
+   ]
+  },
+  {
+   "input": "json://a/;json://b/;mailto://c/",
+   "output": [
+    "json://a/",
+    "json://b/",
+    "mailto://c/"
+   ]
+  },
+  {
+   "input": "json://a/?x=1;2",
+   "output": [
+    "json://a/?x=1;2"
+   ]
+  },
+  {
+   "input": "json://u:p;w@h/",
+   "output": [
+    "json://u:p;w@h/"
+   ]
+  },
+  {
+   "input": "json://a/;b",
+   "output": [
+    "json://a/;b"
+   ]
+  },
+  {
+   "input": "json://a/?url=x;y,z",
+   "output": [
+    "json://a/?url=x;y,z"
+   ]
+  },
+  {
+   "input": "json://a/?x=1;2;json://u:p;w@h/",
+   "output": [
+    "json://a/?x=1;2",
+    "json://u:p;w@h/"
+   ]
+  },
+  {
+   "input": "https://example.com                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    ",
+   "output": [
+    "https://example.com"
+   ]
+  },
+  {
+   "input": "json://a\njson://b",
+   "output": [
+    "json://a",
+    "json://b"
+   ]
+  },
+  {
+   "input": "json://a\n\njson://b\n",
+   "output": [
+    "json://a",
+    "json://b"
+   ]
+  },
+  {
+   "input": "json://a  \n  xml://b",
+   "output": [
+    "json://a",
+    "xml://b"
+   ]
+  },
+  {
+   "input": "json://a\nnot a url\njson://b",
+   "output": [
+    "json://b"
+   ]
+  },
+  {
+   "input": "JSON://A, XML://B",
+   "output": [
+    "JSON://A",
+    "XML://B"
+   ]
+  },
+  {
+   "input": "json://a,xml://b",
+   "output": [
+    "json://a",
+    "xml://b"
+   ]
+  },
+  {
+   "input": "json://a,                                        xml://b",
+   "output": [
+    "json://a,        ",
+    "xml://b"
+   ]
+  },
+  {
+   "input": "json://a;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;xml://b",
+   "output": [
+    "json://a;",
+    "xml://b"
+   ]
+  },
+  {
+   "input": "json://a, xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx://b",
+   "output": [
+    "json://a, xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx://b"
+   ]
+  },
+  {
+   "input": "json://a, xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx://b",
+   "output": [
+    "json://a",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx://b"
+   ]
+  },
+  {
+   "input": "x json://a",
+   "output": [
+    "json://a"
+   ]
+  },
+  {
+   "input": "json://a xjson:/b",
+   "output": [
+    "json://a xjson:/b"
+   ]
+  },
+  {
+   "input": "[json://a] [xml://b]",
+   "output": [
+    "json://a] [xml://b]"
+   ]
+  },
+  {
+   "input": "json://a\txml://b",
+   "output": [
+    "json://a",
+    "xml://b"
+   ]
+  },
+  {
+   "input": "json://a\r\nxml://b",
+   "output": [
+    "json://a",
+    "xml://b"
+   ]
+  },
+  {
+   "input": "1://a 2://b",
+   "output": [
+    "1://a",
+    "2://b"
+   ]
+  }
+ ]
+}

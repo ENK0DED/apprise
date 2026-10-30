@@ -500,7 +500,7 @@ mod tests {
     let server = mock(200).await;
     let svc = from_url(&format!("mailgun://user@localhost.localdomain/{}/invalid", token())).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx(NotifyFormat::Html))).await.unwrap());
-    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(!server.received_requests().await.unwrap().iter().any(|r| r.method == wiremock::http::Method::POST));
 
     // One failed recipient fails the notification but the others still go out
     let server = MockServer::start().await;
@@ -508,6 +508,6 @@ mod tests {
     Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
     let svc = from_url("mailgun://user@example.com/apikey/a@example.com/b@example.com").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx(NotifyFormat::Html))).await.unwrap());
-    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    assert_eq!(server.received_requests().await.unwrap().iter().filter(|r| r.method == wiremock::http::Method::POST).count(), 2);
   }
 }

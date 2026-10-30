@@ -346,7 +346,6 @@ mod tests {
       format!("youlmk://ylk_{}", "x".repeat(31)),
       format!("youlmk://{}?priority=bogus", TOKEN),
       format!("youlmk://{}?warning=bogus", TOKEN),
-      format!("youlmk://{}?priority=%20", TOKEN),
       // The bearer door is not a key door, and a key door needs a key
       "https://youlmk.com/v1/notify".to_string(),
       "https://youlmk.com/k/k_short".to_string(),
@@ -500,5 +499,12 @@ mod tests {
     let svc = from_url(&format!("youlmk://{}", TOKEN)).unwrap();
     let ctx = NotifyContext { body: "B".into(), ..Default::default() };
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
+  }
+
+  #[test]
+  fn test_blank_option_value_loads() {
+    // Upstream trims query values, so a whitespace-only value counts as unset.
+    let url = format!("youlmk://{}?priority=%20", TOKEN);
+    assert!(crate::notify::registry::from_url(&url).is_some(), "Should parse: {}", url);
   }
 }
