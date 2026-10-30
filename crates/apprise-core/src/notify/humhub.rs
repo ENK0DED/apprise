@@ -148,6 +148,10 @@ impl Notify for HumHub {
   fn title_maxlen(&self) -> usize {
     0
   }
+  /// Self-hosted service; upstream waits only 0.02s between requests
+  fn request_rate_per_sec(&self) -> f64 {
+    50.0
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let client = build_client(self.verify_certificate)?;
