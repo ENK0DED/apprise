@@ -52,6 +52,7 @@ pub mod growl;
 pub mod guilded;
 pub mod home_assistant;
 pub mod httpsms;
+pub mod humhub;
 pub mod ifttt;
 pub mod irc;
 pub mod jellyfin;
