@@ -90,12 +90,13 @@ impl EmailAddress {
 pub fn is_email(address: &str) -> Option<EmailAddress> {
   let caps = GET_EMAIL_RE.captures(address)?;
   let group = |name: &str| caps.name(name).map(|m| m.as_str()).unwrap_or("");
-  let strip = |s: &str, extra: char| s.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c') || c == extra).to_string();
+  // Upstream strips " \t\r\n\x0b\x0c+" from these
+  const STRIP: [char; 7] = [' ', '\t', '\r', '\n', '\x0b', '\x0c', '+'];
   Some(EmailAddress {
-    name: group("name").trim_end_matches(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c' | '+')).to_string(),
+    name: group("name").trim_end_matches(STRIP).to_string(),
     email: group("email").to_string(),
     full_email: group("full_email").to_string(),
-    label: strip(group("label"), '+'),
+    label: group("label").trim_matches(STRIP).to_string(),
     user: group("userid").to_string(),
     domain: group("domain").to_string(),
   })
