@@ -186,7 +186,8 @@ impl Notify for ConfiguredService {
     self.inner.send(ctx).await
   }
   fn attachment_support(&self) -> bool {
-    self.inner.attachment_support()
+    // Many plugins only declare support in their details.
+    self.inner.attachment_support() || self.inner.details().attachment_support
   }
   fn tags(&self) -> Vec<String> {
     self.inner.tags()
@@ -276,6 +277,15 @@ mod tests {
   fn test_invalid_values_fall_back_to_default() {
     let o = opts("json://localhost/?retry=abc&wait=abc&format=bogus&overflow=bogus&cto=0&rto=-1").unwrap();
     assert_eq!(o, ServiceOptions::default());
+  }
+
+  #[test]
+  fn test_attachment_support_follows_details() {
+    // Custom JSON declares attachment support only in its details.
+    let svc = crate::notify::registry::from_url("json://localhost").unwrap();
+    assert!(svc.attachment_support());
+    let svc = crate::notify::registry::from_url("gotify://localhost/abcdefghijklmno").unwrap();
+    assert_eq!(svc.attachment_support(), svc.details().attachment_support);
   }
 
   #[test]

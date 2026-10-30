@@ -1,167 +1,545 @@
-mod cli;
+mod args;
+mod help;
+mod logging;
 
-use apprise_core::{Apprise, NotifyContext, NotifyFormat, NotifyType, StorageMode, default_storage_path, storage::PersistentStore, utils::parse::mask_url};
-use clap::Parser;
-use cli::{Cli, Commands};
+use std::path::Path;
+
+use apprise_core::storage::{PersistentStore, StoreState};
+use apprise_core::utils::cwe312::cwe312_loggable;
+use apprise_core::utils::disk::path_decode;
+use apprise_core::{Apprise, AppriseAsset, Notify, NotifyContext, NotifyFormat, NotifyType, ResultStatus, StorageMode, TagFilter};
+
+/// Recursion depth for configuration includes.
+const DEFAULT_RECURSION_DEPTH: i64 = 1;
+
+/// Storage actions; a prefix selects the first that matches. Upstream's
+/// help and man page say `clean` while its code only knows `clear`, so
+/// both are accepted.
+const STORAGE_ACTIONS: &[&str] = &["list", "prune", "clear", "clean"];
 
 #[tokio::main]
 async fn main() {
-  let cli = Cli::parse();
+  let argv: Vec<String> = std::env::args().skip(1).collect();
+  std::process::exit(run(&argv).await);
+}
 
-  // Configure tracing
-  let level = if cli.debug || cli.verbose >= 3 {
-    tracing::Level::DEBUG
-  } else if cli.verbose >= 1 {
-    tracing::Level::INFO
-  } else {
-    tracing::Level::WARN
-  };
-  tracing_subscriber::fmt().with_max_level(level).init();
-
-  if !cli.plugin_path.is_empty() {
-    eprintln!("Warning: --plugin-path is not supported in the Rust port. External plugins are ignored.");
+/// The value of an integer environment variable, its default when unset or
+/// empty, and a note in `invalid` when it is not a number.
+fn env_int(name: &str, default: i64, invalid: &mut Vec<(String, String)>) -> i64 {
+  let value = std::env::var(name).unwrap_or_default();
+  let value = value.trim();
+  if value.is_empty() {
+    return default;
   }
-
-  // Handle storage subcommand
-  if let Some(Commands::Storage(storage_args)) = &cli.command {
-    let storage_path = storage_args.storage_path.clone().or_else(|| cli.storage_path.clone()).unwrap_or_else(default_storage_path);
-    let storage_mode = cli.storage_mode.parse::<StorageMode>().unwrap_or(StorageMode::Auto);
-    let path = std::path::PathBuf::from(&storage_path);
-    let _ = (storage_args.storage_uid_length, storage_mode);
-    let namespaces: Vec<String> = storage_args.uids.clone();
-    match storage_args.action.as_str() {
-      "list" => {
-        for ns in PersistentStore::disk_scan(&path, &namespaces, true) {
-          println!("{}", ns);
-        }
-      }
-      "prune" => {
-        let removed = PersistentStore::disk_prune(&path, Some(&namespaces), Some(storage_args.storage_prune_days as u64 * 86400), true);
-        println!("Pruned {} entries.", removed.values().map(Vec::len).sum::<usize>());
-      }
-      "clean" => {
-        let removed = PersistentStore::disk_prune(&path, Some(&namespaces), Some(0), true);
-        println!("Cleaned {} entries.", removed.values().map(Vec::len).sum::<usize>());
-      }
-      other => {
-        eprintln!("Unknown storage action: {}", other);
-        std::process::exit(2);
-      }
-    }
-    return;
-  }
-
-  // --details
-  if cli.details {
-    let all = Apprise::all_service_details();
-    println!("{:<30} {:<50} Protocols", "Service", "Description");
-    println!("{}", "-".repeat(100));
-    for d in all {
-      println!("{:<30} {:<50} {}", d.service_name, d.description, d.protocols.join(", "));
-    }
-    return;
-  }
-
-  // --schema
-  if cli.schema {
-    let all = Apprise::all_service_details();
-    let json = serde_json::to_string_pretty(&all.iter().map(|d| d.to_json()).collect::<Vec<_>>()).unwrap();
-    println!("{}", json);
-    return;
-  }
-
-  // Build Apprise instance
-  let mut apprise = Apprise::new();
-
-  // Add URLs from CLI
-  for raw in &cli.urls {
-    for url in raw.split([';', ',', '\n', '\r']) {
-      let url = url.trim();
-      if url.is_empty() || !url.contains("://") {
-        continue;
-      }
-      if !apprise.add(url) {
-        eprintln!("Warning: could not parse URL: {}", mask_url(url));
-      }
-    }
-  }
-
-  // Add from config files
-  for raw_path in &cli.config {
-    for cfg_path in raw_path.split([';', '\n', '\r']) {
-      let cfg_path = cfg_path.trim();
-      if cfg_path.is_empty() {
-        continue;
-      }
-      if let Err(e) = apprise.add_config(cfg_path, cli.recursion_depth).await {
-        eprintln!("Warning: failed to load config {}: {}", cfg_path, e);
-      }
-    }
-  }
-
-  // Try default configs if nothing loaded
-  if apprise.is_empty() {
-    apprise.load_default_configs(cli.recursion_depth).await;
-  }
-
-  if apprise.is_empty() {
-    eprintln!("No notification services specified.");
-    std::process::exit(3);
-  }
-
-  // Apply tag filters
-  if !cli.tag.is_empty() {
-    apprise.set_tag_strings(&cli.tag);
-  }
-
-  // Dry run
-  if cli.dry_run {
-    println!("Dry run - would notify {} service(s):", apprise.len());
-    for d in apprise.details() {
-      println!("  {} ({})", d.service_name, d.protocols.join(", "));
-    }
-    return;
-  }
-
-  // Build body
-  let body = match cli.body {
-    Some(b) => b,
+  match args::parse_int(value) {
+    Some(n) => n,
     None => {
-      use std::io::Read;
-      let mut buf = String::new();
-      std::io::stdin().read_to_string(&mut buf).unwrap_or(0);
-      buf
+      invalid.push((name.to_string(), value.to_string()));
+      default
+    }
+  }
+}
+
+fn usage_error(message: &str) -> i32 {
+  println!("{message}");
+  println!("Try 'apprise --help' for more information.");
+  2
+}
+
+/// Split one argument into URLs the way upstream's `parse_urls()` does: a
+/// new URL starts after commas, semicolons or whitespace followed by
+/// `schema://`, so commas inside a URL survive.
+fn split_urls(arg: &str) -> Vec<String> {
+  let arg = arg.trim_end();
+  if !arg.contains("://") {
+    return arg.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '[' | ']')).filter(|s| !s.is_empty()).map(str::to_string).collect();
+  }
+  let bytes = arg.as_bytes();
+  let is_sep = |b: u8| b.is_ascii_whitespace() || b == b',' || b == b';';
+  let starts_url = |i: usize| {
+    let n = bytes[i..].iter().take_while(|b| b.is_ascii_alphanumeric()).count();
+    (1..=32).contains(&n) && arg[i + n..].starts_with("://")
+  };
+  let mut urls = Vec::new();
+  let Some(mut start) = (0..bytes.len()).find(|&i| starts_url(i)) else { return Vec::new() };
+  let mut i = start;
+  while i < bytes.len() {
+    if is_sep(bytes[i]) {
+      let sep_end = (i..bytes.len()).find(|&j| !is_sep(bytes[j])).unwrap_or(bytes.len());
+      if sep_end - i <= 32 && sep_end < bytes.len() && starts_url(sep_end) {
+        urls.push(arg[start..i].to_string());
+        start = sep_end;
+        i = sep_end;
+        continue;
+      }
+      i = sep_end;
+      continue;
+    }
+    i += 1;
+  }
+  urls.push(arg[start..].to_string());
+  urls
+}
+
+/// Add every URL in `raw`, logging the ones that cannot be loaded.
+fn add_urls(apprise: &mut Apprise, raw: &str) {
+  for url in split_urls(raw) {
+    if !apprise.add(&url) {
+      if url.contains("://") {
+        tracing::error!("Unparseable URL {}", cwe312_loggable(&url, true));
+      } else {
+        tracing::error!("Unsupported URL: {}", url);
+      }
+    }
+  }
+}
+
+/// Upstream `bytes_to_str()`: `0.00B`, `1.50KB`, ...
+fn bytes_to_str(value: u64) -> String {
+  let mut value = value as f64;
+  let mut unit = "B";
+  for next in ["KB", "MB", "GB", "TB"] {
+    if value < 1024.0 {
+      break;
+    }
+    value /= 1024.0;
+    unit = next;
+  }
+  format!("{value:.2}{unit}")
+}
+
+/// The terminal width upstream assumes (`COLUMNS`, else 80).
+fn columns() -> usize {
+  std::env::var("COLUMNS").ok().and_then(|c| c.trim().parse::<usize>().ok()).filter(|c| *c > 0).unwrap_or(80)
+}
+
+fn fit(text: &str, width: usize, keep: usize) -> String {
+  if text.chars().count() <= width { text.to_string() } else { format!("{}...", text.chars().take(keep).collect::<String>()) }
+}
+
+/// How a service is shown: its URL with secrets masked. Tags are listed
+/// on their own line, so a `?tag=` the configuration loader added is left
+/// out.
+fn shown_url(svc: &dyn Notify) -> String {
+  let Some(url) = svc.source_url() else { return format!("{}://", svc.schemas().first().copied().unwrap_or("unknown")) };
+  let url = match url.split_once('?') {
+    Some((base, query)) => {
+      let kept: Vec<&str> =
+        query.split('&').filter(|p| !p.is_empty() && !matches!(p.split('=').next().unwrap_or("").to_ascii_lowercase().as_str(), "tag" | "tags")).collect();
+      if kept.is_empty() { base.to_string() } else { format!("{base}?{}", kept.join("&")) }
+    }
+    None => url.to_string(),
+  };
+  cwe312_loggable(&url, true)
+}
+
+fn sorted_tags(svc: &dyn Notify) -> Vec<String> {
+  let mut tags: Vec<String> = apprise_core::tag::parse_service_tags(&svc.tags()).iter().map(|t| t.name().to_string()).collect();
+  tags.sort();
+  tags
+}
+
+fn print_details() {
+  let mut all = Apprise::all_service_details();
+  all.sort_by(|a, b| a.service_name.cmp(b.service_name));
+  for d in all {
+    println!("+ {:<30} | Schema(s): {}", d.service_name, d.protocols.join(", "));
+    println!();
+  }
+}
+
+fn version_message() -> String {
+  format!(
+    "Apprise v{}\nCopyright (c) 2026, Chris Caron <lead2gold@gmail.com>\nThis code is licensed under the BSD 2-Clause License.",
+    env!("CARGO_PKG_VERSION")
+  )
+}
+
+/// Load the configuration files named by `APPRISE_CONFIG_PATH` (or the
+/// deprecated `APPRISE_CONFIG`), else the default locations.
+async fn load_default_configs(apprise: &mut Apprise, depth: u32) {
+  let explicit = match std::env::var("APPRISE_CONFIG_PATH") {
+    Ok(v) => {
+      tracing::debug!("Loading provided APPRISE_CONFIG_PATH environment variable");
+      Some(v)
+    }
+    Err(_) => {
+      std::env::var("APPRISE_CONFIG").ok().inspect(|_| tracing::warn!("The APPRISE_CONFIG environment variable has been renamed to APPRISE_CONFIG_PATH"))
     }
   };
-  if body.is_empty() {
-    eprintln!("No message body provided.");
-    std::process::exit(2);
-  }
-
-  // Load attachments
-  let mut attachments = Vec::new();
-  for path in &cli.attach {
-    match Apprise::load_attachment(path).await {
-      Ok(att) => attachments.push(att),
-      Err(e) => eprintln!("Warning: could not load attachment {}: {}", path, e),
+  let Some(paths) = explicit else {
+    apprise.load_default_configs(depth).await;
+    return;
+  };
+  for path in paths.trim().split(['\r', '\n', ';']).map(str::trim).filter(|p| !p.is_empty()) {
+    let decoded = path_decode(path);
+    if decoded.is_file()
+      && let Err(e) = apprise.add_config(&decoded.to_string_lossy(), depth).await
+    {
+      tracing::warn!("Could not load configuration {}: {}", cwe312_loggable(path, true), e);
     }
   }
+}
 
-  let ctx = NotifyContext {
-    body,
-    title: cli.title.unwrap_or_default(),
-    notify_type: cli.notification_type.parse::<NotifyType>().unwrap_or(NotifyType::Info),
-    body_format: cli.input_format.parse::<NotifyFormat>().unwrap_or(NotifyFormat::Text),
-    attachments,
-    interpret_escapes: cli.interpret_escapes,
-    interpret_emojis: cli.interpret_emojis,
+/// Validate `--template-var` entries: `NAME=VALUE`, each name once
+/// (ignoring case). Only names are ever echoed; values may be secrets.
+fn template_vars(entries: &[String]) -> Result<Vec<(String, String)>, i32> {
+  let mut seen = std::collections::HashSet::new();
+  let mut out = Vec::new();
+  for entry in entries {
+    let (name, value) = entry.split_once('=').map(|(n, v)| (n.trim(), Some(v))).unwrap_or((entry.trim(), None));
+    let valid_name = !name.is_empty() && name.len() <= 32 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    let Some(value) = value.filter(|_| valid_name) else {
+      return Err(usage_error(&format!("The --template-var (-tv) name '{name}' is not in the expected NAME=VALUE format.")));
+    };
+    if !seen.insert(name.to_lowercase()) {
+      return Err(usage_error(&format!("The --template-var (-tv) name '{name}' was provided more than once.")));
+    }
+    out.push((name.to_string(), value.to_string()));
+  }
+  Ok(out)
+}
+
+async fn run(argv: &[String]) -> i32 {
+  let mut invalid_env = Vec::new();
+  let default_prune_days = env_int("APPRISE_STORAGE_PRUNE_DAYS", 30, &mut invalid_env);
+  let default_uid_length = env_int("APPRISE_STORAGE_UID_LENGTH", 8, &mut invalid_env);
+  let env_storage_path = std::env::var("APPRISE_STORAGE_PATH").ok().map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+  let shown_storage_default =
+    env_storage_path.clone().unwrap_or_else(|| if cfg!(windows) { "%APPDATA%/Apprise/cache".into() } else { "~/.local/share/apprise/cache".into() });
+
+  let cli = match args::parse(argv) {
+    Ok(cli) => cli,
+    Err(e) => {
+      eprintln!("{}", e.render());
+      return 2;
+    }
+  };
+  if cli.flag("help") {
+    print!(
+      "{}",
+      help::render(&help::HelpDefaults { storage_path: shown_storage_default, storage_prune_days: default_prune_days, storage_uid_length: default_uid_length })
+    );
+    return 0;
+  }
+
+  let debug = cli.flag("debug");
+  let verbose = if debug { cli.count("verbose").max(3) } else { cli.count("verbose") };
+  logging::init(verbose, true);
+  tracing::debug!("Apprise: {}", env!("CARGO_PKG_VERSION"));
+
+  if cli.flag("version") {
+    println!("{}", version_message());
+    return 0;
+  }
+
+  let notification_type = cli.str("notification_type").unwrap_or("info").trim().to_lowercase();
+  let Some(notify_type) =
+    ["info", "success", "warning", "failure"].contains(&notification_type.as_str()).then(|| notification_type.parse::<NotifyType>().ok()).flatten()
+  else {
+    return usage_error(&format!("The --notification-type (-n) value of {notification_type} is not supported."));
+  };
+  let input_format = cli.str("input_format").unwrap_or("text").trim().to_lowercase();
+  let Some(body_format) = ["text", "html", "markdown"].contains(&input_format.as_str()).then(|| input_format.parse::<NotifyFormat>().ok()).flatten() else {
+    return usage_error(&format!("The --input-format (-i) value of {input_format} is not supported."));
+  };
+  let storage_mode = cli.str("storage_mode").unwrap_or("auto").trim().to_lowercase();
+  let Ok(storage_mode) = storage_mode.parse::<StorageMode>() else {
+    return usage_error(&format!("The --storage-mode (-SM) value of {storage_mode} is not supported."));
+  };
+  if !invalid_env.is_empty() {
+    for (name, value) in &invalid_env {
+      println!("The {name} environment variable value of '{value}' is not a valid number.");
+    }
+    println!("Try 'apprise --help' for more information.");
+    return 2;
+  }
+  let storage_uid_length = cli.int("storage_uid_length").unwrap_or(default_uid_length);
+  if storage_uid_length < 2 {
+    return usage_error("The --storage-uid-length (-SUL) value can not be lower than two (2).");
+  }
+  if !cli.strs("plugin_path").is_empty() || std::env::var_os("APPRISE_PLUGIN_PATH").is_some() {
+    tracing::warn!("Custom plugin paths are not supported by this build; ignoring --plugin-path (-P).");
+  }
+
+  // An explicit --storage-path wins over APPRISE_STORAGE_PATH.
+  let storage_path = cli.str("storage_path").map(str::to_string).or(env_storage_path).unwrap_or_else(apprise_core::default_storage_path);
+  let storage_path = path_decode(&storage_path);
+  let mut asset = AppriseAsset {
+    body_format: Some(input_format.clone()),
+    theme: cli.str("theme").unwrap_or("default").to_string(),
+    async_mode: !cli.flag("disable_async"),
+    storage_path: Some(storage_path.clone()),
+    storage_idlen: storage_uid_length as usize,
+    storage_mode: storage_mode.clone(),
     ..Default::default()
   };
+  if let Some(limit) = cli.float("service_limit") {
+    if !limit.is_finite() || limit < 0.0 {
+      tracing::error!("AppriseAsset service_timeout must be >= 0 and finite (0 disables the timeout entirely).");
+      return 1;
+    }
+    asset.service_timeout = limit;
+  }
+  let mut apprise = Apprise::with_asset(asset);
+  if let Err(e) = apprise.set_timeout(cli.float("limit").unwrap_or(0.0)) {
+    tracing::error!("{}", e);
+    return 1;
+  }
+  let depth = cli.int("recursion_depth").unwrap_or(DEFAULT_RECURSION_DEPTH).max(0) as u32;
+  let dry_run = cli.flag("dry_run");
+  let mut tags = cli.strs("tag");
+  let config = cli.strs("config");
 
-  // Send
-  let result = if cli.disable_async { apprise.notify_sequential(&ctx).await } else { apprise.notify(&ctx).await };
+  // `apprise storage ...` (any prefix of "storage").
+  let positional = cli.args.clone();
+  let storage_action = positional.first().is_some_and(|first| "storage".starts_with(first.as_str()));
+  let mut urls = positional.clone();
+  let mut url_filters = false;
+  if storage_action {
+    let mut rest: Vec<String> = positional[1..].to_vec();
+    if rest.first().is_some_and(|a| STORAGE_ACTIONS.iter().any(|m| m.starts_with(a.as_str()))) {
+      rest.remove(0);
+    }
+    let filters: Vec<String> = rest.into_iter().filter(|f| apprise_core::attachment::schema_of(f).is_some()).collect();
+    url_filters = !filters.is_empty();
+    urls = filters;
+  }
 
-  if result.failed > 0 {
-    std::process::exit(1);
+  if cli.flag("details") {
+    print_details();
+    return 0;
+  }
+
+  // Sources, in upstream's order: URLs, --config, APPRISE_URLS, defaults.
+  let mut url_mode = false;
+  if !urls.is_empty() && (!storage_action || url_filters) {
+    url_mode = true;
+    for url in &urls {
+      add_urls(&mut apprise, url);
+    }
+    if !config.is_empty() {
+      tracing::warn!("You defined both URLs and a --config (-c) entry; Only the URLs will be referenced.");
+    }
+  } else if !config.is_empty() {
+    for source in &config {
+      if let Err(e) = apprise.add_config(source, depth).await {
+        tracing::warn!("Could not load configuration {}: {}", cwe312_loggable(source, true), e);
+      }
+    }
+  } else if let Some(env_urls) = std::env::var("APPRISE_URLS").ok().filter(|v| !v.trim().is_empty()) {
+    tracing::debug!("Loading provided APPRISE_URLS environment variable");
+    url_mode = true;
+    add_urls(&mut apprise, env_urls.trim());
+  } else {
+    load_default_configs(&mut apprise, depth).await;
+  }
+  if url_mode && !tags.is_empty() {
+    tracing::warn!("--tag (-g) entries are ignored when using specified URLs");
+    tags.clear();
+  }
+
+  if !dry_run && apprise.is_empty() && !storage_action {
+    println!("You must specify at least one service URL or populated configuration file.");
+    println!("Try 'apprise --help' for more information.");
+    return 1;
+  }
+
+  // Each --tag is an AND group; the groups are OR'd. Without one, only
+  // untagged services are notified (URLs given directly carry no tags).
+  let filter = if !tags.is_empty() {
+    TagFilter::from_cli(&tags)
+  } else if url_mode {
+    TagFilter::All
+  } else {
+    TagFilter::Untagged
+  };
+  apprise.set_tag_filter(filter);
+
+  if let Err(code) = template_vars(&cli.strs("template_var")) {
+    return code;
+  }
+
+  if storage_action {
+    return storage(&cli, &apprise, &positional, &storage_path, !tags.is_empty(), url_filters, default_prune_days, dry_run);
+  }
+
+  let status = if dry_run {
+    dry_run_listing(&apprise)
+  } else {
+    let body = match cli.str("body") {
+      Some(b) => b.to_string(),
+      None => {
+        tracing::trace!("No --body (-b) specified; reading from stdin");
+        let mut buf = String::new();
+        let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf);
+        buf
+      }
+    };
+    let ctx = NotifyContext {
+      body,
+      title: cli.str("title").unwrap_or_default().to_string(),
+      notify_type,
+      body_format,
+      interpret_escapes: cli.flag("interpret_escapes"),
+      interpret_emojis: cli.flag("interpret_emojis"),
+      ..Default::default()
+    };
+    let result = apprise.notify_with_attachments(&ctx, &cli.strs("attach")).await;
+    tracing::debug!(
+      "Finished in {:.2}s. {} service(s) tried ({}): {} sent / {} failed / {} timed out.",
+      result.elapsed.as_secs_f64(),
+      result.total,
+      result.status,
+      result.succeeded,
+      result.failed,
+      result.timed_out()
+    );
+    result.status
+  };
+  apprise.flush_stores();
+  status.exit_code()
+}
+
+/// `--dry-run`: list what would be notified, with its storage UID and tags.
+fn dry_run_listing(apprise: &Apprise) -> ResultStatus {
+  let columns = columns();
+  let mut any = false;
+  for (idx, svc) in apprise.find().enumerate() {
+    any = true;
+    println!("{:>4}. {}", idx + 1, fit(&shown_url(svc), columns.saturating_sub(8), columns.saturating_sub(9)));
+    println!("{:>10}: {}", "uid", apprise.url_id(svc).unwrap_or_else(|| "- n/a -".to_string()));
+    let tags = sorted_tags(svc);
+    if !tags.is_empty() {
+      println!("{:>10}: {}", "tags", tags.join(", "));
+    }
+  }
+  if any { ResultStatus::Success } else { ResultStatus::NoMatch }
+}
+
+/// `apprise storage [list|prune|clear] [UID-prefix|URL]...`.
+#[allow(clippy::too_many_arguments)]
+fn storage(
+  cli: &args::Parsed,
+  apprise: &Apprise,
+  positional: &[String],
+  path: &Path,
+  tagged: bool,
+  url_filters: bool,
+  default_prune_days: i64,
+  dry_run: bool,
+) -> i32 {
+  let mut prune_days = cli.int("storage_prune_days").unwrap_or(default_prune_days);
+  if prune_days < 0 {
+    return usage_error("The --storage-prune-days (-SPD) value can not be lower than zero (0).");
+  }
+  let mut rest: Vec<String> = positional[1..].to_vec();
+  let mut action = "list";
+  if let Some(first) = rest.first()
+    && let Some(found) = STORAGE_ACTIONS.iter().find(|a| a.starts_with(first.as_str()))
+  {
+    action = if *found == "clean" { "clear" } else { found };
+    rest.remove(0);
+  }
+  let uid_filters: Vec<String> = rest.iter().filter(|f| apprise_core::attachment::schema_of(f).is_none()).map(|f| f.to_lowercase()).collect();
+
+  // The loaded services' namespaces, in load order.
+  let mut uids: Vec<(String, Vec<&dyn Notify>, StoreState, u64)> = Vec::new();
+  let services: Vec<&dyn Notify> = if tagged { apprise.find().collect() } else { apprise.services().collect() };
+  for svc in services {
+    let Some(id) = apprise.url_id(svc) else { continue };
+    if !uid_filters.is_empty() && !uid_filters.iter().any(|u| id.starts_with(u.as_str())) {
+      tracing::trace!("Storage: plugin uid '{}' excluded by filter {:?}", id, uid_filters);
+      continue;
+    }
+    match uids.iter_mut().find(|(u, ..)| *u == id) {
+      Some(entry) => entry.1.push(svc),
+      None => uids.push((id, vec![svc], StoreState::Unused, 0)),
+    }
+  }
+  let scoped =
+    |uids: &[(String, Vec<&dyn Notify>, StoreState, u64)]| uids.iter().map(|(u, ..)| u.clone()).chain(uid_filters.iter().cloned()).collect::<Vec<String>>();
+
+  if action == "list" {
+    let detected = if url_filters {
+      let ns = scoped(&uids);
+      if ns.is_empty() { Vec::new() } else { PersistentStore::disk_scan(path, &ns, true) }
+    } else {
+      PersistentStore::disk_scan(path, &uid_filters, true)
+    };
+    for id in detected {
+      let size = apprise_core::utils::disk::dir_size(&path.join(&id), 3).unwrap_or(0);
+      match uids.iter_mut().find(|(u, ..)| *u == id) {
+        Some(entry) => {
+          entry.2 = StoreState::Active;
+          entry.3 = size;
+        }
+        None if !tagged => uids.push((id, Vec::new(), StoreState::Stale, size)),
+        None => {}
+      }
+    }
+    let columns = columns();
+    for (idx, (uid, plugins, state, size)) in uids.iter().enumerate() {
+      if idx > 0 {
+        println!();
+      }
+      println!("{:>4}. {:<52} {:<8} {}", idx + 1, uid, bytes_to_str(*size), state.as_str());
+      for svc in plugins {
+        println!("{:>7} {}", "-", fit(&shown_url(*svc), columns.saturating_sub(8), columns.saturating_sub(11)));
+        let tags = sorted_tags(*svc);
+        if !tags.is_empty() {
+          println!("{:>10}: {}", "tags", tags.join(", "));
+        }
+      }
+    }
+    return 0;
+  }
+
+  if action == "clear" {
+    prune_days = 0;
+  }
+  let namespaces: Option<Vec<String>> = if url_filters || tagged {
+    let ns = scoped(&uids);
+    if ns.is_empty() {
+      return 0;
+    }
+    Some(ns)
+  } else {
+    (!uid_filters.is_empty()).then(|| uid_filters.clone())
+  };
+  PersistentStore::disk_prune(path, namespaces.as_deref(), Some(prune_days as u64 * 86_400), !dry_run);
+  0
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_split_urls_like_upstream() {
+    assert_eq!(split_urls("json://a?to=x,y, json://b json://c;xml://d"), vec!["json://a?to=x,y", "json://b", "json://c", "xml://d"]);
+    assert_eq!(split_urls("foo"), vec!["foo"]);
+    assert_eq!(split_urls("-x"), vec!["-x"]);
+    assert_eq!(split_urls("json://a/b c"), vec!["json://a/b c"]);
+  }
+
+  #[test]
+  fn test_bytes_to_str_like_upstream() {
+    let got: Vec<String> = [0, 1, 1023, 1024, 1536, 1_048_576, 5 * 1024u64.pow(3), 3 * 1024u64.pow(4)].iter().map(|v| bytes_to_str(*v)).collect();
+    assert_eq!(got, vec!["0.00B", "1.00B", "1023.00B", "1.00KB", "1.50KB", "1.00MB", "5.00GB", "3.00TB"]);
+  }
+
+  #[test]
+  fn test_template_vars_are_validated() {
+    assert_eq!(template_vars(&["a=1".into(), "B=x=y".into()]).unwrap(), vec![("a".into(), "1".into()), ("B".into(), "x=y".into())]);
+    assert_eq!(template_vars(&["bad".into()]), Err(2));
+    assert_eq!(template_vars(&["a-b=1".into()]), Err(2));
+    assert_eq!(template_vars(&["a=1".into(), "A=2".into()]), Err(2));
+  }
+
+  #[test]
+  fn test_fit() {
+    assert_eq!(fit("abcdef", 6, 3), "abcdef");
+    assert_eq!(fit("abcdefg", 6, 3), "abc...");
   }
 }

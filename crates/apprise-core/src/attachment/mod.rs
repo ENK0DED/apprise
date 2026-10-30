@@ -114,7 +114,7 @@ pub async fn load_attachment(source: &str) -> Result<Attachment, AttachError> {
 }
 
 /// The lowercase schema of `value` (upstream `GET_SCHEMA_RE`), if it has one.
-pub(crate) fn schema_of(value: &str) -> Option<String> {
+pub fn schema_of(value: &str) -> Option<String> {
   let trimmed = value.trim_start();
   let (schema, _) = trimmed.split_once("://")?;
   (!schema.is_empty() && schema.len() <= 32 && schema.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| schema.to_lowercase())
