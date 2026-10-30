@@ -65,9 +65,6 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 webpki-roots = "1"
 
-# MQTT (optional)
-rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-no-provider"] }
-
 # Desktop notifications (optional)
 notify-rust = { version = "4" }
 
