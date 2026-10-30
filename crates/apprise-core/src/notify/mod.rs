@@ -107,6 +107,7 @@ pub mod ses;
 pub mod seven;
 pub mod sfr;
 pub mod signal_api;
+pub mod signalgrid;
 pub mod signl4;
 pub mod simplepush;
 pub mod sinch;

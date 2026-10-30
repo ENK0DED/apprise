@@ -119,6 +119,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(seven::Seven::static_details());
   collect!(sfr::Sfr::static_details());
   collect!(signal_api::SignalApi::static_details());
+  collect!(signalgrid::Signalgrid::static_details());
   collect!(signl4::Signl4::static_details());
   collect!(simplepush::SimplePush::static_details());
   collect!(sinch::Sinch::static_details());
@@ -264,6 +265,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(seven::Seven::from_url, "seven");
   reg!(sfr::Sfr::from_url, "sfr");
   reg!(signal_api::SignalApi::from_url, "signal", "signals");
+  reg!(signalgrid::Signalgrid::from_url, "signalgrid");
   reg!(signl4::Signl4::from_url, "signl4");
   reg!(simplepush::SimplePush::from_url, "spush");
   reg!(sinch::Sinch::from_url, "sinch");
