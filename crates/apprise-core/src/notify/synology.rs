@@ -1,8 +1,7 @@
 use crate::error::NotifyError;
-use crate::notify::custom_json::{basic_auth, custom_args, header_map};
+use crate::notify::custom_json::{basic_auth, header_map};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -31,8 +30,8 @@ impl Synology {
     // path is where the chat API lives. Upstream cuts the token off the
     // encoded path by its decoded length and doubles the slash before
     // /webapi; both are avoided here.
-    let (token, rest) = match qsd::get(url, "token").filter(|t| !t.is_empty()) {
-      Some(t) => (Some(qsd::unquote(&t)), &encoded[..]),
+    let (token, rest) = match url.get("token").filter(|t| !t.is_empty()) {
+      Some(t) => (Some(unquote(t)), &encoded[..]),
       None => (url.path_parts.first().cloned(), encoded.get(1..).unwrap_or(&[])),
     };
     let Some(token) = token.filter(|t| !t.is_empty()) else {
@@ -46,8 +45,9 @@ impl Synology {
       port: url.port,
       token,
       fullpath,
-      file_url: qsd::get(url, "file_url").filter(|f| !f.is_empty()).map(|f| qsd::unquote(&f)),
-      headers: custom_args(url, '+'),
+      file_url: url.get("file_url").filter(|f| !f.is_empty()).map(unquote),
+      // Upstream unquotes the +header arguments once more
+      headers: url.qsd_add.iter().map(|(k, v)| (unquote(k), unquote(v))).collect(),
       secure: url.schema.ends_with('s'),
       user: url.user.clone(),
       password: url.password.clone(),
@@ -113,6 +113,7 @@ impl Notify for Synology {
       req = req.basic_auth(user, Some(password));
     }
 
+    crate::notify::throttle().await;
     let resp = req.send().await?;
     let status = resp.status();
     if status.is_success() {

@@ -1,9 +1,8 @@
+use crate::asset::NotifyImageSize;
 use crate::error::NotifyError;
-use crate::notify::ntfy::image_url;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::types::NotifyFormat;
-use crate::utils::parse::{ParsedUrl, parse_bool};
-use crate::utils::qsd;
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list, unquote};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -74,19 +73,19 @@ impl RocketChat {
     let (parsed, mut webhook, mut password) = match split_webhook(&url.raw) {
       Some((stripped, hook)) => {
         let p = ParsedUrl::parse(&stripped)?;
-        (p, Some(qsd::unquote(&hook)), Some(hook))
+        (p, Some(unquote(&hook)), Some(hook))
       }
       None => (url.clone(), None, url.password.clone()),
     };
     let url = &parsed;
     let host = url.host.clone().filter(|h| !h.is_empty())?;
-    if let Some(w) = qsd::get(url, "webhook").filter(|w| !w.is_empty()) {
-      webhook = Some(qsd::unquote(&w));
+    if let Some(w) = url.get("webhook").filter(|w| !w.is_empty()) {
+      webhook = Some(unquote(w));
     }
     password = password.filter(|p| !p.is_empty());
     let user = url.user.clone().filter(|u| !u.is_empty());
 
-    let mode = match qsd::get(url, "mode").filter(|m| !m.is_empty()).map(|m| qsd::unquote(&m).to_lowercase()) {
+    let mode = match url.get("mode").filter(|m| !m.is_empty()).map(|m| unquote(m).to_lowercase()) {
       Some(m) if m == "webhook" => Mode::Webhook,
       Some(m) if m == "token" => Mode::Token,
       Some(m) if m == "basic" => Mode::Basic,
@@ -112,12 +111,13 @@ impl RocketChat {
     }
 
     let mut targets: Vec<String> = url.path_parts.clone();
-    if let Some(to) = qsd::get(url, "to").filter(|t| !t.is_empty()) {
-      targets.extend(qsd::parse_list(&to));
+    if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      targets.extend(parse_list(to).iter().map(|t| unquote(t)));
     }
     let (mut channels, mut rooms, mut users) = (Vec::new(), Vec::new(), Vec::new());
     let name_ok = |s: &str, extra: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c));
-    for target in qsd::parse_list(&targets.join(" ")) {
+    for target in crate::utils::email::parse_list(&targets) {
       if let Some(c) = target.strip_prefix('#').filter(|c| name_ok(c, "_-")) {
         channels.push(c.to_string());
       } else if name_ok(&target, "") {
@@ -134,7 +134,7 @@ impl RocketChat {
     }
 
     // The avatar defaults off for basic logins and on otherwise
-    let avatar = qsd::get(url, "avatar").filter(|a| !a.is_empty()).map(|a| parse_bool(&a)).unwrap_or(mode != Mode::Basic);
+    let avatar = url.get("avatar").filter(|a| !a.is_empty()).map(parse_bool).unwrap_or(mode != Mode::Basic);
 
     Some(Self {
       host,
@@ -178,6 +178,7 @@ impl RocketChat {
     if let Some((user_id, token)) = auth {
       req = req.header("X-User-Id", user_id).header("X-Auth-Token", token);
     }
+    crate::notify::throttle().await;
     match req.send().await {
       Ok(r) if r.status().as_u16() == 200 => {
         tracing::info!("Sent Rocket.Chat notification.");
@@ -189,7 +190,7 @@ impl RocketChat {
       }
       Err(e) => {
         tracing::warn!("A Connection error occurred sending Rocket.Chat notification.");
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         false
       }
     }
@@ -202,7 +203,7 @@ impl RocketChat {
       Ok(r) => r,
       Err(e) => {
         tracing::warn!("A connection error occurred authenticating {} on Rocket.Chat.", self.user.as_deref().unwrap_or(""));
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return None;
       }
     };
@@ -224,7 +225,7 @@ impl RocketChat {
     match req.send().await {
       Ok(r) if r.status().as_u16() == 200 => tracing::debug!("Rocket.Chat log off successful"),
       Ok(r) => tracing::warn!("Failed to logoff {} from Rocket.Chat: error={}.", self.user.as_deref().unwrap_or(""), r.status().as_u16()),
-      Err(e) => tracing::debug!("Socket Exception: {}", e),
+      Err(e) => tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e)),
     }
   }
 }
@@ -256,8 +257,10 @@ impl Notify for RocketChat {
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let client = build_client(self.verify_certificate)?;
     let mut payload = json!({"text": ctx.body});
-    if self.avatar {
-      payload["avatar"] = json!(image_url(&ctx.asset, &ctx.notify_type, "128x128"));
+    if self.avatar
+      && let Some(image) = ctx.image_url(NotifyImageSize::Xy128)
+    {
+      payload["avatar"] = json!(image);
     }
 
     let named: Vec<String> = self.users.iter().map(|u| format!("@{}", u)).chain(self.channels.iter().map(|c| format!("#{}", c))).collect();
@@ -270,10 +273,16 @@ impl Notify for RocketChat {
         return Ok(self.post(&client, &path, &payload, None).await);
       }
       for target in targets {
+        // A retry skips targets that already accepted the message
+        if crate::delivery::is_delivered(&target, false) {
+          continue;
+        }
         payload["channel"] = json!(target);
         if !self.post(&client, &path, &payload, None).await {
           has_error = true;
+          continue;
         }
+        crate::delivery::mark_delivered(&target, false);
       }
       return Ok(!has_error);
     }
@@ -286,18 +295,28 @@ impl Notify for RocketChat {
       _ => (self.user.clone().unwrap_or_default(), self.password.clone().unwrap_or_default()),
     };
     for channel in named {
+      if crate::delivery::is_delivered(&channel, false) {
+        continue;
+      }
       let mut p = payload.clone();
       p["channel"] = json!(channel);
       if !self.post(&client, "api/v1/chat.postMessage", &p, Some(&auth)).await {
         has_error = true;
+        continue;
       }
+      crate::delivery::mark_delivered(&channel, false);
     }
     for room in &self.rooms {
+      if crate::delivery::is_delivered(room, false) {
+        continue;
+      }
       let mut p = payload.clone();
       p["roomId"] = json!(room);
       if !self.post(&client, "api/v1/chat.postMessage", &p, Some(&auth)).await {
         has_error = true;
+        continue;
       }
+      crate::delivery::mark_delivered(room, false);
     }
     if self.mode == Mode::Basic {
       self.logout(&client, &auth).await;
@@ -311,7 +330,7 @@ mod tests {
   use super::*;
   use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   #[test]
@@ -490,5 +509,29 @@ mod tests {
     assert!(!rc(&format!("rocket://user:pass@localhost:{}/rooma/#channela", server.address().port())).send(&ctx()).await.unwrap());
 
     assert!(!rc("rocket://web/token@127.0.0.1:1/").send(&ctx()).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/hooks/web/token"))
+      .and(body_partial_json(json!({"channel": "#channel2"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/hooks/web/token")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("rocket://user:web/token@localhost:{}/?to=@user2,%23channel2&avatar=no&retry=1&wait=0", server.address().port())));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "hello".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<Value> = crate::notify::custom_json::requests_to(&server, "POST", "/hooks/web/token")
+      .await
+      .iter()
+      .map(|r| r.body_json::<Value>().unwrap()["channel"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!("@user2"), json!("#channel2"), json!("#channel2")]);
   }
 }

@@ -1,14 +1,10 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::asset::AppriseAsset;
+use crate::asset::NotifyImageSize;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::types::NotifyType;
 use crate::utils::parse::{ParsedUrl, parse_bool};
-
-/// Upstream `AppriseAsset.image_url_mask` default.
-const DEFAULT_IMAGE_URL_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -28,26 +24,10 @@ pub struct Ryver {
 
 impl Ryver {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (organization, token) = if url.schema == "https" || url.schema == "http" {
-      // Native URL: https://{org}.ryver.com/application/webhook/{token}
-      let host = url.host.as_deref()?.to_lowercase();
-      let org = host.strip_suffix(".ryver.com")?;
-      if org.is_empty() || !org.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-        return None;
-      }
-      match url.path_parts.as_slice() {
-        [app, hook, token]
-          if app.eq_ignore_ascii_case("application") && hook.eq_ignore_ascii_case("webhook") && token.chars().all(|c| c.is_ascii_alphanumeric()) =>
-        {
-          (org.to_string(), token.clone())
-        }
-        _ => return None,
-      }
-    } else {
-      // ryver://{botname}@{organization}/{token}
-      (url.host.as_deref().map(unquote).unwrap_or_default(), url.path_parts.first().cloned().unwrap_or_default())
-    };
-
+    // ryver://{botname}@{organization}/{token}; the registry turns the
+    // native https://{org}.ryver.com/application/webhook/{token} into this
+    let organization = url.host.clone().unwrap_or_default();
+    let token = url.path_parts.first().cloned().unwrap_or_default();
     let token = token.trim().to_string();
     if token.len() != 15 || !token.chars().all(|c| c.is_ascii_alphanumeric()) {
       tracing::warn!("An invalid Ryver API Token was specified.");
@@ -97,7 +77,7 @@ impl Ryver {
       Mode::Slack => (slack_escape(&ctx.title), slack_escape(&ctx.body)),
       Mode::Ryver => (ctx.title.clone(), ctx.body.clone()),
     };
-    let avatar = if self.include_image { image_url(&ctx.asset, &ctx.notify_type) } else { None };
+    let avatar = if self.include_image { ctx.image_url(NotifyImageSize::Xy72) } else { None };
     json!({
       "body": if title.is_empty() { body } else { format!("**{}**\r\n{}", title, body) },
       "createSource": {
@@ -132,6 +112,7 @@ impl Notify for Ryver {
     tracing::debug!("Ryver POST URL for organization {} (cert_verify={})", self.organization, self.verify_certificate);
 
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/json").body(self.payload(ctx).to_string()).send().await?;
     let status = resp.status();
     if status.as_u16() == 200 {
@@ -147,19 +128,6 @@ impl Notify for Ryver {
 
 fn slack_escape(s: &str) -> String {
   s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
-
-/// Upstream `AppriseAsset.image_url()` at the 72x72 size Ryver uses.
-fn image_url(asset: &AppriseAsset, notify_type: &NotifyType) -> Option<String> {
-  let mask = asset.image_url_mask.as_deref().unwrap_or(DEFAULT_IMAGE_URL_MASK);
-  if mask.is_empty() {
-    return None;
-  }
-  Some(mask.replace("{THEME}", &asset.theme).replace("{TYPE}", notify_type.as_str()).replace("{XY}", "72x72").replace("{EXTENSION}", ".png"))
-}
-
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
 }
 
 #[cfg(test)]
@@ -202,10 +170,9 @@ mod tests {
 
   #[test]
   fn test_native_url_fields() {
-    let parsed = crate::utils::parse::ParsedUrl::parse("https://apprise.ryver.com/application/webhook/ckhrjW8w672m6HG").unwrap();
-    let r = Ryver::from_url(&parsed).unwrap();
-    assert_eq!(r.organization, "apprise");
-    assert_eq!(r.token, "ckhrjW8w672m6HG");
+    // The registry converts the native webhook URL
+    assert_eq!(from_url("https://apprise.ryver.com/application/webhook/ckhrjW8w672m6HG").unwrap().schemas(), ["ryver"]);
+    assert!(from_url("https://apprise.ryver.com/application/webhook/bad-token-12345").is_none());
   }
 
   #[test]
@@ -219,7 +186,6 @@ mod tests {
     // Tokens must be 15 alphanumeric characters; an empty mode is invalid
     assert!(parse("ryver://apprise/short").is_none());
     assert!(parse("ryver://apprise/ckhrjW8w672m6HG?mode=").is_none());
-    assert!(parse("https://apprise.ryver.com/application/webhook/bad-token-12345").is_none());
   }
 
   #[test]
@@ -260,7 +226,7 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/application/webhook/ckhrjW8w672m6HG")).respond_with(ResponseTemplate::new(500)).mount(&server).await;
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.is_err());
   }
 

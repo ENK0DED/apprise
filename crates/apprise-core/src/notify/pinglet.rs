@@ -5,7 +5,7 @@ use serde::ser::Serializer;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::types::NotifyType;
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
 
 /// Pinglet renders at most 3 badges (pills) per notification; longer keys
 /// and values are rejected by the server, so they are truncated instead
@@ -16,36 +16,6 @@ const MAX_BADGE_VALUE_LEN: usize = 32;
 /// Metadata (data) key/value length limits
 const MAX_DATA_KEY_LEN: usize = 64;
 const MAX_DATA_VALUE_LEN: usize = 256;
-
-/// `urllib.parse.unquote()`: decode %XX escapes, replacing invalid UTF-8
-fn unquote(value: &str) -> String {
-  String::from_utf8_lossy(&urlencoding::decode_binary(value.as_bytes())).into_owned()
-}
-
-/// The `?{prefix}key=value` arguments of `raw`, in the order upstream's
-/// `parse_qsd()` keeps them: first appearance wins the position, the last
-/// value wins. A literal `+` in a value stays a `+`.
-fn prefixed_args(raw: &str, prefix: char) -> Vec<(String, String)> {
-  let mut args: Vec<(String, String)> = Vec::new();
-  let Some((_, query)) = raw.split_once('?') else { return args };
-  for pair in query.split(['&', ';']) {
-    let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-    // The first character is kept as-is so a leading '+' survives
-    let mut chars = key.chars();
-    let key = match chars.next() {
-      Some(first) => unquote(&format!("{}{}", first, chars.as_str().replace('+', " "))),
-      None => continue,
-    };
-    let value = unquote(value).trim().to_string();
-    let key = match prefix {
-      '+' => key.strip_prefix('+').or_else(|| key.strip_prefix(' ')),
-      p => key.strip_prefix(p),
-    };
-    let Some(key) = key else { continue };
-    upsert(&mut args, key.to_string(), value);
-  }
-  args
-}
 
 /// Insert `key` keeping its first position, or update its value
 fn upsert(entries: &mut Vec<(String, String)>, key: String, value: String) {
@@ -109,13 +79,14 @@ impl Pinglet {
 
     // The last two path entries are the namespace and topic; anything before
     // them is a path prefix such as a reverse-proxy mount point
-    let mut entries: Vec<String> = url.path.split([' ', '\t', '\r', '\n', ',', '\\', '/']).filter(|s| !s.is_empty()).map(unquote).collect();
+    let mut entries: Vec<String> = url.path_parts.clone();
     let topic = entries.pop();
     let namespace = entries.pop();
     let fullpath = if entries.is_empty() { "/".to_string() } else { format!("/{}/", entries.join("/")) };
 
     // The API key is the user component, or ?token=
-    let token = url.get("token").filter(|t| !t.is_empty()).map(String::from).or_else(|| url.user.clone());
+    // (upstream unquotes ?token= and ?priority= once more)
+    let token = url.get("token").filter(|t| !t.is_empty()).map(unquote).or_else(|| url.user.clone());
     let Some(token) = token.as_deref().and_then(validate) else {
       tracing::warn!("An invalid Pinglet API Key was specified.");
       return None;
@@ -130,7 +101,7 @@ impl Pinglet {
     };
 
     // Priority by first letter; anything else is normal
-    let priority = match url.get("priority").map(str::to_lowercase) {
+    let priority = match url.get("priority").map(|p| unquote(p).to_lowercase()) {
       Some(p) if p.starts_with('s') => "silent",
       Some(p) if p.starts_with('u') => "urgent",
       _ => "normal",
@@ -139,20 +110,20 @@ impl Pinglet {
     // Badges (:key=value) and metadata (+key=value); upstream unquotes them
     // a second time
     let mut badges = Vec::new();
-    for (key, value) in prefixed_args(&url.raw, ':') {
+    for (key, value) in &url.qsd_colon {
       if badges.len() >= MAX_BADGE_COUNT {
         tracing::warn!("Pinglet renders at most {} badges; additional entries were ignored.", MAX_BADGE_COUNT);
         break;
       }
-      let (key, value) = (unquote(&key), unquote(&value));
+      let (key, value) = (unquote(key), unquote(value));
       if key.chars().count() > MAX_BADGE_KEY_LEN || value.chars().count() > MAX_BADGE_VALUE_LEN {
         tracing::warn!("Pinglet badge {} was truncated.", key);
       }
       upsert(&mut badges, key.chars().take(MAX_BADGE_KEY_LEN).collect(), value.chars().take(MAX_BADGE_VALUE_LEN).collect());
     }
     let mut data = Vec::new();
-    for (key, value) in prefixed_args(&url.raw, '+') {
-      let (key, value) = (unquote(&key), unquote(&value));
+    for (key, value) in &url.qsd_add {
+      let (key, value) = (unquote(key), unquote(value));
       if key.chars().count() > MAX_DATA_KEY_LEN || value.chars().count() > MAX_DATA_VALUE_LEN {
         tracing::warn!("Pinglet metadata {} was truncated.", key);
       }
@@ -216,10 +187,10 @@ impl Notify for Pinglet {
   fn body_maxlen(&self) -> usize {
     3000
   }
-  /// Pinglet API keys are limited to 120 requests/min (upstream waits 0.5s
-  /// between requests)
+  /// Pinglet API keys are limited to 120 requests/min, so upstream waits
+  /// 0.5s between requests
   fn request_rate_per_sec(&self) -> f64 {
-    2.0
+    0.5
   }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
@@ -239,6 +210,7 @@ impl Notify for Pinglet {
     tracing::debug!("Pinglet POST URL: {} (cert_verify={})", url, self.verify_certificate);
     tracing::debug!("Pinglet Payload: {}", payload);
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client
       .post(&url)
       .header("User-Agent", APP_ID)
@@ -374,8 +346,8 @@ mod tests {
     assert!(svc.send(&ctx).await.unwrap());
 
     // Badges keep the order the URL lists them in
-    let requests = server.received_requests().await.unwrap();
-    let publish = requests.iter().find(|r| r.url.path() == "/acme/deploys").unwrap();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/acme/deploys").await;
+    let publish = &requests[0];
     let body = String::from_utf8_lossy(&publish.body);
     assert!(body.contains(r#""badges":{"Host":"web-1","CPU":"95%"}"#), "{}", body);
   }
@@ -398,7 +370,7 @@ mod tests {
   async fn test_send_failure() {
     for code in [500u16, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/acme/deploys")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let svc = from_url(&format!("pinglet://abc123@{}/acme/deploys", addr(&server))).unwrap();
       assert!(svc.send(&NotifyContext::default()).await.is_err());
     }
@@ -411,6 +383,6 @@ mod tests {
     assert_eq!(details.protocols, vec!["pinglet", "pinglets"]);
     let svc = parse("pinglet://abc123@hostname/acme/deploys");
     assert_eq!(svc.body_maxlen(), 3000);
-    assert_eq!(svc.request_rate_per_sec(), 2.0);
+    assert_eq!(svc.request_rate_per_sec(), 0.5);
   }
 }

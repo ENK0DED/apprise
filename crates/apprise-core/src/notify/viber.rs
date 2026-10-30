@@ -1,6 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -19,26 +20,13 @@ pub struct Viber {
   tags: Vec<String>,
 }
 
-/// Upstream `parse_list()`: split on `[]`, `;`, `,` and whitespace, then
-/// drop empty entries, de-duplicate and sort.
-fn parse_list<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-  let mut out: Vec<String> = items
-    .into_iter()
-    .flat_map(|s| s.split(|c: char| c == '[' || c == ']' || c == ';' || c == ',' || c.is_whitespace()))
-    .filter(|s| !s.is_empty())
-    .map(String::from)
-    .collect();
-  out.sort();
-  out.dedup();
-  out
-}
-
 impl Viber {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = urlencoding::decode(url.host.as_deref().unwrap_or_default()).map(|s| s.into_owned()).unwrap_or_default();
+    let host = url.host.clone().unwrap_or_default();
     let mut entries: Vec<String> = std::iter::once(host).chain(url.path_parts.iter().cloned()).collect();
+    // Upstream unquotes these query values once more
     let token = match url.get("token").filter(|t| !t.is_empty()) {
-      Some(t) => t.to_string(),
+      Some(t) => unquote(t),
       // Without ?token= the first entry is the token, the rest receiver IDs
       None => entries.remove(0),
     };
@@ -52,15 +40,15 @@ impl Viber {
     if let Some(to) = url.get("to") {
       entries.push(to.to_string());
     }
-    let targets = parse_list(entries.iter().map(String::as_str));
+    let targets = parse_list(&entries);
 
-    let source = url.get("from").map(str::trim).filter(|s| !s.is_empty()).map(|s| {
+    let source = url.get("from").map(unquote).filter(|s| !s.is_empty()).map(|s| {
       if s.chars().count() > SENDER_NAME_LIMIT {
         tracing::warn!("Viber sender name exceeds {} characters, truncating.", SENDER_NAME_LIMIT);
       }
       s.chars().take(SENDER_NAME_LIMIT).collect()
     });
-    let avatar = url.get("avatar").map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    let avatar = url.get("avatar").map(unquote).filter(|s| !s.is_empty());
 
     Some(Self { token, targets, source, avatar, verify_certificate: url.verify_certificate(), tags: url.tags() })
   }
@@ -111,11 +99,16 @@ impl Notify for Viber {
     let client = build_client(self.verify_certificate)?;
     let mut all_ok = true;
     for dest in &self.targets {
+      // A retry skips receivers that already accepted the message
+      if crate::delivery::is_delivered(dest, false) {
+        continue;
+      }
       let payload = json!({ "type": "text", "text": ctx.body, "sender": sender, "receiver": dest });
+      crate::notify::throttle().await;
       let resp = match client.post(&url).header("User-Agent", APP_ID).header("X-Viber-Auth-Token", &self.token).json(&payload).send().await {
         Ok(resp) => resp,
         Err(e) => {
-          tracing::warn!("A Connection error occured sending Viber notification to {}: {}", dest, e);
+          tracing::warn!("A Connection error occured sending Viber notification to {}: {}", dest, crate::error::loggable_http_error(&e));
           all_ok = false;
           continue;
         }
@@ -144,6 +137,7 @@ impl Notify for Viber {
         continue;
       }
       tracing::info!("Sent Viber notification to {}.", dest);
+      crate::delivery::mark_delivered(dest, false);
     }
     Ok(all_ok)
   }
@@ -153,7 +147,7 @@ impl Notify for Viber {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> Viber {
@@ -247,6 +241,7 @@ mod tests {
     let server = MockServer::start().await;
     for receiver in ["abc", "def"] {
       Mock::given(method("POST"))
+        .and(path("/pa/send_message"))
         .and(body_json(json!({ "type": "text", "text": "B", "sender": { "name": "Apprise Notifications" }, "receiver": receiver })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": 0 })))
         .expect(1)
@@ -260,7 +255,12 @@ mod tests {
 
   async fn send_with(status: u16, response: &str) -> bool {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(response)).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path("/pa/send_message"))
+      .respond_with(ResponseTemplate::new(status).set_body_string(response))
+      .expect(1)
+      .mount(&server)
+      .await;
     let svc = from_url("viber://token/t1").unwrap();
     crate::notify::with_test_base(server.uri(), svc.send(&NotifyContext::default())).await.unwrap()
   }
@@ -275,5 +275,29 @@ mod tests {
     assert!(!send_with(500, r#"{"status": 0}"#).await);
     assert!(!send_with(999, r#"{"status": 0}"#).await);
     assert!(send_with(200, r#"{"status": "0"}"#).await);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second receiver fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/pa/send_message"))
+      .and(body_partial_json(json!({"receiver": "def"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/pa/send_message")).respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status": 0}"#)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("viber://token/abc/def?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "b".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<serde_json::Value> = crate::notify::custom_json::requests_to(&server, "POST", "/pa/send_message")
+      .await
+      .iter()
+      .map(|r| r.body_json::<serde_json::Value>().unwrap()["receiver"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!("abc"), json!("def"), json!("def")]);
   }
 }

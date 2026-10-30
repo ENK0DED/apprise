@@ -1,7 +1,6 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::unquote;
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -28,11 +27,11 @@ impl ParsePlatform {
     let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(str::to_string);
     let token = |v: Option<String>| v.as_deref().and_then(|v| v.split_whitespace().next()).map(str::to_string);
 
-    let Some(application_id) = token(qsd("app_id").or_else(|| url.user.as_deref().map(unquote))) else {
+    let Some(application_id) = token(qsd("app_id").or_else(|| url.user.clone())) else {
       tracing::warn!("An invalid Parse Platform Application ID was specified.");
       return None;
     };
-    let Some(master_key) = token(qsd("master_key").or_else(|| url.password.as_deref().map(unquote))) else {
+    let Some(master_key) = token(qsd("master_key").or_else(|| url.password.clone())) else {
       tracing::warn!("An invalid Parse Platform Master Key was specified.");
       return None;
     };
@@ -97,6 +96,7 @@ impl Notify for ParsePlatform {
     });
 
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client
       .post(&url)
       .header("User-Agent", APP_ID)
@@ -180,7 +180,7 @@ mod tests {
 
     for status in [500, 999] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/parse/push/")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let addr = server.address();
       assert!(from_url(&format!("parsep://app:key@{}:{}", addr.ip(), addr.port())).unwrap().send(&ctx).await.is_err());
     }

@@ -22,8 +22,8 @@ use tokio::sync::Mutex;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Attachment, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyFormat;
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{parse_bool_or, parse_list, qsd_raw, split_path, unquote};
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
 
 /// Organization integration tokens are `spi_<credential>.<seed>`.
 const SIMPLEPUSH_INTEGRATION_PREFIX: &str = "spi_";
@@ -198,7 +198,7 @@ pub struct SimplePush {
 impl SimplePush {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // API token, or organization integration token (validate_regex)
-    let token = url.host.as_deref().map(unquote).and_then(|t| t.split_whitespace().next().map(str::to_string));
+    let token = url.host.as_deref().and_then(|t| t.split_whitespace().next().map(str::to_string));
     let Some(token) = token else {
       tracing::warn!("An invalid Simplepush API Token was specified.");
       return None;
@@ -220,19 +220,22 @@ impl SimplePush {
     };
 
     // The password is the user part of the URL, or ?password=
-    let password = qsd_raw(url, "password").filter(|p| !p.is_empty()).or_else(|| url.user.clone()).filter(|p| !p.is_empty());
+    // (upstream unquotes the query values once more)
+    let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(unquote);
+    let password = qsd("password").or_else(|| url.user.clone()).filter(|p| !p.is_empty());
 
-    let flag = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(|v| parse_bool_or(Some(v), false)).unwrap_or(false);
+    let flag = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(parse_bool).unwrap_or(false);
     let broadcast = flag("broadcast");
     let shared = flag("shared");
 
     // Topics and organization members, in URL order
-    let mut entries = split_path(url);
+    let mut entries = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      entries.extend(parse_list([to], true, true));
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      entries.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
     let (mut topics, mut members) = (Vec::new(), Vec::new());
-    for target in parse_list(entries, false, false) {
+    for target in crate::utils::plugin_args::parse_list(entries, false, false) {
       match target.strip_prefix('@') {
         None => topics.push(target),
         Some(member) => {
@@ -271,7 +274,8 @@ impl SimplePush {
       return None;
     }
 
-    let priority = match url.get("priority").map(str::trim).filter(|p| !p.is_empty()) {
+    let priority_arg = qsd("priority");
+    let priority = match priority_arg.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
       None => None,
       Some(value) => {
         let value = value.to_lowercase();
@@ -289,7 +293,8 @@ impl SimplePush {
     };
 
     // Volume of the iOS critical alert sound; Android ignores it
-    let critical_volume = match url.get("critical_volume").map(str::trim).filter(|v| !v.is_empty()) {
+    let volume_arg = qsd("critical_volume");
+    let critical_volume = match volume_arg.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
       None => None,
       Some(value) => {
         match value.parse::<f64>() {
@@ -308,7 +313,7 @@ impl SimplePush {
     };
 
     // Links are separated by whitespace; a URL never contains any
-    let links: Vec<String> = url.get("links").map(|l| l.split_whitespace().map(str::to_string).collect()).unwrap_or_default();
+    let links: Vec<String> = qsd("links").map(|l| l.split_whitespace().map(str::to_string).collect()).unwrap_or_default();
     if links.len() > LINKS_MAX {
       tracing::warn!("At most {} Simplepush links can be specified.", LINKS_MAX);
       return None;
@@ -325,9 +330,9 @@ impl SimplePush {
       shared,
       priority,
       critical_volume,
-      sptag: url.get("sptag").map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+      sptag: qsd("sptag").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
       links,
-      topic_auth_token: qsd_raw(url, "topic_auth_token").filter(|t| !t.is_empty()),
+      topic_auth_token: qsd("topic_auth_token"),
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
       state: Mutex::new(SpushState::default()),
@@ -363,11 +368,12 @@ impl SimplePush {
   async fn get_json(&self, client: &reqwest::Client, path: &str, what: &str) -> Option<serde_json::Map<String, Value>> {
     let (name, value) = self.auth_header();
     let url = format!("{}{}", service_base("https://api.simplepu.sh"), path);
+    crate::notify::throttle().await;
     let resp = match client.get(&url).header("User-Agent", APP_ID).header("Accept", "application/json").header(name, value).send().await {
       Ok(resp) => resp,
       Err(e) => {
         tracing::warn!("A Connection error occurred fetching {}.", what);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return None;
       }
     };
@@ -494,11 +500,12 @@ impl SimplePush {
     tracing::debug!("Simplepush POST URL: {} (cert_verify={})", url, self.verify_certificate);
 
     let body = serde_json::to_vec(payload).ok()?;
+    crate::notify::throttle().await;
     let resp = match client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/json").header(name, value).body(body).send().await {
       Ok(resp) => resp,
       Err(e) => {
         tracing::warn!("A Connection error occurred sending Simplepush notification.");
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return None;
       }
     };
@@ -524,7 +531,8 @@ impl SimplePush {
       let url = format!("{}/v1/attachments/{}/{}", base, attachment_id, step);
       let request = client.post(url).header("User-Agent", APP_ID).header(name, value.clone());
       async move {
-        let resp = request.send().await.map_err(|e| e.to_string())?;
+        crate::notify::throttle().await;
+        let resp = request.send().await.map_err(|e| crate::error::loggable_http_error(&e))?;
         let status = resp.status();
         let body = resp.bytes().await.unwrap_or_default();
         if !matches!(status.as_u16(), 200 | 201 | 204) {
@@ -540,7 +548,14 @@ impl SimplePush {
         .ok()
         .and_then(|v| v.get("presignedPutUrl").and_then(Value::as_str).map(str::to_string))
         .ok_or_else(|| "upload-url: no presignedPutUrl".to_string())?;
-      let resp = client.put(presigned).header("Content-Type", "application/octet-stream").body(blob.to_vec()).send().await.map_err(|e| e.to_string())?;
+      crate::notify::throttle().await;
+      let resp = client
+        .put(presigned)
+        .header("Content-Type", "application/octet-stream")
+        .body(blob.to_vec())
+        .send()
+        .await
+        .map_err(|e| crate::error::loggable_http_error(&e))?;
       if !matches!(resp.status().as_u16(), 200 | 201 | 204) {
         return Err(format!("upload: error={}", resp.status().as_u16()));
       }
@@ -616,6 +631,11 @@ impl Notify for SimplePush {
     let mut has_error = false;
 
     for (kind, target) in targets {
+      // A retry skips targets whose task already exists
+      let key = format!("{}:{}", kind.unwrap_or_default(), target.unwrap_or_default());
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
       let mut payload = serde_json::Map::new();
       if let (Some(kind), Some(target)) = (kind, target) {
         payload.insert(kind.into(), json!(target));
@@ -718,7 +738,8 @@ impl Notify for SimplePush {
         has_error = true;
         continue;
       };
-
+      // The task exists; a retry must not create it a second time
+      crate::delivery::mark_delivered(&key, false);
       // Upload the attachments into the rows the task created
       let created = response.get("attachments").and_then(Value::as_array).cloned().unwrap_or_default();
       for (attachment, blob) in created.iter().zip(&blobs) {
@@ -741,7 +762,7 @@ impl Notify for SimplePush {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{header, method, path};
+  use wiremock::matchers::{body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   // An organization key wrap made with libsodium in JavaScript, the way the
@@ -759,6 +780,11 @@ mod tests {
 
   fn spush(url: &str) -> SimplePush {
     SimplePush::from_url(&ParsedUrl::parse(url).unwrap()).unwrap()
+  }
+
+  /// The task creations a mock server received.
+  async fn tasks(server: &MockServer) -> Vec<wiremock::Request> {
+    crate::notify::custom_json::requests_to(server, "POST", "/v1/tasks/json").await
   }
 
   fn body_json(request: &wiremock::Request) -> Value {
@@ -882,7 +908,7 @@ mod tests {
     let ctx = NotifyContext { title: "T".into(), body: "B".into(), body_format: NotifyFormat::Markdown, ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = tasks(&server).await;
     assert!(requests[0].headers.get("authorization").is_none());
     let expected = |topic: &str| {
       json!({
@@ -902,7 +928,7 @@ mod tests {
     // A message without a body carries its title as content
     let ctx = NotifyContext { title: "Only a title".into(), body: "".into(), body_format: NotifyFormat::Markdown, ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    assert_eq!(body_json(&server.received_requests().await.unwrap()[0]), json!({"content": "Only a title"}));
+    assert_eq!(body_json(&tasks(&server).await[0]), json!({"content": "Only a title"}));
   }
 
   #[tokio::test]
@@ -936,12 +962,12 @@ mod tests {
     let ctx = NotifyContext { attachments: vec![attachment], ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = tasks(&server).await;
     assert_eq!(
       body_json(&requests[0]),
       json!({"topic": "a", "content": "photo.jpg", "files": [{"filename": "photo.jpg", "contentType": "image/jpeg", "size": 10, "checksumSha256": "ARHbw5i5TqzaZ1mAnAUFMIaO5+MTszgcL5XOi1UzHFA="}]})
     );
-    assert_eq!(requests[2].body, b"jpeg-bytes");
+    assert_eq!(crate::notify::custom_json::requests_to(&server, "PUT", "/s3/put").await[0].body, b"jpeg-bytes");
   }
 
   #[tokio::test]
@@ -961,7 +987,7 @@ mod tests {
       ..Default::default()
     };
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = tasks(&server).await;
     assert_eq!(
       body_json(&requests[0])["files"][0],
       json!({"filename": "file001.dat", "contentType": "application/octet-stream", "size": 1, "checksumSha256": b64(&Sha256::digest(b"x"))})
@@ -973,13 +999,13 @@ mod tests {
     let ctx = NotifyContext { body: "B".into(), ..Default::default() };
     for (status, body) in [(401, r#"{"error": "authorization_error", "msg": "Invalid API token"}"#), (999, ""), (500, "garbage")] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(2).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1/tasks/json")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(2).mount(&server).await;
       let svc = from_url("spush://token123/a/b").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "status {}", status);
     }
     // An unreadable success response still counts as sent
     let server = MockServer::builder().start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/tasks/json")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).expect(1).mount(&server).await;
     assert!(crate::notify::with_test_base(server.uri(), from_url("spush://token123").unwrap().send(&ctx)).await.unwrap());
   }
 
@@ -1008,7 +1034,7 @@ mod tests {
     // The keys are fetched once
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let requests: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
+    let requests = tasks(&server).await;
     assert!(requests[0].headers.get("api-token").is_none());
     assert_eq!(body_json(&requests[0]), json!({"topic": "site", "content": "Body"}));
     assert_eq!(body_json(&requests[1]), json!({"member": "Alice B", "content": "Body"}));
@@ -1023,13 +1049,17 @@ mod tests {
       json!({"scopes": ["send"], "enabled": true, "adminPubkeyB64": ADMIN_PUBKEY, "wrappedKeys": [{"version": 1, "blob": "AAAA"}]}),
     ] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(response.clone())).mount(&server).await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
+      Mock::given(method("GET"))
+        .and(path("/v1/org/integration/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response.clone()))
+        .mount(&server)
+        .await;
+      Mock::given(method("POST")).and(path("/v1/tasks/json")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
       let svc = from_url(&format!("spush://{}/?broadcast=yes", spi())).unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "{}", response);
     }
     let server = MockServer::builder().start().await;
-    Mock::given(method("GET")).respond_with(ResponseTemplate::new(401)).mount(&server).await;
+    Mock::given(method("GET")).and(path("/v1/org/integration/keys")).respond_with(ResponseTemplate::new(401)).mount(&server).await;
     let svc = from_url(&format!("spush://{}/?broadcast=yes", spi())).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
   }
@@ -1072,7 +1102,7 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     let (key, fingerprint) = sodium::derive_key("secret", "alerts").unwrap();
-    let posts: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
+    let posts = tasks(&server).await;
     let payload = body_json(&posts[0]);
     assert_eq!(payload["topic"], "alerts");
     assert_eq!(payload["encryption"], json!({"type": "personal", "keyFingerprint": fingerprint}));
@@ -1104,7 +1134,7 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     let (key, fingerprint) = sodium::derive_key("secret", "salt123").unwrap();
-    let posts: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
+    let posts = tasks(&server).await;
     let payload = body_json(&posts[0]);
     assert!(payload.get("topic").is_none() && payload.get("title").is_none());
     assert_eq!(payload["encryption"]["keyFingerprint"], fingerprint);
@@ -1135,7 +1165,7 @@ mod tests {
     ] {
       let server = MockServer::builder().start().await;
       Mock::given(method("GET")).and(path("/v1/user")).respond_with(response).mount(&server).await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1/tasks/json")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
       let svc = from_url("spush://secret@token123").unwrap();
       let ctx = NotifyContext { body: "Body".into(), ..Default::default() };
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
@@ -1162,7 +1192,7 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     let key: [u8; 32] = base64::engine::general_purpose::STANDARD.decode(MASTER_KEY).unwrap().try_into().unwrap();
-    let posts: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
+    let posts = tasks(&server).await;
     let payload = body_json(&posts[0]);
     assert_eq!(payload["member"], "Alice");
     assert_eq!(payload["encryption"], json!({"type": "org", "v": 1}));
@@ -1181,5 +1211,26 @@ mod tests {
     assert!(svc.attachment_support());
     assert_eq!(svc.notify_format(), NotifyFormat::Markdown);
     assert_eq!((svc.body_maxlen(), svc.title_maxlen()), (7000, 300));
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second topic fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/v1/tasks/json"))
+      .and(body_partial_json(json!({"topic": "b"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/v1/tasks/json")).respond_with(ResponseTemplate::new(201)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("spush://token123/a/b?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "B".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<Value> =
+      crate::notify::custom_json::requests_to(&server, "POST", "/v1/tasks/json").await.iter().map(|r| body_json(r)["topic"].clone()).collect();
+    assert_eq!(sent, vec![json!("a"), json!("b"), json!("b")]);
   }
 }

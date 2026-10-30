@@ -54,6 +54,7 @@ impl Notify for ServerChan {
     let url = format!("{}/{}.send", service_base("https://sctapi.ftqq.com"), self.token);
     let params = [("title", ctx.title.as_str()), ("desp", ctx.body.as_str())];
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client.post(&url).header("User-Agent", APP_ID).form(&params).send().await?;
     let status = resp.status();
     if status == reqwest::StatusCode::OK {
@@ -131,7 +132,7 @@ mod tests {
   async fn test_send_failure() {
     for code in [500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/12345678.send")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let svc = from_url("schan://12345678").unwrap();
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&NotifyContext::default())).await.is_err());
     }

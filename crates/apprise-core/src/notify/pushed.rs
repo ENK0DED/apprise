@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{parse_list, split_path, unquote};
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -22,9 +22,9 @@ impl Pushed {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // pushed://{app_key}/{app_secret}/{targets}
     let token = |v: &str| v.split_whitespace().next().map(str::to_string);
-    let mut entries = split_path(url);
+    let mut entries = url.path_parts.clone();
     let app_secret = if entries.is_empty() { None } else { Some(entries.remove(0)) };
-    let Some(app_key) = app_secret.as_ref().and(url.host.as_deref()).map(unquote).as_deref().and_then(token) else {
+    let Some(app_key) = app_secret.as_ref().and(url.host.as_deref()).and_then(token) else {
       tracing::warn!("An invalid Pushed Application Key was specified.");
       return None;
     };
@@ -34,9 +34,10 @@ impl Pushed {
     };
 
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      entries.push(to.to_string());
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      entries.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
-    let targets = parse_list(entries, true, true);
+    let targets = parse_list(&entries);
     let (mut channels, mut users) = (Vec::new(), Vec::new());
     for target in &targets {
       if let Some(user) = target.strip_prefix('@').filter(|u| is_name(u)) {
@@ -69,6 +70,7 @@ impl Pushed {
   async fn post(&self, client: &reqwest::Client, payload: &Value) -> bool {
     let url = format!("{}/1/push", service_base("https://api.pushed.co"));
     let Ok(body) = serde_json::to_vec(payload) else { return false };
+    crate::notify::throttle().await;
     match client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/json").body(body).send().await {
       Ok(resp) if resp.status().as_u16() == 200 => {
         tracing::info!("Sent Pushed notification.");
@@ -81,7 +83,7 @@ impl Pushed {
       }
       Err(e) => {
         tracing::warn!("A Connection error occurred sending Pushed notification.");
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         false
       }
     }
@@ -120,17 +122,34 @@ impl Notify for Pushed {
     }
 
     let mut has_error = false;
+    // A retry skips the channels and users that already accepted it
     for channel in &self.channels {
+      let key = format!("alias:{}", channel);
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
       let mut data = payload.clone();
       data["target_type"] = json!("channel");
       data["target_alias"] = json!(channel);
-      has_error |= !self.post(&client, &data).await;
+      if self.post(&client, &data).await {
+        crate::delivery::mark_delivered(&key, false);
+      } else {
+        has_error = true;
+      }
     }
     for user in &self.users {
+      let key = format!("user:{}", user);
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
       let mut data = payload.clone();
       data["target_type"] = json!("pushed_id");
       data["pushed_id"] = json!(user);
-      has_error |= !self.post(&client, &data).await;
+      if self.post(&client, &data).await {
+        crate::delivery::mark_delivered(&key, false);
+      } else {
+        has_error = true;
+      }
     }
     Ok(!has_error)
   }
@@ -140,7 +159,7 @@ impl Notify for Pushed {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{header, method, path};
+  use wiremock::matchers::{body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn keys() -> (String, String) {
@@ -184,11 +203,12 @@ mod tests {
   async fn test_send_targets() {
     let (k, s) = keys();
     let server = MockServer::builder().start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(3).mount(&server).await;
+    Mock::given(method("POST")).and(path("/1/push")).respond_with(ResponseTemplate::new(200)).expect(3).mount(&server).await;
     let svc = from_url(&format!("pushed://{}/{}/@ABCD/%23c2/%23c1", k, s)).unwrap();
     let ctx = NotifyContext { body: "B".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let bodies: Vec<Value> = server.received_requests().await.unwrap().iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect();
+    let bodies: Vec<Value> =
+      crate::notify::custom_json::requests_to(&server, "POST", "/1/push").await.iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect();
     let base = |extra: Value| {
       let mut v = json!({"app_key": k, "app_secret": s, "content": "B"});
       for (key, value) in extra.as_object().unwrap() {
@@ -206,7 +226,7 @@ mod tests {
     let (k, s) = keys();
     for status in [500, 999] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
+      Mock::given(method("POST")).and(path("/1/push")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       let svc = from_url(&format!("pushed://{}/{}/%23c/@u", k, s)).unwrap();
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
@@ -218,5 +238,29 @@ mod tests {
     let details = Pushed::static_details();
     assert_eq!(details.service_name, "Pushed");
     assert_eq!(details.protocols, vec!["pushed"]);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/1/push"))
+      .and(body_partial_json(json!({"pushed_id": "user"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/1/push")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("pushed://{}/{}/%23chan/@user?retry=1&wait=0", "a".repeat(32), "a".repeat(64))));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "B".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<Value> = crate::notify::custom_json::requests_to(&server, "POST", "/1/push")
+      .await
+      .iter()
+      .map(|r| r.body_json::<Value>().unwrap()["target_type"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!("channel"), json!("pushed_id"), json!("pushed_id")]);
   }
 }

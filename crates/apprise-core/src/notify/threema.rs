@@ -1,7 +1,9 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_email, is_phone_no, parse_list, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::email::is_email;
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::phone::is_phone_no;
+use crate::utils::plugin_args::parse_list;
 use async_trait::async_trait;
 
 pub struct Threema {
@@ -24,10 +26,10 @@ fn query_encode(pairs: &[(&str, &str)]) -> String {
 
 impl Threema {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (url_user, _) = url_credentials(url);
     // threema://gateway_id@secret/targets
-    let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
-    let gateway_id = qs("from").or_else(|| qs("gwid")).or_else(|| url_user.clone()).unwrap_or_default();
+    let qs = |key: &str| url.get(key).filter(|v| !v.is_empty());
+    // Upstream unquotes these query values once more
+    let gateway_id = qs("from").or_else(|| qs("gwid")).map(unquote).or_else(|| url.user.clone()).unwrap_or_default();
     if gateway_id.is_empty() {
       tracing::warn!("Threema Gateway ID must be specified");
       return None;
@@ -36,7 +38,7 @@ impl Threema {
       tracing::warn!("Threema Gateway ID must be 8 characters in length");
       return None;
     }
-    let secret = qs("secret").or_else(|| unquoted_host(url)).unwrap_or_default();
+    let secret = qs("secret").map(unquote).or_else(|| url.host.clone()).unwrap_or_default();
     // Upstream validate_regex(): not blank and no leading whitespace
     if secret.chars().next().is_none_or(char::is_whitespace) {
       tracing::warn!("An invalid Threema API Secret was specified");
@@ -46,13 +48,16 @@ impl Threema {
 
     let mut entries = url.path_parts.clone();
     if let Some(to) = qs("to") {
-      entries.extend(parse_list([to], false));
+      // Upstream's URLBase.parse_list() keeps whitespace here and unquotes
+      // each entry
+      entries.extend(parse_list([to], false, true).iter().map(|t| unquote(t)));
     }
     let mut targets = Vec::new();
-    for target in parse_list(&entries, false) {
+    // Upstream splits the targets without breaking on whitespace
+    for target in parse_list(&entries, false, true) {
       if target.chars().count() == 8 {
         targets.push(("to", target));
-      } else if let Some(email) = is_email(&target) {
+      } else if let Some(email) = is_email(&target).map(|e| e.full_email) {
         targets.push(("email", email));
       } else if let Some(phone) = is_phone_no(&target, 10) {
         targets.push(("phone", phone.full));
@@ -107,9 +112,14 @@ impl Notify for Threema {
     let mut has_error = false;
 
     for (key, target) in &self.targets {
+      // A retry skips targets that already accepted the message
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       // Everything travels in the query string; the body is empty
       let query = query_encode(&[("secret", &self.secret), ("from", &self.gateway_id), ("text", &ctx.body), (key, target)]);
       tracing::debug!("Threema Gateway GET URL: {} (cert_verify={})", base, self.verify_certificate);
+      crate::notify::throttle().await;
       let result = client
         .post(format!("{}?{}", base, query))
         .header("User-Agent", APP_ID)
@@ -118,7 +128,10 @@ impl Notify for Threema {
         .send()
         .await;
       match result {
-        Ok(resp) if resp.status() == reqwest::StatusCode::OK => tracing::info!("Sent Threema Gateway notification to {}", target),
+        Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
+          tracing::info!("Sent Threema Gateway notification to {}", target);
+          crate::delivery::mark_delivered(target, false);
+        }
         Ok(resp) => {
           let status = resp.status();
           tracing::warn!(
@@ -132,7 +145,7 @@ impl Notify for Threema {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Threema Gateway:{} notification", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -234,7 +247,7 @@ mod tests {
     let svc = from_url("threema://*THEGWID@sec%2Fret/ECHOECHO/16134443333/user@example.com").unwrap();
     let ctx = NotifyContext { body: "title\r\nHé ~*".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let req = &server.received_requests().await.unwrap()[0];
+    let req = &crate::notify::custom_json::requests_to(&server, "POST", "/send_simple").await[0];
     assert!(req.body.is_empty());
     assert_eq!(req.url.query().unwrap(), "secret=sec%2Fret&from=%2ATHEGWID&text=title%0D%0AH%C3%A9+~%2A&phone=16134443333");
   }
@@ -244,9 +257,34 @@ mod tests {
     let ctx = NotifyContext { body: "b".into(), ..Default::default() };
     assert!(!threema("threema://*THEGWID@secret").send(&ctx).await.unwrap());
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(401)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/send_simple")).respond_with(ResponseTemplate::new(401)).expect(1).mount(&server).await;
     let svc = from_url("threema://*THEGWID@secret/16134443333").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The phone number fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/send_simple"))
+      .and(query_param("phone", "16134443333"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/send_simple")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("threema://*THEGWID@secret/ECHOECHO/16134443333?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "b".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<String> = crate::notify::custom_json::requests_to(&server, "POST", "/send_simple")
+      .await
+      .iter()
+      .map(|r| r.url.query_pairs().find(|(k, _)| k == "to" || k == "phone").unwrap().1.into_owned())
+      .collect();
+    // Targets are sorted, so the phone number goes first
+    assert_eq!(sent, vec!["16134443333", "ECHOECHO", "16134443333"]);
   }
 }

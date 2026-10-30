@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 use async_trait::async_trait;
 
 const GATEWAYS: &[&str] = &["high", "economy", "low", "direct"];
@@ -30,10 +30,10 @@ fn query_encode(pairs: &[(&str, &str)]) -> String {
 
 impl SmsManager {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (url_user, _) = url_credentials(url);
     // smsmgr://apikey@target/targets
-    let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty());
-    let apikey = qs("key").map(str::to_string).or_else(|| url_user.clone()).unwrap_or_default();
+    let qs = |key: &str| url.get(key).filter(|v| !v.is_empty());
+    // Upstream unquotes these query values once more
+    let apikey = qs("key").map(unquote).or_else(|| url.user.clone()).unwrap_or_default();
     // Upstream validate_regex(): not blank and no leading whitespace
     if apikey.chars().next().is_none_or(char::is_whitespace) {
       tracing::warn!("An invalid API Key was specified.");
@@ -41,23 +41,23 @@ impl SmsManager {
     }
     let apikey = apikey.trim().to_string();
 
-    let gateway = qs("gateway").map(str::to_lowercase).unwrap_or_else(|| GATEWAYS[0].to_string());
+    let gateway = qs("gateway").map(|g| unquote(g).to_lowercase()).unwrap_or_else(|| GATEWAYS[0].to_string());
     if !GATEWAYS.contains(&gateway.as_str()) {
       tracing::warn!("The Gateway specified ({}) is invalid.", gateway);
       return None;
     }
     // Sender names are capped at 11 characters
-    let sender = qs("from").or_else(|| qs("sender")).map(|s| s.chars().take(11).collect());
+    let sender = qs("from").or_else(|| qs("sender")).map(|s| unquote(s).chars().take(11).collect());
     let batch = url.get("batch").map(parse_bool).unwrap_or(false);
 
     // The host is the first target
-    let mut entries = parse_phone_no(unquoted_host(url), false);
+    let mut entries = parse_phone_no(url.host.as_slice());
     entries.extend(url.path_parts.iter().cloned());
     if let Some(to) = qs("to") {
-      entries.extend(parse_phone_no([to], false));
+      entries.extend(parse_phone_no(&[to]));
     }
     let mut targets = Vec::new();
-    for target in parse_phone_no(&entries, false) {
+    for target in parse_phone_no(&entries) {
       match is_phone_no(&target, 9) {
         Some(phone) => targets.push(if target.trim_start().starts_with('+') { format!("+{}", phone.full) } else { phone.full }),
         None => tracing::warn!("Dropped invalid phone # ({}) specified.", target),
@@ -112,14 +112,22 @@ impl Notify for SmsManager {
 
     for chunk in self.targets.chunks(batch_size) {
       let number = chunk.join(";");
+      // A retry skips targets that already accepted the message
+      if crate::delivery::is_delivered(&number, false) {
+        continue;
+      }
       let p_target = if batch_size == 1 { number.clone() } else { format!("{} targets", chunk.len()) };
       let mut params = vec![("apikey", self.apikey.as_str()), ("gateway", self.gateway.as_str()), ("number", number.as_str()), ("message", ctx.body.as_str())];
       if let Some(sender) = &self.sender {
         params.push(("sender", sender.as_str()));
       }
       tracing::debug!("SMS Manager POST URL: {} (cert_verify={})", base, self.verify_certificate);
+      crate::notify::throttle().await;
       match client.get(format!("{}?{}", base, query_encode(&params))).header("User-Agent", APP_ID).send().await {
-        Ok(resp) if resp.status() == reqwest::StatusCode::OK => tracing::info!("Sent SMS Manager notification to {}.", p_target),
+        Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
+          tracing::info!("Sent SMS Manager notification to {}.", p_target);
+          crate::delivery::mark_delivered(&number, false);
+        }
         Ok(resp) => {
           let status = resp.status();
           tracing::warn!(
@@ -133,7 +141,7 @@ impl Notify for SmsManager {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending SMS Manager: to {} ", p_target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -231,6 +239,7 @@ mod tests {
   async fn test_send_batch_with_sender() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
+      .and(path("/Send"))
       .and(query_param("gateway", "low"))
       .and(query_param("number", "+15551231234;15551231235"))
       .and(query_param("message", "Hi there~*"))
@@ -242,7 +251,7 @@ mod tests {
     let svc = from_url("smsmgr://keyabc@+15551231234/15551231235?from=MySenderNameXYZ&gateway=LOW&batch=yes").unwrap();
     let ctx = NotifyContext { body: "Hi there~*".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = crate::notify::custom_json::requests_to(&server, "GET", "/Send").await;
     let req = requests.iter().find(|r| r.url.path() == "/Send").unwrap();
     assert_eq!(req.url.query().unwrap(), "apikey=keyabc&gateway=low&number=%2B15551231234%3B15551231235&message=Hi+there~%2A&sender=MySenderNam");
   }
@@ -253,10 +262,46 @@ mod tests {
     assert!(!mgr(&format!("smsmgr://{}@{}", "b".repeat(10), "3".repeat(5))).send(&ctx).await.unwrap());
 
     let server = MockServer::start().await;
-    Mock::given(method("GET")).and(query_param("number", "15551231234")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
-    Mock::given(method("GET")).and(query_param("number", "15551231235")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    Mock::given(method("GET"))
+      .and(path("/Send"))
+      .and(query_param("number", "15551231234"))
+      .respond_with(ResponseTemplate::new(500))
+      .expect(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("GET"))
+      .and(path("/Send"))
+      .and(query_param("number", "15551231235"))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
     let svc = from_url("smsmgr://keyabc@15551231234/15551231235").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("GET"))
+      .and(path("/Send"))
+      .and(query_param("number", "15551232222"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("GET")).and(path("/Send")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("smsmgr://{}@15551231111/15551232222?retry=1&wait=0", "a".repeat(10))));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "b".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<String> = crate::notify::custom_json::requests_to(&server, "GET", "/Send")
+      .await
+      .iter()
+      .map(|r| r.url.query_pairs().find(|(k, _)| k == "number").unwrap().1.into_owned())
+      .collect();
+    assert_eq!(sent, vec!["15551231111", "15551232222", "15551232222"]);
   }
 }

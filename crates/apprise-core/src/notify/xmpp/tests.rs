@@ -295,13 +295,28 @@ async fn serve_session<S: XmppStream>(link: &mut Link<S>, record: &mut Record) {
   }
 }
 
+/// Accept the next connection that opens an XMPP stream or a TLS
+/// handshake. Other local processes probe random ports, so anything else
+/// is dropped.
+async fn accept_client(listener: &tokio::net::TcpListener) -> tokio::net::TcpStream {
+  loop {
+    let (tcp, _) = listener.accept().await.unwrap();
+    let mut first = [0u8; 1];
+    if let Ok(Ok(1)) = tokio::time::timeout(std::time::Duration::from_secs(5), tcp.peek(&mut first)).await
+      && matches!(first[0], b'<' | 0x16)
+    {
+      return tcp;
+    }
+  }
+}
+
 /// A scripted XMPP server for one connection.
 async fn xmpp_server(cfg: ServerConfig) -> (u16, tokio::task::JoinHandle<Record>) {
   let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
   let port = listener.local_addr().unwrap().port();
   let handle = tokio::spawn(async move {
     let mut record = Record::default();
-    let (tcp, _) = listener.accept().await.unwrap();
+    let tcp = accept_client(&listener).await;
     let mechanisms: String = cfg.mechanisms.iter().map(|m| format!("<mechanism>{}</mechanism>", m)).collect();
     let cb = cfg
       .cb_types

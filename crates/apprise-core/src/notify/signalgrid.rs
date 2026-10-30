@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 
 use crate::error::NotifyError;
-use crate::notify::messaging_targets::{parse_list, unquote, validate_token};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyType;
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
+use crate::utils::qsd::validate_token;
 
 /// Signalgrid push notifications (`signalgrid://{client_key}/{channels}`).
 pub struct Signalgrid {
@@ -20,8 +21,8 @@ impl Signalgrid {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // ?client_key= overrides the hostname-derived value
     let client_key = match url.get("client_key").filter(|k| !k.is_empty()) {
-      Some(key) => key.to_string(),
-      None => url.host.as_deref().map(unquote).unwrap_or_default(),
+      Some(key) => unquote(key),
+      None => url.host.clone().unwrap_or_default(),
     };
     let Some(client_key) = validate_token(&client_key) else {
       tracing::warn!("An invalid Signalgrid Client Key was specified.");
@@ -30,7 +31,8 @@ impl Signalgrid {
 
     let mut channels = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      channels.extend(parse_list(&[to]));
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      channels.extend(parse_list(&[to]).iter().map(|c| unquote(c)));
     }
 
     // No channels is valid at load time; send() simply has nothing to notify
@@ -96,6 +98,10 @@ impl Notify for Signalgrid {
     let mut has_error = false;
 
     for channel in &self.targets {
+      // A retry skips channels that already accepted the message
+      if crate::delivery::is_delivered(channel, false) {
+        continue;
+      }
       let form = [
         ("client_key", self.client_key.as_str()),
         ("channel", channel.as_str()),
@@ -108,9 +114,11 @@ impl Notify for Signalgrid {
       // Never log the client key or channel token
       tracing::debug!("Signalgrid Payload: title={:?}, type={}, critical={}", ctx.title, form[4].1, critical);
 
+      crate::notify::throttle().await;
       match client.post(&url).header("User-Agent", APP_ID).form(&form).send().await {
         Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
           tracing::info!("Sent Signalgrid notification.");
+          crate::delivery::mark_delivered(channel, false);
         }
         Ok(resp) => {
           tracing::warn!("Failed to send Signalgrid notification: error={}.", resp.status().as_u16());
@@ -119,7 +127,7 @@ impl Notify for Signalgrid {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Signalgrid notification.");
-          tracing::debug!("Socket Exception: {}", e.without_url());
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -134,7 +142,7 @@ mod tests {
   use super::*;
   use crate::notify::Attachment;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::matchers::{body_string, body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> Option<Signalgrid> {
@@ -208,6 +216,7 @@ mod tests {
     {
       let server = MockServer::start().await;
       Mock::given(method("POST"))
+        .and(path("/v1/push"))
         .and(body_string(format!("client_key=CLIENTKEY&channel=CHANNEL&title=Test&body=Test&type={}&critical=false", expected)))
         .respond_with(ResponseTemplate::new(200))
         .expect(1)
@@ -222,12 +231,14 @@ mod tests {
   async fn test_multi_channel_and_partial_failure() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v1/push"))
       .and(body_string("client_key=CLIENTKEY&channel=CHANNEL1&title=Test&body=Test&type=INFO&critical=false"))
       .respond_with(ResponseTemplate::new(500).set_body_string("error"))
       .expect(1)
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path("/v1/push"))
       .and(body_string("client_key=CLIENTKEY&channel=CHANNEL2&title=Test&body=Test&type=INFO&critical=false"))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -247,7 +258,7 @@ mod tests {
 
     for status in [500, 204] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1/push")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url("signalgrid://CLIENTKEY/CHANNEL").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("T", "B", NotifyType::Info))).await.unwrap(), "status {}", status);
     }
@@ -260,6 +271,7 @@ mod tests {
   async fn test_attachments_are_ignored() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v1/push"))
       .and(body_string("client_key=CLIENTKEY&channel=CHANNEL&title=Test&body=Test&type=INFO&critical=false"))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -269,5 +281,29 @@ mod tests {
     let mut ctx = ctx("Test", "Test", NotifyType::Info);
     ctx.attachments.push(Attachment { name: "a.gif".into(), data: vec![1, 2, 3], mime_type: "image/gif".into() });
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second channel fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/v1/push"))
+      .and(body_string_contains("channel=CHANNEL2"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/v1/push")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("signalgrid://CLIENTKEY/CHANNEL1/CHANNEL2?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("t", "b", NotifyType::Info))).await.is_success());
+    let sent: Vec<String> = crate::notify::custom_json::requests_to(&server, "POST", "/v1/push")
+      .await
+      .iter()
+      .map(|r| url::form_urlencoded::parse(&r.body).find(|(k, _)| k == "channel").unwrap().1.into_owned())
+      .collect();
+    assert_eq!(sent, vec!["CHANNEL1", "CHANNEL2", "CHANNEL2"]);
   }
 }

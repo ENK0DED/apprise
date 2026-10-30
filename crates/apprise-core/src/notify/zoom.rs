@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
 
 /// How the message is delivered to the Zoom Team Chat webhook.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,21 +41,20 @@ pub struct Zoom {
 
 impl Zoom {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // https://inbots.zoom.us/incoming/hook/{webhook_id}?token={token}
-    if url.schema == "http" || url.schema == "https" {
-      return Self::from_url(&ParsedUrl::parse(&native_url(&url.raw)?)?);
-    }
+    // zoom://{webhook_id}/{token}; the registry turns the native
+    // https://inbots.zoom.us/incoming/hook/{webhook_id}?token={token} into this
+    let webhook_id = url.host.as_deref()?.trim().to_string();
 
-    let webhook_id = unquote(url.host.as_deref()?).trim().to_string();
     if webhook_id.is_empty() || !webhook_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') {
       tracing::warn!("A Zoom webhook ID must be specified and contain only alphanumeric, hyphen, or underscore characters.");
       return None;
     }
 
-    // The first path entry is the verification token; ?token= overrides it
-    let mut token = split_path(&url.path).into_iter().next();
+    // The first path entry is the verification token; ?token= overrides it.
+    // Upstream unquotes both once more.
+    let mut token = url.path_parts.first().map(|t| unquote(t));
     if let Some(t) = url.get("token").filter(|t| !t.is_empty()) {
-      token = Some(t.to_string());
+      token = Some(unquote(t));
     }
     let token = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     let Some(token) = token else {
@@ -65,7 +64,7 @@ impl Zoom {
 
     let mode = match url.get("mode").filter(|m| !m.is_empty()) {
       None => ZoomMode::Full,
-      Some(m) => match ZoomMode::parse(m) {
+      Some(m) => match ZoomMode::parse(&unquote(m)) {
         Some(mode) => mode,
         None => {
           tracing::warn!("The Zoom mode ({}) is invalid.", m);
@@ -89,37 +88,6 @@ impl Zoom {
   }
 }
 
-/// Upstream `parse_native_url`: `https://inbots.zoom.us/incoming/hook/{id}[/][?params]`
-/// becomes `zoom://{id}/[?params]`; the token then comes from `?token=`.
-fn native_url(raw: &str) -> Option<String> {
-  let rest = strip_prefix_ci(raw, "https://").or_else(|| strip_prefix_ci(raw, "http://"))?;
-  let (before, params) = match rest.find('?') {
-    Some(i) if i + 1 < rest.len() => (&rest[..i], &rest[i..]),
-    Some(_) => return None,
-    None => (rest, ""),
-  };
-  let before = before.strip_suffix('/').unwrap_or(before);
-  let webhook_id = strip_prefix_ci(before, "inbots.zoom.us/incoming/hook/")?;
-  if webhook_id.is_empty() || !webhook_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') {
-    return None;
-  }
-  Some(format!("zoom://{}/{}", webhook_id, params))
-}
-
-fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-  if s.len() >= prefix.len() && s.is_char_boundary(prefix.len()) && s[..prefix.len()].eq_ignore_ascii_case(prefix) { Some(&s[prefix.len()..]) } else { None }
-}
-
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
-/// Upstream `URLBase.split_path`: split on whitespace, commas and slashes,
-/// then unquote each entry.
-fn split_path(path: &str) -> Vec<String> {
-  path.split([' ', '\t', '\r', '\n', ',', '\\', '/']).filter(|s| !s.is_empty()).map(unquote).collect()
-}
-
 #[async_trait]
 impl Notify for Zoom {
   fn schemas(&self) -> &[&str] {
@@ -139,6 +107,10 @@ impl Notify for Zoom {
   }
   fn title_maxlen(&self) -> usize {
     250
+  }
+  /// Zoom shows title and body together, so both count against the limit
+  fn overflow_amalgamate_title(&self) -> bool {
+    true
   }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
@@ -166,10 +138,11 @@ impl Notify for Zoom {
       }
     };
 
+    crate::notify::throttle().await;
     let resp = match req.send().await {
       Ok(r) => r,
       Err(e) => {
-        tracing::warn!("A Connection error occurred sending Zoom notification: {}", e.without_url());
+        tracing::warn!("A Connection error occurred sending Zoom notification: {}", crate::error::loggable_http_error(&e));
         return Ok(false);
       }
     };
@@ -206,7 +179,7 @@ mod tests {
   /// The POSTs this test sent; other processes probing localhost ports can
   /// reach a mock server too, so anything else is ignored.
   async fn received(server: &MockServer) -> Vec<wiremock::Request> {
-    server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect()
+    crate::notify::custom_json::requests_to(server, "POST", &format!("/incoming/hook/{}", WEBHOOK_ID)).await
   }
 
   const WEBHOOK_ID: &str = "abcHook123";
@@ -260,7 +233,9 @@ mod tests {
     assert_eq!(obj.mode, ZoomMode::Simple);
     assert_eq!(parse(&format!("zoom://{}/{}?mode=f", WEBHOOK_ID, TOKEN)).unwrap().mode, ZoomMode::Full);
 
-    let obj = parse(&format!("https://inbots.zoom.us/incoming/hook/{}?token={}&mode=simple", WEBHOOK_ID, TOKEN)).unwrap();
+    // The registry converts the native webhook URL
+    let native = format!("https://inbots.zoom.us/incoming/hook/{}?token={}&mode=simple", WEBHOOK_ID, TOKEN);
+    let obj = parse(&crate::notify::registry::NATIVE_URLS.iter().find_map(|n| (n.convert)(&native)).unwrap()).unwrap();
     assert_eq!(obj.webhook_id, WEBHOOK_ID);
     assert_eq!(obj.token, TOKEN);
     assert_eq!(obj.mode, ZoomMode::Simple);
@@ -271,6 +246,7 @@ mod tests {
     let svc = from_url(&format!("zoom://{}/{}", WEBHOOK_ID, TOKEN)).unwrap();
     assert_eq!(svc.body_maxlen(), 4000);
     assert_eq!(svc.title_maxlen(), 250);
+    assert!(svc.overflow_amalgamate_title());
     assert!(!svc.attachment_support());
   }
 
@@ -298,6 +274,7 @@ mod tests {
   async fn test_send_full_without_title() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path(format!("/incoming/hook/{}", WEBHOOK_ID)))
       .and(body_json(json!({ "content": { "body": [{ "type": "message", "text": "B" }] } })))
       .respond_with(ResponseTemplate::new(204))
       .expect(1)
@@ -334,7 +311,13 @@ mod tests {
   #[tokio::test]
   async fn test_send_simple_without_title() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).and(body_string("B")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path(format!("/incoming/hook/{}", WEBHOOK_ID)))
+      .and(body_string("B"))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
 
     let svc = from_url(&format!("zoom://{}/{}?mode=simple", WEBHOOK_ID, TOKEN)).unwrap();
     let ctx = NotifyContext { body: "B".into(), ..Default::default() };
@@ -346,7 +329,12 @@ mod tests {
     for mode in ["full", "simple"] {
       for status in [401u16, 500, 999] {
         let server = MockServer::start().await;
-        Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+        Mock::given(method("POST"))
+          .and(path(format!("/incoming/hook/{}", WEBHOOK_ID)))
+          .respond_with(ResponseTemplate::new(status))
+          .expect(1)
+          .mount(&server)
+          .await;
         let svc = from_url(&format!("zoom://{}/{}?mode={}", WEBHOOK_ID, TOKEN, mode)).unwrap();
         let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
         assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "{} {}", mode, status);

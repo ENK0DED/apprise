@@ -11,8 +11,9 @@ mod xml;
 
 use crate::error::NotifyError;
 use crate::notify::{Notify, NotifyContext, ServiceDetails};
+use crate::utils::email::parse_list;
 use crate::utils::parse::ParsedUrl;
-use crate::utils::url_args::{has_invalid_port, parse_bool_with_default, parse_list, split_path, url_credentials};
+use crate::utils::parse::{parse_bool, parse_bool_or, unquote};
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -89,11 +90,10 @@ pub struct Xmpp {
 
 impl Xmpp {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    if has_invalid_port(&url.raw) {
-      return None;
-    }
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
-    let (user, password) = url_credentials(url);
+    // Upstream parses this URL with host verification, which also refuses
+    // a port that is not a number
+    let host = url.verified_host()?;
+    let (user, password) = (url.user.clone(), url.password.clone());
     let user = user.unwrap_or_default();
 
     let Some((jid, _)) = normalize_jid(&user, &host) else {
@@ -101,9 +101,11 @@ impl Xmpp {
       return None;
     };
 
-    let mut entries = split_path(url);
+    // Upstream unquotes the path entries and ?to= once more (and its
+    // URLBase.parse_list() each entry of ?to= again)
+    let mut entries: Vec<String> = url.path_parts.iter().map(|t| unquote(t)).collect();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      entries.extend(parse_list(&[to]));
+      entries.extend(parse_list(&[unquote(to)]).iter().map(|t| unquote(t)));
     }
     let mut targets = Vec::new();
     for entry in parse_list(&entries) {
@@ -134,12 +136,10 @@ impl Xmpp {
       mode
     };
 
-    let flag = |key: &str, default: bool| url.get(key).filter(|v| !v.is_empty()).map(|v| parse_bool_with_default(v, false)).unwrap_or(default);
+    let flag = |key: &str, default: bool| url.get(key).filter(|v| !v.is_empty()).map(parse_bool).unwrap_or(default);
     let name = url.get("name").filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).map(str::to_string);
-    let port = match url.get("port") {
-      Some(p) => Some(p.trim().parse::<u16>().ok().filter(|p| *p > 0)?),
-      None => url.port,
-    };
+    // ParsedUrl has applied ?port= already
+    let port = url.port.filter(|p| *p > 0);
     let cto = crate::utils::socket::url_timeouts(url).connect_timeout().unwrap_or(Duration::from_secs(4));
 
     Some(Self {
@@ -155,7 +155,7 @@ impl Xmpp {
       roster: flag("roster", false),
       subject: flag("subject", false),
       keepalive: flag("keepalive", false),
-      scramplus: url.get("scramplus").filter(|v| !v.is_empty()).map(|v| parse_bool_with_default(v, true)).unwrap_or(true),
+      scramplus: url.get("scramplus").filter(|v| !v.is_empty()).map(|v| parse_bool_or(v, true)).unwrap_or(true),
       name,
       timeout: cto.max(Duration::from_secs(5)),
       session: tokio::sync::Mutex::new(None),
@@ -352,7 +352,7 @@ impl Xmpp {
   }
 
   /// Send the notification on an established session.
-  async fn deliver(&self, session: &mut Session, app_id: &str, subject: &str, body: &str) -> Result<(), Failure> {
+  async fn deliver(&self, session: &mut Session, targets: &[Target], app_id: &str, subject: &str, body: &str) -> Result<(), Failure> {
     let link = &mut session.link;
     if !session.greeted {
       session.greeted = true;
@@ -365,7 +365,7 @@ impl Xmpp {
     }
 
     let own = [Target { jid: self.jid.clone(), muc: false }];
-    let targets = if self.targets.is_empty() { &own[..] } else { &self.targets[..] };
+    let targets = if self.targets.is_empty() { &own[..] } else { targets };
     let nick = self.name.clone().filter(|n| !n.is_empty()).or_else(|| Some(self.user.clone()).filter(|u| !u.is_empty())).unwrap_or_else(|| app_id.to_string());
     for target in targets {
       if target.muc {
@@ -398,16 +398,16 @@ impl Xmpp {
     Ok(())
   }
 
-  async fn send_once(&self, app_id: &str, subject: &str, body: &str) -> Result<(), Failure> {
+  async fn send_once(&self, targets: &[Target], app_id: &str, subject: &str, body: &str) -> Result<(), Failure> {
     let mut session = self.establish().await?;
-    let result = self.deliver(&mut session, app_id, subject, body).await;
+    let result = self.deliver(&mut session, targets, app_id, subject, body).await;
     // Close the stream only after everything was written, and give the
     // server a moment to process it before the socket goes away.
     session.link.close().await;
     result
   }
 
-  async fn send_keepalive(&self, app_id: &str, subject: &str, body: &str) -> Result<(), Failure> {
+  async fn send_keepalive(&self, targets: &[Target], app_id: &str, subject: &str, body: &str) -> Result<(), Failure> {
     let mut held = self.session.lock().await;
     if let Some(session) = held.as_mut()
       && !session.link.still_open().await
@@ -418,7 +418,7 @@ impl Xmpp {
       *held = Some(self.establish().await?);
     }
     let session = held.as_mut().expect("session was just established");
-    let result = self.deliver(session, app_id, subject, body).await;
+    let result = self.deliver(session, targets, app_id, subject, body).await;
     if result.is_err() {
       *held = None;
     }
@@ -730,8 +730,17 @@ impl Notify for Xmpp {
       self.targets.iter().map(|t| &t.jid).collect::<Vec<_>>()
     );
 
+    // A retry only sends to the targets that did not get the message yet
+    let targets: Vec<Target> = self.targets.iter().filter(|t| !crate::delivery::is_delivered(&t.jid, false)).cloned().collect();
+    if !self.targets.is_empty() && targets.is_empty() {
+      return Ok(true);
+    }
+
+    crate::notify::throttle().await;
     let app_id = &ctx.asset.app_id;
-    let attempt = async { if self.keepalive { self.send_keepalive(app_id, &subject, &body).await } else { self.send_once(app_id, &subject, &body).await } };
+    let attempt = async {
+      if self.keepalive { self.send_keepalive(&targets, app_id, &subject, &body).await } else { self.send_once(&targets, app_id, &subject, &body).await }
+    };
     let result = match tokio::time::timeout(self.timeout, attempt).await {
       Ok(result) => result,
       Err(_) => {
@@ -742,7 +751,12 @@ impl Notify for Xmpp {
       }
     };
     match result {
-      Ok(()) => Ok(true),
+      Ok(()) => {
+        for target in &targets {
+          crate::delivery::mark_delivered(&target.jid, false);
+        }
+        Ok(true)
+      }
       Err(Failure::Auth { channel_binding: true, reason }) => {
         if self.scramplus {
           tracing::warn!(

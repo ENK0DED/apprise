@@ -6,8 +6,8 @@ use tokio::sync::Mutex;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyFormat;
-use crate::utils::parse::ParsedUrl;
-use crate::utils::validate::is_email;
+use crate::utils::email::{is_email, parse_list};
+use crate::utils::parse::{ParsedUrl, unquote};
 
 const TWIST_API: &str = "https://api.twist.com";
 
@@ -41,7 +41,8 @@ impl Twist {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // twist://{password}:{user}@{domain}/{targets}
     // twist://{user}@{domain}/{password}/{targets}
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    // Upstream parses this URL with host verification
+    let host = url.verified_host()?;
     let user = url.user.clone().filter(|u| !u.is_empty())?;
     let mut targets = url.path_parts.clone();
 
@@ -57,14 +58,15 @@ impl Twist {
       }
     };
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      targets.push(to.to_string());
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      targets.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
 
     let email = format!("{}@{}", user, host);
-    if !is_email(&email) {
+    let Some(email) = is_email(&email).map(|e| e.full_email) else {
       tracing::warn!("The Twist Auth email specified ({}) is invalid.", email);
       return None;
-    }
+    };
     if password.is_empty() {
       tracing::warn!("No Twist password was specified with account: {}", email);
       return None;
@@ -123,11 +125,12 @@ impl Twist {
       if let Some(body) = &body {
         builder = builder.body(body.clone());
       }
+      crate::notify::throttle().await;
       let r = match builder.send().await {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("Exception received when sending Twist POST to {}", url);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           return (false, json!({}));
         }
       };
@@ -257,6 +260,9 @@ impl Notify for Twist {
   fn body_maxlen(&self) -> usize {
     1000
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    0.2
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let client = build_client(self.verify_certificate)?;
@@ -279,12 +285,17 @@ impl Notify for Twist {
       let Some((_, channel)) = channel_id_parts(&name) else { continue };
       // Upstream sends the channel as an integer (leading zeros dropped)
       let channel_id = channel.parse::<u128>().map(|n| n.to_string()).unwrap_or_else(|_| channel.to_string());
+      // A retry skips channels that already accepted the message
+      if crate::delivery::is_delivered(&channel_id, false) {
+        continue;
+      }
       let (ok, _) = self.fetch(&client, &mut state, "threads/add", &[("channel_id", &channel_id), ("title", &ctx.title), ("content", &ctx.body)], false).await;
       if !ok {
         has_error = true;
         continue;
       }
       tracing::info!("Sent Twist notification to {}.", name);
+      crate::delivery::mark_delivered(&channel_id, false);
     }
     Ok(!has_error)
   }
@@ -337,25 +348,11 @@ fn is_truthy(v: &Value) -> bool {
   }
 }
 
-/// Upstream `parse_list()`: split on `[]`, `;`, `,` and whitespace, then
-/// de-duplicate and sort.
-fn parse_list(items: &[String]) -> Vec<String> {
-  let mut out: Vec<String> = items
-    .iter()
-    .flat_map(|i| i.split(|c: char| c == '[' || c == ']' || c == ';' || c == ',' || c.is_whitespace()))
-    .filter(|t| !t.is_empty())
-    .map(String::from)
-    .collect();
-  out.sort();
-  out.dedup();
-  out
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::matchers::{body_string, body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse_twist(url: &str) -> Twist {
@@ -458,9 +455,8 @@ mod tests {
     let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
-    let mut posted: Vec<String> =
-      reqs.iter().filter(|r| r.url.path() == "/api/v3/threads/add").map(|r| String::from_utf8_lossy(&r.body).into_owned()).collect();
+    let reqs = crate::notify::custom_json::requests_to(&server, "POST", "/api/v3/threads/add").await;
+    let mut posted: Vec<String> = reqs.iter().map(|r| String::from_utf8_lossy(&r.body).into_owned()).collect();
     posted.sort();
     assert_eq!(posted, vec!["channel_id=1&title=t&content=b", "channel_id=2&title=t&content=b"]);
 
@@ -483,7 +479,7 @@ mod tests {
     let svc = from_url("twist://password:user@example.com/42").unwrap();
     let ctx = NotifyContext { body: "b".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let logins = server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/api/v3/users/login").count();
+    let logins = crate::notify::custom_json::requests_to(&server, "POST", "/api/v3/users/login").await.len();
     assert_eq!(logins, 2);
   }
 
@@ -519,5 +515,32 @@ mod tests {
     assert_eq!(details.service_name, "Twist");
     assert!(details.protocols.contains(&"twist"));
     assert!(!details.attachment_support);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    mount_login(&server).await;
+    // The second channel fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/api/v3/threads/add"))
+      .and(body_string_contains("channel_id=456"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/api/v3/threads/add")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("twist://password:user@example.com/123:456/123:789?retry=1&wait=0"));
+    assert!(
+      crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() })).await.is_success()
+    );
+    let sent: Vec<String> = crate::notify::custom_json::requests_to(&server, "POST", "/api/v3/threads/add")
+      .await
+      .iter()
+      .map(|r| String::from_utf8_lossy(&r.body).split('&').next().unwrap().to_string())
+      .collect();
+    assert_eq!(sent, vec!["channel_id=789", "channel_id=456", "channel_id=456"]);
   }
 }

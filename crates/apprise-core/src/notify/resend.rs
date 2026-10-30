@@ -3,15 +3,11 @@ use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client,
 use crate::types::NotifyFormat;
 use crate::utils::email::{formataddr, is_email, parse_emails_all, parse_list, valid_addresses};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd::{Qsd, unquote};
+use crate::utils::qsd::unquote;
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::json;
 use std::collections::HashMap;
-use std::time::Duration;
-
-/// Pause between requests (upstream `request_rate_per_sec`).
-const THROTTLE: Duration = Duration::from_millis(200);
 
 /// Resend rejects an empty subject.
 const DEFAULT_EMPTY_SUBJECT: &str = "<no subject>";
@@ -25,7 +21,6 @@ pub struct Resend {
   bcc: Vec<String>,
   reply_to: Vec<String>,
   names: HashMap<String, Option<String>>,
-  throttle: Duration,
   verify_certificate: bool,
   tags: Vec<String>,
 }
@@ -34,16 +29,16 @@ impl Resend {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // resend://{apikey}:{from_user}@{from_domain}/{targets}
     // resend://{apikey}@{target}?from={from}
-    let qsd = Qsd::from_url(url);
-    let apikey = qsd.value("apikey").map(unquote).unwrap_or_else(|| url.user.clone().unwrap_or_default());
+    let qsd = |key: &str| url.get(key).filter(|v| !v.is_empty());
+    let apikey = qsd("apikey").map(unquote).unwrap_or_else(|| url.user.clone().unwrap_or_default());
     if apikey.is_empty() || !apikey.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
       tracing::warn!("An invalid Resend API Key was specified.");
       return None;
     }
 
-    let host = unquote(url.host.as_deref().unwrap_or_default());
+    let host = url.host.clone().unwrap_or_default();
     let mut raw_targets = Vec::new();
-    let mut from = match qsd.value("from") {
+    let mut from = match qsd("from") {
       Some(from) => {
         // The host is a recipient when ?from= names the sender
         if !host.is_empty() {
@@ -53,7 +48,7 @@ impl Resend {
       }
       None => format!("{}@{}", url.password.clone().filter(|p| !p.is_empty()).or_else(|| url.user.clone()).unwrap_or_default(), host),
     };
-    if let Some(name) = qsd.value("name") {
+    if let Some(name) = qsd("name") {
       from = formataddr(Some(&unquote(name)), &from);
     }
     let Some(sender) = is_email(&from) else {
@@ -62,7 +57,7 @@ impl Resend {
     };
 
     raw_targets.extend(url.path_parts.iter().cloned());
-    if let Some(to) = qsd.value("to") {
+    if let Some(to) = qsd("to") {
       raw_targets.extend(parse_list(&[to]));
     }
     let raw_targets = parse_emails_all(&raw_targets);
@@ -83,9 +78,9 @@ impl Resend {
       }
       list
     };
-    let cc = collect(qsd.value("cc").map(|v| parse_list(&[v])).unwrap_or_default(), "Carbon Copy", true);
-    let bcc = collect(qsd.value("bcc").map(|v| parse_list(&[v])).unwrap_or_default(), "Blind Carbon Copy", false);
-    let reply_to = collect(qsd.value("reply").map(|v| vec![v.to_string()]).unwrap_or_default(), "Reply To", true);
+    let cc = collect(qsd("cc").map(|v| parse_list(&[v])).unwrap_or_default(), "Carbon Copy", true);
+    let bcc = collect(qsd("bcc").map(|v| parse_list(&[v])).unwrap_or_default(), "Blind Carbon Copy", false);
+    let reply_to = collect(qsd("reply").map(|v| vec![v.to_string()]).unwrap_or_default(), "Reply To", true);
 
     Some(Self {
       apikey,
@@ -96,7 +91,6 @@ impl Resend {
       bcc,
       reply_to,
       names,
-      throttle: THROTTLE,
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
     })
@@ -143,12 +137,7 @@ impl Notify for Resend {
   }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
-    // Upstream sends nothing and reports success here; fail like Postmark
-    if self.targets.is_empty() {
-      tracing::warn!("There are no Resend email recipients to notify");
-      return Ok(false);
-    }
-
+    // With no valid recipient nothing is sent, and upstream reports success
     let mut base = json!({
       "from": formataddr(self.from_name.as_deref(), &self.from_email),
       "subject": if ctx.title.is_empty() { DEFAULT_EMPTY_SUBJECT } else { ctx.title.as_str() },
@@ -173,9 +162,10 @@ impl Notify for Resend {
     let url = format!("{}/emails", service_base("https://api.resend.com"));
     let client = build_client(self.verify_certificate)?;
     let mut has_error = false;
-    for (index, target) in self.targets.iter().enumerate() {
-      if index > 0 {
-        tokio::time::sleep(self.throttle).await;
+    for target in &self.targets {
+      // A retry skips recipients that already accepted the message
+      if crate::delivery::is_delivered(target, false) {
+        continue;
       }
       let mut payload = base.clone();
       payload["to"] = json!(target);
@@ -192,6 +182,7 @@ impl Notify for Resend {
         payload["reply_to"] = json!(reply_to);
       }
 
+      crate::notify::throttle().await;
       let result = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -201,7 +192,10 @@ impl Notify for Resend {
         .send()
         .await;
       match result {
-        Ok(resp) if matches!(resp.status().as_u16(), 200 | 202) => tracing::info!("Sent Resend notification to {}.", target),
+        Ok(resp) if matches!(resp.status().as_u16(), 200 | 202) => {
+          tracing::info!("Sent Resend notification to {}.", target);
+          crate::delivery::mark_delivered(target, false);
+        }
         Ok(resp) => {
           let status = resp.status().as_u16();
           tracing::warn!("Failed to send Resend notification to {}: {}error={}.", target, status_message(status), status);
@@ -210,7 +204,7 @@ impl Notify for Resend {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Resend notification to {}.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -235,32 +229,24 @@ fn status_message(status: u16) -> &'static str {
 mod tests {
   use super::*;
   use crate::notify::Attachment;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
   use serde_json::Value;
-  use wiremock::matchers::method;
+  use wiremock::matchers::{body_partial_json, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> Resend {
-    let mut r = Resend::from_url(&ParsedUrl::parse(url).unwrap()).unwrap_or_else(|| panic!("should parse: {}", url));
-    r.throttle = Duration::ZERO;
-    r
+    Resend::from_url(&ParsedUrl::parse(url).unwrap()).unwrap_or_else(|| panic!("should parse: {}", url))
   }
 
   async fn mock(status: u16) -> MockServer {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/emails")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
     server
   }
 
   async fn bodies(server: &MockServer) -> Vec<Value> {
-    server
-      .received_requests()
-      .await
-      .unwrap()
-      .iter()
-      .filter(|r| r.method == wiremock::http::Method::POST)
-      .map(|r| serde_json::from_slice(&r.body).unwrap())
-      .collect()
+    requests_to(server, "POST", "/emails").await.iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect()
   }
 
   fn ctx(title: &str, body_format: NotifyFormat) -> NotifyContext {
@@ -331,10 +317,8 @@ mod tests {
     let svc = from_url("resend://apikey:sender@domain.com/recipient@domain.com").unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("title", NotifyFormat::Html))).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = requests_to(&server, "POST", "/emails").await;
     assert_eq!(reqs.len(), 1);
-    assert_eq!(reqs[0].method.as_str(), "POST");
-    assert_eq!(reqs[0].url.path(), "/emails");
     assert_eq!(reqs[0].headers.get("authorization").unwrap(), "Bearer apikey");
     assert_eq!(reqs[0].headers.get("content-type").unwrap(), "application/json");
     assert_eq!(bodies(&server).await[0], json!({ "from": "sender@domain.com", "subject": "title", "html": "body", "to": "recipient@domain.com" }));
@@ -401,7 +385,28 @@ mod tests {
     }
     let server = mock(200).await;
     let svc = from_url("resend://abcd:user@example.com/bad").unwrap();
-    assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", NotifyFormat::Html))).await.unwrap());
-    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", NotifyFormat::Html))).await.unwrap());
+    assert!(bodies(&server).await.is_empty());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_recipients() {
+    let server = MockServer::start().await;
+    // The second recipient fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/emails"))
+      .and(body_partial_json(json!({ "to": "b@example.com" })))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/emails")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("resend://abcd:user@example.com/a@example.com/b@example.com?retry=1&wait=0"));
+    let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    let to: Vec<Value> = bodies(&server).await.iter().map(|b| b["to"].clone()).collect();
+    assert_eq!(to, vec![json!("a@example.com"), json!("b@example.com"), json!("b@example.com")]);
   }
 }

@@ -1,7 +1,8 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyFormat;
-use crate::utils::parse::ParsedUrl;
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 use serde::Serialize;
 
@@ -28,20 +29,6 @@ struct Payload<'a> {
   url: Option<&'a str>,
 }
 
-/// Upstream `parse_list()`: split on `[]`, `;`, `,` and whitespace, then
-/// drop empty entries, de-duplicate and sort.
-fn parse_list<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-  let mut out: Vec<String> = items
-    .into_iter()
-    .flat_map(|s| s.split(|c: char| c == '[' || c == ']' || c == ';' || c == ',' || c.is_whitespace()))
-    .filter(|s| !s.is_empty())
-    .map(String::from)
-    .collect();
-  out.sort();
-  out.dedup();
-  out
-}
-
 /// Upstream `IS_TOPIC`: 1 to 21 digits without a leading zero.
 fn topic_id(target: &str) -> Option<u128> {
   let valid = (1..=21).contains(&target.len()) && target.chars().all(|c| c.is_ascii_digit()) && !target.starts_with('0');
@@ -50,13 +37,14 @@ fn topic_id(target: &str) -> Option<u128> {
 
 impl WxPusher {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = urlencoding::decode(url.host.as_deref().unwrap_or_default()).map(|s| s.into_owned()).unwrap_or_default();
+    let host = url.host.clone().unwrap_or_default();
     let mut raw: Vec<String> = url.path_parts.clone();
     let token = match url.get("token").filter(|t| !t.is_empty()) {
       Some(t) => {
         // With ?token= the host is a target too
         raw.push(host);
-        t.to_string()
+        // Upstream unquotes ?token= once more
+        unquote(t)
       }
       None => host,
     };
@@ -67,11 +55,12 @@ impl WxPusher {
     }
 
     if let Some(to) = url.get("to") {
-      raw.push(to.to_string());
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      raw.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
     let mut users = Vec::new();
     let mut topics = Vec::new();
-    for target in parse_list(raw.iter().map(String::as_str)) {
+    for target in parse_list(&raw) {
       if target.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("UID_")) && target.len() > 4 {
         users.push(target);
       } else if let Some(topic) = topic_id(&target) {
@@ -129,6 +118,7 @@ impl Notify for WxPusher {
     };
     let url = format!("{}/api/send/message", service_base("https://wxpusher.zjiecode.com"));
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client
       .post(&url)
       .header("User-Agent", APP_ID)
@@ -217,7 +207,12 @@ mod tests {
 
   async fn send(url: &str, ctx: &NotifyContext, status: u16, response: &str) -> Result<bool, NotifyError> {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(response)).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path("/api/send/message"))
+      .respond_with(ResponseTemplate::new(status).set_body_string(response))
+      .expect(1)
+      .mount(&server)
+      .await;
     let svc = from_url(url).unwrap();
     crate::notify::with_test_base(server.uri(), svc.send(ctx)).await
   }
@@ -252,6 +247,7 @@ mod tests {
     for (format, content_type) in [(NotifyFormat::Html, 2), (NotifyFormat::Markdown, 3)] {
       let server = MockServer::start().await;
       Mock::given(method("POST"))
+        .and(path("/api/send/message"))
         .and(body_json(json!({
           "appToken": "AT_tok", "content": "B", "summary": "", "contentType": content_type,
           "topicIds": [], "uids": ["UID_a"], "url": null,

@@ -3,18 +3,14 @@ use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client,
 use crate::types::NotifyFormat;
 use crate::utils::email::{formataddr, is_email, parse_emails, parse_emails_all, valid_addresses};
 use crate::utils::parse::{ParsedUrl, parse_bool};
-use crate::utils::qsd::{Qsd, unquote, validate_token};
+use crate::utils::qsd::{unquote, validate_token};
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::time::Duration;
 
 /// Recipients per request in batch mode.
 const BATCH_SIZE: usize = 100;
-
-/// Pause between requests (upstream `request_rate_per_sec`).
-const THROTTLE: Duration = Duration::from_millis(200);
 
 pub struct Smtp2Go {
   apikey: String,
@@ -28,21 +24,20 @@ pub struct Smtp2Go {
   /// `+name=value` arguments, sent as `custom_headers`.
   headers: Vec<(String, String)>,
   batch: bool,
-  throttle: Duration,
   verify_certificate: bool,
   tags: Vec<String>,
 }
 
 impl Smtp2Go {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let qsd = Qsd::from_url(url);
+    let qsd = |key: &str| url.get(key).filter(|v| !v.is_empty());
 
     // smtp2go://{user}@{domain}/{apikey}/{targets}
     let mut path = url.path_parts.iter();
     let apikey = path.next().and_then(|k| validate_token(k))?;
     let user = url.user.clone().filter(|u| !u.is_empty())?;
 
-    let from_name = qsd.value("name").map(unquote);
+    let from_name = qsd("name").map(unquote);
     let from_email = format!("{}@{}", user, url.host.clone().unwrap_or_default());
     if is_email(&from_email).is_none() {
       tracing::warn!("Invalid ~From~ email format: {}", from_email);
@@ -50,7 +45,7 @@ impl Smtp2Go {
     }
 
     let mut raw_targets: Vec<String> = path.cloned().collect();
-    if let Some(to) = qsd.value("to") {
+    if let Some(to) = qsd("to") {
       raw_targets.push(to.to_string());
     }
     let targets = if raw_targets.is_empty() {
@@ -62,7 +57,7 @@ impl Smtp2Go {
     let mut names = HashMap::new();
     let mut cc = Vec::new();
     let mut bcc = Vec::new();
-    for (list, raw, kind) in [(&mut cc, qsd.value("cc"), "Carbon Copy"), (&mut bcc, qsd.value("bcc"), "Blind Carbon Copy")] {
+    for (list, raw, kind) in [(&mut cc, qsd("cc"), "Carbon Copy"), (&mut bcc, qsd("bcc"), "Blind Carbon Copy")] {
       for e in valid_addresses(&parse_emails(raw.unwrap_or_default()), kind) {
         names.insert(e.full_email.clone(), e.display_name());
         if !list.contains(&e.full_email) {
@@ -79,9 +74,8 @@ impl Smtp2Go {
       cc,
       bcc,
       names,
-      headers: qsd.prefixed('+').into_iter().map(|(k, v)| (unquote(&k), unquote(&v))).collect(),
-      batch: qsd.get("batch").map(parse_bool).unwrap_or(false),
-      throttle: THROTTLE,
+      headers: url.qsd_add.iter().map(|(k, v)| (unquote(k), unquote(v))).collect(),
+      batch: url.get("batch").map(parse_bool).unwrap_or(false),
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
     })
@@ -135,8 +129,10 @@ impl Notify for Smtp2Go {
     let mut has_error = false;
 
     for (index, batch) in self.targets.chunks(batch_size).enumerate() {
-      if index > 0 {
-        tokio::time::sleep(self.throttle).await;
+      // A retry skips batches that already accepted the message
+      let key = index.to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
       }
       let in_batch = |addr: &String| batch.iter().any(|(_, t)| t == addr);
       let mut payload = json!({
@@ -174,6 +170,7 @@ impl Notify for Smtp2Go {
       }
 
       let dest = if batch.len() <= 3 { batch.iter().map(|(_, a)| a.as_str()).collect::<Vec<_>>().join(", ") } else { format!("{} recipients", batch.len()) };
+      crate::notify::throttle().await;
       let result = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -183,7 +180,10 @@ impl Notify for Smtp2Go {
         .send()
         .await;
       match result {
-        Ok(resp) if resp.status().as_u16() == 200 => tracing::info!("Sent SMTP2Go notification to {}.", dest),
+        Ok(resp) if resp.status().as_u16() == 200 => {
+          tracing::info!("Sent SMTP2Go notification to {}.", dest);
+          crate::delivery::mark_delivered(&key, false);
+        }
         Ok(resp) => {
           let status = resp.status().as_u16();
           let detail = if status == 429 { "To many requests., " } else { "" };
@@ -193,7 +193,7 @@ impl Notify for Smtp2Go {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending SMTP2Go:{} notification.", dest);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -206,8 +206,9 @@ impl Notify for Smtp2Go {
 mod tests {
   use super::*;
   use crate::notify::Attachment;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::method;
+  use wiremock::matchers::{body_partial_json, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn key() -> String {
@@ -215,26 +216,17 @@ mod tests {
   }
 
   fn parse(url: &str) -> Smtp2Go {
-    let mut s = Smtp2Go::from_url(&ParsedUrl::parse(url).unwrap()).unwrap_or_else(|| panic!("should parse: {}", url));
-    s.throttle = Duration::ZERO;
-    s
+    Smtp2Go::from_url(&ParsedUrl::parse(url).unwrap()).unwrap_or_else(|| panic!("should parse: {}", url))
   }
 
   async fn mock(status: u16) -> MockServer {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v3/email/send")).respond_with(ResponseTemplate::new(status)).mount(&server).await;
     server
   }
 
   async fn bodies(server: &MockServer) -> Vec<Value> {
-    server
-      .received_requests()
-      .await
-      .unwrap()
-      .iter()
-      .filter(|r| r.method == wiremock::http::Method::POST)
-      .map(|r| serde_json::from_slice(&r.body).unwrap())
-      .collect()
+    requests_to(server, "POST", "/v3/email/send").await.iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect()
   }
 
   fn ctx(title: &str, body_format: NotifyFormat) -> NotifyContext {
@@ -308,10 +300,8 @@ mod tests {
     let svc = from_url("smtp2go://sender@domain.com/apikey/recipient@domain.com").unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("title", NotifyFormat::Html))).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = requests_to(&server, "POST", "/v3/email/send").await;
     assert_eq!(reqs.len(), 1);
-    assert_eq!(reqs[0].method.as_str(), "POST");
-    assert_eq!(reqs[0].url.path(), "/v3/email/send");
     assert_eq!(reqs[0].headers.get("accept").unwrap(), "application/json");
     assert_eq!(reqs[0].headers.get("content-type").unwrap(), "application/json");
     assert_eq!(
@@ -377,6 +367,27 @@ mod tests {
     let server = mock(200).await;
     let svc = parse(&format!("smtp2go://user@localhost.localdomain/{}/invalid", key()));
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", NotifyFormat::Html))).await.unwrap());
-    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(bodies(&server).await.is_empty());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_recipients() {
+    let server = MockServer::start().await;
+    // The second recipient fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/v3/email/send"))
+      .and(body_partial_json(json!({ "to": ["b@example.com"] })))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/v3/email/send")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("smtp2go://user@example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbb-cccccccc/a@example.com/b@example.com?retry=1&wait=0"));
+    let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    let to: Vec<Value> = bodies(&server).await.iter().map(|b| b["to"].clone()).collect();
+    assert_eq!(to, vec![json!(["a@example.com"]), json!(["b@example.com"]), json!(["b@example.com"])]);
   }
 }

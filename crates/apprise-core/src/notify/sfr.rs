@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -93,15 +93,14 @@ fn is_truthy(value: Option<&Value>) -> bool {
 
 impl Sfr {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (url_user, url_password) = url_credentials(url);
     // sfr://service_id:service_password@space_id/targets
-    let service_id = url_user.clone().unwrap_or_default();
-    let service_password = url_password.clone().unwrap_or_default();
+    let service_id = url.user.clone().unwrap_or_default();
+    let service_password = url.password.clone().unwrap_or_default();
     if service_id.is_empty() || service_password.is_empty() {
       tracing::warn!("A SFR user (serviceId) and password (servicePassword) combination was not provided.");
       return None;
     }
-    let space_id = unquoted_host(url).unwrap_or_default();
+    let space_id = url.host.clone().unwrap_or_default();
     if space_id.is_empty() {
       tracing::warn!("A SFR Space ID is required.");
       return None;
@@ -109,10 +108,10 @@ impl Sfr {
 
     let mut entries = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|v| !v.trim().is_empty()) {
-      entries.extend(parse_phone_no([to], false));
+      entries.extend(parse_phone_no(&[to]));
     }
     let mut targets = Vec::new();
-    for target in parse_phone_no(&entries, false) {
+    for target in parse_phone_no(&entries) {
       match is_phone_no(&target, 10) {
         Some(phone) => targets.push(phone.full),
         None => tracing::warn!("Dropped invalid phone # ({}) specified.", target),
@@ -124,12 +123,10 @@ impl Sfr {
     }
 
     // An argument given but left empty falls back to its default too
-    let arg = |key: &str, default: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty()).unwrap_or(default).to_string();
-    let sender = match url.get("sender") {
-      Some(sender) => sender.trim().to_string(),
-      None => url.get("from").map(str::trim).unwrap_or_default().to_string(),
-    };
-    let timeout = url.get("timeout").and_then(|t| t.trim().parse().ok()).unwrap_or(DEFAULT_TIMEOUT);
+    // Upstream unquotes these values once more
+    let arg = |key: &str, default: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote).unwrap_or_else(|| default.to_string());
+    let sender = unquote(url.get("sender").or_else(|| url.get("from")).unwrap_or_default());
+    let timeout = url.get("timeout").and_then(|t| unquote(t).trim().parse().ok()).unwrap_or(DEFAULT_TIMEOUT);
 
     Some(Self {
       service_id,
@@ -191,6 +188,11 @@ impl Notify for Sfr {
     let mut has_error = false;
 
     for target in &self.targets {
+      // A retry skips targets that already accepted the message
+
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       let message = py_json_dumps(&[
         ("media", JsonValue::Str(&self.media)),
         ("textMsg", JsonValue::Str(&ctx.body)),
@@ -203,11 +205,12 @@ impl Notify for Sfr {
       let url = format!("{}?{}", base, query_encode(&[("authenticate", &authenticate), ("messageUnitaire", &message)]));
       tracing::debug!("SFR POST URL: {} (cert_verify={})", base, self.verify_certificate);
 
+      crate::notify::throttle().await;
       let resp = match client.post(&url).header("User-Agent", APP_ID).send().await {
         Ok(resp) => resp,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending SFR:{} notification.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -240,6 +243,7 @@ impl Notify for Sfr {
         continue;
       }
       tracing::info!("Sent SFR notification to {}.", target);
+      crate::delivery::mark_delivered(target, false);
     }
     Ok(!has_error)
   }
@@ -249,9 +253,10 @@ impl Notify for Sfr {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{method, path, query_param};
+  use wiremock::matchers::{method, path, query_param, query_param_contains};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
+  const ADD: &str = "/DmcWS/1.5.8/JsonService/MessagesUnitairesWS/addSingleCall";
   const GOOD: &str = r#"{"success": true, "reponse": 8888888}"#;
   const BAD: &str = r#"{"success": false, "errorCode": "THIS_IS_AN_ERROR", "errorDetail": "Appel api en erreur", "fatal": true, "invalidParams": true}"#;
 
@@ -365,7 +370,7 @@ mod tests {
     let svc = from_url("sfr://srv:pw@spc/0612345678/+33%206%2012%2034%2056%2079?from=Me&media=SMS&voice=laura8k&lang=en_US&timeout=10").unwrap();
     let ctx = NotifyContext { body: "Tést\r\nbody".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let req = &server.received_requests().await.unwrap()[0];
+    let req = &crate::notify::custom_json::requests_to(&server, "POST", ADD).await[0];
     assert!(req.body.is_empty());
     assert!(req.url.query().unwrap().starts_with("authenticate=%7B%22serviceId%22%3A+%22srv%22"));
   }
@@ -377,24 +382,48 @@ mod tests {
 
     // 200 but the server says it failed
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string(BAD)).mount(&server).await;
+    Mock::given(method("POST")).and(path(ADD)).respond_with(ResponseTemplate::new(200).set_body_string(BAD)).mount(&server).await;
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     // Unparseable body
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string("not json")).mount(&server).await;
+    Mock::given(method("POST")).and(path(ADD)).respond_with(ResponseTemplate::new(200).set_body_string("not json")).mount(&server).await;
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     // A 204 carries no body, so no success flag either
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(204)).mount(&server).await;
+    Mock::given(method("POST")).and(path(ADD)).respond_with(ResponseTemplate::new(204)).mount(&server).await;
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     // HTTP error
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500).set_body_string(GOOD)).mount(&server).await;
+    Mock::given(method("POST")).and(path(ADD)).respond_with(ResponseTemplate::new(500).set_body_string(GOOD)).mount(&server).await;
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path(ADD))
+      .and(query_param_contains("messageUnitaire", "0612345679"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path(ADD)).respond_with(ResponseTemplate::new(200).set_body_string(GOOD)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("sfr://srv:pw@spc/0612345678/0612345679?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "body".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<Value> = crate::notify::custom_json::requests_to(&server, "POST", ADD)
+      .await
+      .iter()
+      .map(|r| r.url.query_pairs().find(|(k, _)| k == "messageUnitaire").map(|(_, v)| serde_json::from_str::<Value>(&v).unwrap()["to"].clone()).unwrap())
+      .collect();
+    assert_eq!(sent, vec![serde_json::json!("0612345678"), serde_json::json!("0612345679"), serde_json::json!("0612345679")]);
   }
 }

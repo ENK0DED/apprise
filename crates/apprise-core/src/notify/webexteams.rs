@@ -1,7 +1,8 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyFormat;
-use crate::utils::parse::ParsedUrl;
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, split_path, unquote};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -30,65 +31,22 @@ fn is_webhook_token(s: &str) -> bool {
   (80..=160).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
-/// Upstream `parse_list()`: split on `[]`, `;`, `,` and whitespace, then
-/// drop empty entries, de-duplicate and sort.
-fn parse_list<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-  let mut out: Vec<String> = items
-    .into_iter()
-    .flat_map(|s| s.split(|c: char| c == '[' || c == ']' || c == ';' || c == ',' || c.is_whitespace()))
-    .filter(|s| !s.is_empty())
-    .map(String::from)
-    .collect();
-  out.sort();
-  out.dedup();
-  out
-}
-
-/// Strip `prefix` from the start of `s`, ignoring ASCII case.
-fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-  s.get(..prefix.len()).filter(|p| p.eq_ignore_ascii_case(prefix)).map(|_| &s[prefix.len()..])
-}
-
-/// Upstream `parse_native_url`:
-/// `https?://(api.ciscospark.com|webexapis.com)/v{N}/webhooks/incoming/{token}/?{params}`.
-/// Returns the equivalent `wxteams://{token}/{params}` URL.
-fn native_to_apprise(raw: &str) -> Option<String> {
-  let rest = strip_prefix_ci(raw, "https://").or_else(|| strip_prefix_ci(raw, "http://"))?;
-  let rest = strip_prefix_ci(rest, "api.ciscospark.com/").or_else(|| strip_prefix_ci(rest, "webexapis.com/"))?;
-  // v[1-9][0-9]*
-  let rest = strip_prefix_ci(rest, "v")?;
-  let digits = rest.chars().take_while(char::is_ascii_digit).count();
-  if digits == 0 || rest.starts_with('0') {
-    return None;
-  }
-  let rest = strip_prefix_ci(&rest[digits..], "/webhooks/incoming/")?;
-  let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).unwrap_or(rest.len());
-  let (token, rest) = rest.split_at(end);
-  let params = rest.strip_prefix('/').unwrap_or(rest);
-  if token.is_empty() || !(params.is_empty() || (params.starts_with('?') && params.len() > 1)) {
-    return None;
-  }
-  Some(format!("wxteams://{}/{}", token, params))
-}
-
 impl WebexTeams {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    if url.schema == "https" || url.schema == "http" {
-      return Self::from_url(&ParsedUrl::parse(&native_to_apprise(&url.raw)?)?);
-    }
-
-    // Room IDs come from the path and ?to=
+    // The registry turns the native webhook URL into wxteams://{token}.
+    // Room IDs come from the path and ?to=; upstream unquotes ?to=, ?token=
+    // and ?mode= once more.
     let mut entries: Vec<String> = url.path_parts.clone();
     if let Some(to) = url.get("to") {
-      entries.extend(to.split([' ', '\t', '\r', '\n', ',', '\\', '/']).filter(|s| !s.is_empty()).map(String::from));
+      entries.extend(split_path(&unquote(to)));
     }
     let token = match url.get("token").filter(|t| !t.is_empty()) {
-      Some(t) => t.to_string(),
-      None => urlencoding::decode(url.host.as_deref().unwrap_or_default()).ok()?.into_owned(),
+      Some(t) => unquote(t),
+      None => url.host.clone().unwrap_or_default(),
     };
-
     // An explicit ?mode= may be abbreviated (b, w, ...)
-    let explicit = url.get("mode").filter(|m| !m.is_empty());
+    let explicit = url.get("mode").filter(|m| !m.is_empty()).map(unquote);
+    let explicit = explicit.as_deref();
     let mode = match explicit {
       Some(m) if "webhook".starts_with(m) => Mode::Webhook,
       Some(m) if "bot".starts_with(m) => Mode::Bot,
@@ -116,7 +74,7 @@ impl WebexTeams {
           tracing::warn!("A Webex Teams bot access token must be specified.");
           return None;
         }
-        let targets = parse_list(entries.iter().map(String::as_str));
+        let targets = parse_list(&entries);
         Some(Self { mode, token, targets, verify_certificate: url.verify_certificate(), tags: url.tags() })
       }
     }
@@ -139,6 +97,7 @@ impl WebexTeams {
     }
     // Upstream joins its slash-terminated base and the token with another '/'
     let url = format!("{}/v1/webhooks/incoming//{}", service_base("https://api.ciscospark.com"), self.token);
+    crate::notify::throttle().await;
     let resp = client.post(&url).header("User-Agent", APP_ID).json(&json!({ key: ctx.body })).send().await?;
     let status = resp.status().as_u16();
     if status == 200 || status == 204 {
@@ -151,43 +110,50 @@ impl WebexTeams {
   }
 
   /// Post the message to one room: as JSON, or as one multipart post per
-  /// attachment with the text carried by the first.
+  /// attachment with the text carried by the first. A retry skips the
+  /// attachments that already went out.
   async fn post_to_room(&self, client: &reqwest::Client, ctx: &NotifyContext, key: &str, room: &str) -> bool {
     let url = format!("{}/v1/messages", service_base("https://webexapis.com"));
-    let requests: Vec<reqwest::RequestBuilder> = if ctx.attachments.is_empty() {
-      vec![client.post(&url).json(&json!({ "roomId": room, key: ctx.body }))]
-    } else {
-      ctx
-        .attachments
-        .iter()
-        .enumerate()
-        .map(|(i, attach)| {
-          let name = if attach.name.is_empty() { format!("file{:03}.dat", i + 1) } else { attach.name.clone() };
-          let part = reqwest::multipart::Part::bytes(attach.data.clone()).file_name(name.clone());
-          let part = part.mime_str(&attach.mime_type).unwrap_or_else(|_| reqwest::multipart::Part::bytes(attach.data.clone()).file_name(name));
-          let mut form = reqwest::multipart::Form::new().text("roomId", room.to_string());
-          if i == 0 {
-            form = form.text(key.to_string(), ctx.body.clone());
-          }
-          client.post(&url).multipart(form.part("files", part))
-        })
-        .collect()
-    };
-    for request in requests {
-      match request.header("User-Agent", APP_ID).bearer_auth(&self.token).send().await {
-        Ok(resp) if resp.status() == reqwest::StatusCode::OK => {}
-        Ok(resp) => {
-          tracing::warn!("Failed to send Webex Teams Bot notification to room {}: error={}.", room, resp.status().as_u16());
-          return false;
-        }
-        Err(e) => {
-          tracing::warn!("A Connection error occurred sending Webex Teams Bot notification: {}", e);
-          return false;
-        }
+    if ctx.attachments.is_empty() {
+      return self.post(client.post(&url).json(&json!({ "roomId": room, key: ctx.body })), room).await;
+    }
+    for (i, attach) in ctx.attachments.iter().enumerate() {
+      let attach_key = format!("{}:{}", room, i + 1);
+      if crate::delivery::is_delivered(&attach_key, false) {
+        continue;
+      }
+      let name = if attach.name.is_empty() { format!("file{:03}.dat", i + 1) } else { attach.name.clone() };
+      let part = reqwest::multipart::Part::bytes(attach.data.clone()).file_name(name.clone());
+      let part = part.mime_str(&attach.mime_type).unwrap_or_else(|_| reqwest::multipart::Part::bytes(attach.data.clone()).file_name(name));
+      let mut form = reqwest::multipart::Form::new().text("roomId", room.to_string());
+      if i == 0 {
+        form = form.text(key.to_string(), ctx.body.clone());
+      }
+      if !self.post(client.post(&url).multipart(form.part("files", part)), room).await {
+        return false;
+      }
+      crate::delivery::mark_delivered(&attach_key, false);
+    }
+    true
+  }
+
+  /// Send one bot request; only HTTP 200 is a success.
+  async fn post(&self, request: reqwest::RequestBuilder, room: &str) -> bool {
+    crate::notify::throttle().await;
+    match request.header("User-Agent", APP_ID).bearer_auth(&self.token).send().await {
+      Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
+        tracing::info!("Sent Webex Teams Bot notification to room {}.", room);
+        true
+      }
+      Ok(resp) => {
+        tracing::warn!("Failed to send Webex Teams Bot notification to room {}: error={}.", room, resp.status().as_u16());
+        false
+      }
+      Err(e) => {
+        tracing::warn!("A Connection error occurred sending Webex Teams Bot notification: {}", crate::error::loggable_http_error(&e));
+        false
       }
     }
-    tracing::info!("Sent Webex Teams Bot notification to room {}.", room);
-    true
   }
 }
 
@@ -233,9 +199,15 @@ impl Notify for WebexTeams {
     }
     let mut all_ok = true;
     for room in &self.targets {
+      // A retry skips rooms that already accepted the message
+      if crate::delivery::is_delivered(room, false) {
+        continue;
+      }
       if !self.post_to_room(&client, ctx, key, room).await {
         all_ok = false;
+        continue;
       }
+      crate::delivery::mark_delivered(room, false);
     }
     Ok(all_ok)
   }
@@ -246,7 +218,7 @@ mod tests {
   use super::*;
   use crate::notify::Attachment;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
   const ROOM_ID: &str = "Y2lzY29zcGFyazovL3VzL1JPTU9NLzEyMzQ1Njc4OTAxMjM0";
@@ -327,6 +299,8 @@ mod tests {
 
   #[test]
   fn test_native_urls() {
+    // The registry converts the native webhook URL
+    let parse = |url: &str| self::parse(&crate::notify::registry::NATIVE_URLS.iter().find_map(|n| (n.convert)(url)).unwrap());
     let w = parse("https://WEBEXAPIS.com/v2/webhooks/incoming/abc_DEF-1/?mode=b");
     assert_eq!(w.token, "abc_DEF-1");
     assert_eq!(w.mode, Mode::Bot);
@@ -370,7 +344,7 @@ mod tests {
 
     for code in [500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path(format!("/v1/webhooks/incoming//{}", a80))).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let svc = from_url(&format!("wxteams://{}", a80)).unwrap();
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("B", NotifyFormat::Markdown))).await.is_err());
     }
@@ -403,14 +377,14 @@ mod tests {
     // A failing room does not stop the next one
     let server = MockServer::start().await;
     let first_room = |req: &Request| serde_json::from_slice::<serde_json::Value>(&req.body).map(|v| v["roomId"] == ROOM_ID).unwrap_or(false);
-    Mock::given(method("POST")).and(first_room).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/messages")).and(first_room).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/messages")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
     let svc = from_url(&format!("wxteams://{}/{}/{}", bot_token(), ROOM_ID, ROOM_ID2)).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B", NotifyFormat::Markdown))).await.unwrap());
 
     // Only HTTP 200 counts in bot mode
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(204)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/messages")).respond_with(ResponseTemplate::new(204)).expect(1).mount(&server).await;
     let svc = from_url(&format!("wxteams://{}/{}", bot_token(), ROOM_ID)).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B", NotifyFormat::Markdown))).await.unwrap());
   }
@@ -428,7 +402,7 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&c)).await.unwrap());
 
     // One multipart post per attachment; only the first carries the text
-    let requests = server.received_requests().await.unwrap();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/v1/messages").await;
     assert_eq!(requests.len(), 2);
     let first = String::from_utf8_lossy(&requests[0].body).into_owned();
     let second = String::from_utf8_lossy(&requests[1].body).into_owned();
@@ -441,7 +415,32 @@ mod tests {
 
     // A failed upload fails the room
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/messages")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&c)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second room fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/v1/messages"))
+      .and(body_partial_json(json!({"roomId": ROOM_ID2})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/v1/messages")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("wxteams://{}/{}/{}?retry=1&wait=0", bot_token(), ROOM_ID, ROOM_ID2)));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("B", NotifyFormat::Markdown))).await.is_success());
+    let sent: Vec<serde_json::Value> = crate::notify::custom_json::requests_to(&server, "POST", "/v1/messages")
+      .await
+      .iter()
+      .map(|r| r.body_json::<serde_json::Value>().unwrap()["roomId"].clone())
+      .collect();
+    // Rooms are sorted, so the second one goes first
+    assert_eq!(sent, vec![json!(ROOM_ID2), json!(ROOM_ID), json!(ROOM_ID2)]);
   }
 }

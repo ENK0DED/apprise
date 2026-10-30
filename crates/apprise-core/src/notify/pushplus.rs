@@ -1,8 +1,8 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyFormat;
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{parse_list, split_path, unquote};
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -45,30 +45,26 @@ pub struct PushPlus {
 
 impl PushPlus {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(str::to_string);
+    // The registry turns https://www.pushplus.plus/send?token=... into
+    // pushplus://{token}/?... Upstream unquotes the query values once more.
+    let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(unquote);
 
-    // Native https://www.pushplus.plus/send?token=... URLs carry everything
-    // in the query string (upstream parse_native_url)
-    let native = matches!(url.schema.as_str(), "http" | "https");
-    if native && !(url.host.as_deref().is_some_and(|h| h.eq_ignore_ascii_case("www.pushplus.plus")) && url.path.trim_end_matches('/') == "send") {
-      return None;
-    }
-
-    let token = qsd("token").or_else(|| if native { None } else { url.host.as_deref().map(unquote) }).unwrap_or_default();
+    let token = qsd("token").or_else(|| url.host.clone()).unwrap_or_default();
     if !is_token(&token) {
       tracing::warn!("The Pushplus token is invalid.");
       return None;
     }
 
-    let mut targets = if native { Vec::new() } else { split_path(url) };
+    let mut targets = url.path_parts.clone();
     for key in ["to", "topic"] {
-      if let Some(value) = qsd(key) {
-        targets.extend(parse_list([value], true, true));
+      // Upstream's URLBase.parse_list() unquotes each entry
+      if let Some(value) = url.get(key).filter(|v| !v.is_empty()) {
+        targets.extend(parse_list(&[value]).iter().map(|t| unquote(t)));
       }
     }
 
     // A user part names a webhook and selects the webhook channel
-    let user = if native { None } else { url.user.clone().filter(|u| !u.is_empty()) };
+    let user = url.user.clone();
     let webhook = qsd("name").or_else(|| user.clone());
     let channel = qsd("channel").or_else(|| qsd("mode")).or_else(|| user.map(|_| "webhook".to_string()));
 
@@ -88,7 +84,7 @@ impl PushPlus {
     };
 
     let mut topics = Vec::new();
-    for target in parse_list(targets, true, true) {
+    for target in parse_list(&targets) {
       if is_topic(&target) {
         topics.push(target);
       } else {
@@ -147,6 +143,11 @@ impl Notify for PushPlus {
 
     let mut has_error = false;
     for topic in topics {
+      // A retry skips topics that already accepted the message
+      let key = topic.unwrap_or_default();
+      if crate::delivery::is_delivered(key, false) {
+        continue;
+      }
       let mut payload = json!({
         "token": self.token,
         "title": if ctx.title.is_empty() { &ctx.body } else { &ctx.title },
@@ -162,12 +163,13 @@ impl Notify for PushPlus {
       }
 
       tracing::debug!("PushPlus POST URL: {} (cert_verify={})", url, self.verify_certificate);
+      crate::notify::throttle().await;
       let resp =
         match client.post(&url).header("User-Agent", APP_ID).header("Content-Type", "application/json").body(serde_json::to_vec(&payload)?).send().await {
           Ok(resp) => resp,
           Err(e) => {
             tracing::warn!("A Connection error occurred sending PushPlus notification.");
-            tracing::debug!("Socket Exception: {}", e);
+            tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
             has_error = true;
             continue;
           }
@@ -193,6 +195,7 @@ impl Notify for PushPlus {
       }
 
       tracing::info!("Sent PushPlus notification{}.", topic.map(|t| format!(" to topic {}", t)).unwrap_or_default());
+      crate::delivery::mark_delivered(key, false);
     }
     Ok(!has_error)
   }
@@ -202,13 +205,15 @@ impl Notify for PushPlus {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{header, method, path};
+  use wiremock::matchers::{body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   const GOOD_TOKEN: &str = "abc123def456ghi789jkl012mno345pq";
 
+  /// Parse `url`, converting a native URL the way the registry does.
   fn pushplus(url: &str) -> PushPlus {
-    PushPlus::from_url(&ParsedUrl::parse(url).unwrap()).unwrap()
+    let native = crate::notify::registry::NATIVE_URLS.iter().find_map(|n| (n.convert)(url));
+    PushPlus::from_url(&ParsedUrl::parse(native.as_deref().unwrap_or(url)).unwrap()).unwrap()
   }
 
   fn good() -> ResponseTemplate {
@@ -290,7 +295,7 @@ mod tests {
     let ctx = NotifyContext { body: "B ü".into(), body_format: NotifyFormat::Html, ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/send").await;
     for (request, topic) in requests.iter().zip(["g0", "g1"]) {
       let body: Value = serde_json::from_slice(&request.body).unwrap();
       assert_eq!(
@@ -304,12 +309,11 @@ mod tests {
   async fn test_send_templates() {
     for (format, template) in [(NotifyFormat::Text, "txt"), (NotifyFormat::Markdown, "markdown"), (NotifyFormat::Html, "html")] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(good()).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/send")).respond_with(good()).expect(1).mount(&server).await;
       let svc = from_url(&format!("pushplus://{}", GOOD_TOKEN)).unwrap();
       let ctx = NotifyContext { title: "T".into(), body: "B".into(), body_format: format, ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-      let body: Value =
-        serde_json::from_slice(&server.received_requests().await.unwrap().iter().find(|r| r.method == wiremock::http::Method::POST).unwrap().body).unwrap();
+      let body: Value = serde_json::from_slice(&crate::notify::custom_json::requests_to(&server, "POST", "/send").await[0].body).unwrap();
       assert_eq!(body, json!({"token": GOOD_TOKEN, "title": "T", "content": "B", "template": template, "channel": "wechat"}));
     }
   }
@@ -326,7 +330,7 @@ mod tests {
       ResponseTemplate::new(999),
     ] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(response).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/send")).respond_with(response).expect(1).mount(&server).await;
       let svc = from_url(&format!("pushplus://{}", GOOD_TOKEN)).unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
     }
@@ -340,5 +344,28 @@ mod tests {
     let svc = from_url(&format!("pushplus://{}", GOOD_TOKEN)).unwrap();
     assert_eq!(svc.notify_format(), NotifyFormat::Html);
     assert_eq!((svc.body_maxlen(), svc.title_maxlen()), (20000, 200));
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second topic fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/send"))
+      .and(body_partial_json(json!({"topic": "g2"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/send")).respond_with(good()).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("pushplus://{}/g1/g2?retry=1&wait=0", GOOD_TOKEN)));
+    assert!(
+      crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() })).await.is_success()
+    );
+    let sent: Vec<Value> =
+      crate::notify::custom_json::requests_to(&server, "POST", "/send").await.iter().map(|r| r.body_json::<Value>().unwrap()["topic"].clone()).collect();
+    assert_eq!(sent, vec![json!("g1"), json!("g2"), json!("g2")]);
   }
 }

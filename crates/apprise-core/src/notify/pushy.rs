@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{parse_list, split_path, unquote};
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -22,18 +22,19 @@ fn is_name(value: &str) -> bool {
 impl Pushy {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // ?key= wins over the host
-    let apikey = url.get("key").filter(|k| !k.is_empty()).map(str::to_string).or_else(|| url.host.as_deref().map(unquote)).unwrap_or_default();
+    let apikey = url.get("key").filter(|k| !k.is_empty()).map(str::to_string).or_else(|| url.host.clone()).unwrap_or_default();
     let Some(apikey) = apikey.split_whitespace().next().map(str::to_string) else {
       tracing::warn!("An invalid Pushy Secret API Key was specified.");
       return None;
     };
 
-    let mut entries = split_path(url);
+    let mut entries = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      entries.push(to.to_string());
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      entries.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
     let (mut topics, mut devices) = (Vec::new(), Vec::new());
-    for target in parse_list(entries, true, true) {
+    for target in parse_list(&entries) {
       if let Some(topic) = Some(target.strip_prefix('#').unwrap_or(&target)).filter(|t| is_name(t)) {
         topics.push(topic.to_string());
       } else if let Some(device) = target.strip_prefix('@').filter(|d| is_name(d)) {
@@ -55,7 +56,7 @@ impl Pushy {
       apikey,
       topics,
       devices,
-      sound: url.get("sound").filter(|s| !s.is_empty()).map(str::to_string),
+      sound: url.get("sound").filter(|s| !s.is_empty()).map(unquote),
       badge,
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
@@ -103,7 +104,13 @@ impl Notify for Pushy {
     let mut has_error = false;
 
     // Topics first, then devices
-    for target in self.topics.iter().chain(&self.devices) {
+    let targets = self.topics.iter().map(|t| ("topic", t)).chain(self.devices.iter().map(|d| ("device", d)));
+    for (kind, target) in targets {
+      // A retry skips targets that already accepted the message
+      let key = format!("{}:{}", kind, target);
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
       let mut payload = json!({ "to": target, "data": { "message": ctx.body }, "notification": { "body": ctx.body } });
       if !ctx.title.is_empty() {
         payload["notification"]["title"] = json!(ctx.title);
@@ -115,6 +122,7 @@ impl Notify for Pushy {
         payload["notification"]["badge"] = json!(badge);
       }
 
+      crate::notify::throttle().await;
       let result = client
         .post(&url)
         .query(&[("api_key", self.apikey.as_str())])
@@ -128,7 +136,7 @@ impl Notify for Pushy {
         Ok(resp) => resp,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Pushy:{} notification", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -144,6 +152,7 @@ impl Notify for Pushy {
         continue;
       }
       tracing::info!("Sent Pushy notification to {}.", target);
+      crate::delivery::mark_delivered(&key, false);
     }
     Ok(!has_error)
   }
@@ -153,7 +162,7 @@ impl Notify for Pushy {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path, query_param};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path, query_param};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn good() -> ResponseTemplate {
@@ -198,6 +207,7 @@ mod tests {
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path("/push"))
       .and(body_json(json!({"to": "device", "data": {"message": "B"}, "notification": {"body": "B", "title": "T", "sound": "alarm.aiff", "badge": 100}})))
       .respond_with(good())
       .expect(1)
@@ -207,7 +217,7 @@ mod tests {
     assert_eq!(svc.body_maxlen(), 4096);
     let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/push").await;
     assert_eq!(serde_json::from_slice::<Value>(&requests[0].body).unwrap()["to"], "topic");
   }
 
@@ -224,7 +234,7 @@ mod tests {
       ResponseTemplate::new(999),
     ] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(response).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/push")).respond_with(response).expect(1).mount(&server).await;
       assert!(!crate::notify::with_test_base(server.uri(), from_url("pushy://apikey/topic").unwrap().send(&ctx)).await.unwrap());
     }
   }
@@ -234,5 +244,26 @@ mod tests {
     let details = Pushy::static_details();
     assert_eq!(details.service_name, "Pushy");
     assert_eq!(details.protocols, vec!["pushy"]);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/push"))
+      .and(body_partial_json(json!({"to": "device"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/push")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": true}))).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("pushy://apikey/%23topic/@device?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "B".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<Value> =
+      crate::notify::custom_json::requests_to(&server, "POST", "/push").await.iter().map(|r| r.body_json::<Value>().unwrap()["to"].clone()).collect();
+    assert_eq!(sent, vec![json!("topic"), json!("device"), json!("device")]);
   }
 }

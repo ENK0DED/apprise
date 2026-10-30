@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -25,28 +25,28 @@ fn alnum_len(value: &str, min: usize, max: usize) -> bool {
 
 impl Plivo {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (url_user, _) = url_credentials(url);
     // plivo://auth_id@token/source/targets or plivo://?id=&token=&from=&to=
-    let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty());
-    let auth_id = qs("id").map(str::to_string).or_else(|| url_user.clone()).unwrap_or_default();
+    // Upstream unquotes these query values once more
+    let qs = |key: &str| url.get(key).filter(|v| !v.is_empty());
+    let auth_id = qs("id").map(unquote).or_else(|| url.user.clone()).unwrap_or_default();
     let mut entries = url.path_parts.clone();
     let auth_token = match qs("token") {
       Some(token) => {
         // The host is then the first target
-        if let Some(host) = unquoted_host(url).filter(|h| !h.is_empty()) {
+        if let Some(host) = url.host.clone() {
           entries.insert(0, host);
         }
-        token.to_string()
+        unquote(token)
       }
-      None => unquoted_host(url).unwrap_or_default(),
+      None => url.host.clone().unwrap_or_default(),
     };
     let source = match qs("from") {
-      Some(from) => Some(from.to_string()),
+      Some(from) => Some(unquote(from)),
       None if !entries.is_empty() => Some(entries.remove(0)),
       None => None,
     };
     if let Some(to) = qs("to") {
-      entries.extend(parse_phone_no([to], false));
+      entries.extend(parse_phone_no(&[to]));
     }
     let batch = url.get("batch").map(parse_bool).unwrap_or(false);
 
@@ -69,7 +69,7 @@ impl Plivo {
       // Notify ourselves
       targets.push(source.clone());
     } else {
-      for target in parse_phone_no(&entries, false) {
+      for target in parse_phone_no(&entries) {
         match is_phone_no(&target, 10) {
           Some(phone) => targets.push(format!("+{}", phone.full)),
           None => tracing::warn!("Dropped invalid phone # ({}) specified.", target),
@@ -125,9 +125,15 @@ impl Notify for Plivo {
     let batch_size = if self.batch { DEFAULT_BATCH_SIZE } else { 1 };
     let mut has_error = false;
 
-    for chunk in self.targets.chunks(batch_size) {
+    for (index, chunk) in self.targets.chunks(batch_size).enumerate() {
+      // A retry skips batches that already accepted the message
+      let key = index.to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
       let payload = json!({ "src": self.source, "dst": chunk.join("<"), "text": ctx.body });
       let to = if batch_size == 1 { format!(" to {}", chunk[0]) } else { "(s)".to_string() };
+      crate::notify::throttle().await;
       let result = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -139,6 +145,7 @@ impl Notify for Plivo {
       match result {
         Ok(resp) if matches!(resp.status().as_u16(), 200..=202) => {
           tracing::info!("Sent {} Plivo notification{}.", chunk.len(), to);
+          crate::delivery::mark_delivered(&key, false);
         }
         Ok(resp) => {
           let status = resp.status();
@@ -154,7 +161,7 @@ impl Notify for Plivo {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending {} Plivo notification(s).", chunk.len());
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -167,7 +174,7 @@ impl Notify for Plivo {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn plivo(url: &str) -> Plivo {
@@ -275,6 +282,7 @@ mod tests {
   async fn test_send_batch() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path(format!("/v1/Account/{}/Message/", "a".repeat(25))))
       .and(body_json(json!({"src": "+15551230000", "dst": "+15551231111<+15551232222", "text": "body"})))
       .respond_with(ResponseTemplate::new(201))
       .expect(1)
@@ -295,12 +303,14 @@ mod tests {
     // One recipient fails; the other is still sent
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path(format!("/v1/Account/{}/Message/", "a".repeat(25))))
       .and(body_json(json!({"src": "+15551230000", "dst": "+15551232222", "text": "body"})))
       .respond_with(ResponseTemplate::new(500))
       .expect(1)
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path(format!("/v1/Account/{}/Message/", "a".repeat(25))))
       .and(body_json(json!({"src": "+15551230000", "dst": "+15551231111", "text": "body"})))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -311,5 +321,32 @@ mod tests {
 
     // Connection errors fail without raising
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let a25 = "a".repeat(25);
+    let server = MockServer::start().await;
+    let messages = format!("/v1/Account/{}/Message/", a25);
+    // The second number fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path(messages.as_str()))
+      .and(body_partial_json(json!({"dst": "+15551232222"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path(messages.as_str())).respond_with(ResponseTemplate::new(202)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("plivo://{}@{}/15551230000/15551231111/15551232222?retry=1&wait=0", a25, "b".repeat(40))));
+    let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    let sent: Vec<serde_json::Value> = crate::notify::custom_json::requests_to(&server, "POST", &messages)
+      .await
+      .iter()
+      .map(|r| r.body_json::<serde_json::Value>().unwrap()["dst"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!("+15551231111"), json!("+15551232222"), json!("+15551232222")]);
   }
 }

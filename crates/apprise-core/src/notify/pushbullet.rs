@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{email_address, parse_list, split_path, unquote};
+use crate::utils::email::{is_email, parse_list};
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -17,15 +17,16 @@ pub struct Pushbullet {
 
 impl Pushbullet {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let Some(accesstoken) = url.host.as_deref().map(unquote).and_then(|t| t.split_whitespace().next().map(str::to_string)) else {
+    let Some(accesstoken) = url.host.as_deref().and_then(|t| t.split_whitespace().next().map(str::to_string)) else {
       tracing::warn!("An invalid PushBullet Access Token was specified.");
       return None;
     };
-    let mut targets = split_path(url);
+    let mut targets = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      targets.push(to.to_string());
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      targets.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
-    let mut targets = parse_list(targets, true, true);
+    let mut targets = parse_list(&targets);
     if targets.is_empty() {
       targets.push(PUSHBULLET_SEND_TO_ALL.to_string());
     }
@@ -46,7 +47,7 @@ impl Pushbullet {
   /// Address a push to `recipient`: an email, a `#channel`, a device, or
   /// (with no target) every device.
   fn address(payload: &mut Value, recipient: &str) {
-    if let Some(email) = email_address(recipient) {
+    if let Some(email) = is_email(recipient).map(|e| e.full_email) {
       payload["email"] = json!(email);
     } else if recipient == PUSHBULLET_SEND_TO_ALL {
       // No recipient field reaches every device
@@ -59,11 +60,12 @@ impl Pushbullet {
 
   /// POST to Pushbullet; returns the parsed response on 200 or 204.
   async fn post(&self, request: reqwest::RequestBuilder) -> Option<Value> {
+    crate::notify::throttle().await;
     let resp = match request.header("User-Agent", APP_ID).basic_auth(&self.accesstoken, Some("")).send().await {
       Ok(resp) => resp,
       Err(e) => {
         tracing::warn!("A Connection error occurred communicating with PushBullet.");
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return None;
       }
     };
@@ -141,7 +143,12 @@ impl Notify for Pushbullet {
 
     let mut has_error = false;
     for recipient in &self.targets {
-      if !ctx.body.is_empty() {
+      // A retry skips what a recipient already accepted
+      if crate::delivery::is_delivered(recipient, false) {
+        continue;
+      }
+      let body_key = format!("body:{}", recipient);
+      if !ctx.body.is_empty() && !crate::delivery::is_delivered(&body_key, false) {
         let mut note = json!({ "type": "note", "title": ctx.title, "body": ctx.body });
         Self::address(&mut note, recipient);
         if !self.push(&client, &note).await {
@@ -149,18 +156,29 @@ impl Notify for Pushbullet {
           continue;
         }
         tracing::info!("Sent PushBullet notification to \"{}\".", recipient);
+        crate::delivery::mark_delivered(&body_key, false);
       }
 
       // Each file is addressed to the recipient too (as apprise-go does;
       // upstream sends them to every device)
-      for file in &files {
+      let mut attachments_ok = true;
+      for (no, file) in files.iter().enumerate() {
+        let attachment_key = format!("attachment:{}:{}", recipient, no);
+        if crate::delivery::is_delivered(&attachment_key, false) {
+          continue;
+        }
         let mut push = file.clone();
         Self::address(&mut push, recipient);
         if !self.push(&client, &push).await {
           has_error = true;
+          attachments_ok = false;
           continue;
         }
         tracing::info!("Sent PushBullet attachment ({}) to \"{}\".", file["file_name"].as_str().unwrap_or(""), recipient);
+        crate::delivery::mark_delivered(&attachment_key, false);
+      }
+      if attachments_ok {
+        crate::delivery::mark_delivered(recipient, false);
       }
     }
     Ok(!has_error)
@@ -171,8 +189,9 @@ impl Notify for Pushbullet {
 mod tests {
   use super::*;
   use crate::notify::Attachment;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{header, method, path};
+  use wiremock::matchers::{body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn body(request: &wiremock::Request) -> Value {
@@ -219,7 +238,7 @@ mod tests {
     let svc = from_url("pbul://tok123/dev1/%23chan/user@example.com").unwrap();
     let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/v2/pushes").await;
     assert_eq!(body(&requests[0]), json!({"type": "note", "title": "T", "body": "B", "channel_tag": "chan"}));
     assert_eq!(body(&requests[1]), json!({"type": "note", "title": "T", "body": "B", "device_iden": "dev1"}));
     assert_eq!(body(&requests[2]), json!({"type": "note", "title": "T", "body": "B", "email": "user@example.com"}));
@@ -246,13 +265,14 @@ mod tests {
     let ctx = NotifyContext { title: "T".into(), body: "B".into(), attachments: vec![attachment], ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
-    assert_eq!(body(&requests[0]), json!({"file_name": "photo.jpg", "file_type": "image/jpeg"}));
-    assert!(requests[1].headers.get("content-type").unwrap().to_str().unwrap().starts_with("multipart/form-data"));
-    assert!(String::from_utf8_lossy(&requests[1].body).contains("jpeg-bytes"));
-    assert_eq!(body(&requests[2]), json!({"type": "note", "title": "T", "body": "B"}));
+    assert_eq!(body(&requests_to(&server, "POST", "/v2/upload-request").await[0]), json!({"file_name": "photo.jpg", "file_type": "image/jpeg"}));
+    let upload = &requests_to(&server, "POST", "/upload/here").await[0];
+    assert!(upload.headers.get("content-type").unwrap().to_str().unwrap().starts_with("multipart/form-data"));
+    assert!(String::from_utf8_lossy(&upload.body).contains("jpeg-bytes"));
+    let pushes = requests_to(&server, "POST", "/v2/pushes").await;
+    assert_eq!(body(&pushes[0]), json!({"type": "note", "title": "T", "body": "B"}));
     assert_eq!(
-      body(&requests[3]),
+      body(&pushes[1]),
       json!({"type": "file", "file_name": "photo.jpg", "file_type": "image/jpeg", "file_url": "https://f/x.jpg", "image_url": "https://f/x.jpg"})
     );
   }
@@ -277,9 +297,9 @@ mod tests {
     let ctx =
       NotifyContext { attachments: vec![Attachment { name: "a.txt".into(), data: b"x".to_vec(), mime_type: "text/plain".into() }], ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/v2/pushes").await;
     assert_eq!(
-      body(&requests[2]),
+      body(&requests[0]),
       json!({"type": "file", "file_name": "a.txt", "file_type": "text/plain", "file_url": "https://f/a.txt", "device_iden": "dev1"})
     );
   }
@@ -289,7 +309,7 @@ mod tests {
     let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
     for status in [401, 500, 999] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v2/pushes")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       let svc = from_url("pbul://tok123/d1/d2").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
     }
@@ -316,5 +336,28 @@ mod tests {
     let details = Pushbullet::static_details();
     assert_eq!(details.service_name, "Pushbullet");
     assert!(details.attachment_support);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second device fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/v2/pushes"))
+      .and(body_partial_json(json!({"device_iden": "dev2"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/v2/pushes")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("pbul://tok123/dev1/dev2?retry=1&wait=0"));
+    assert!(
+      crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() })).await.is_success()
+    );
+    let sent: Vec<serde_json::Value> =
+      crate::notify::custom_json::requests_to(&server, "POST", "/v2/pushes").await.iter().map(|r| body(r)["device_iden"].clone()).collect();
+    assert_eq!(sent, vec![json!("dev1"), json!("dev2"), json!("dev2")]);
   }
 }

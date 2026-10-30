@@ -1,6 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -33,34 +34,6 @@ pub struct WhatsApp {
   components: Vec<Component>,
   verify_certificate: bool,
   tags: Vec<String>,
-}
-
-/// Python `unquote()`: invalid UTF-8 becomes U+FFFD instead of failing.
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| String::from_utf8_lossy(&urlencoding::decode_binary(s.as_bytes())).into_owned())
-}
-
-/// The `?:key=value` arguments in URL order (upstream `qsd:`). A repeated
-/// key keeps its first position and takes the last value.
-fn colon_args(raw: &str) -> Vec<(String, String)> {
-  let mut out: Vec<(String, String)> = Vec::new();
-  let Some((_, query)) = raw.split_once('?') else { return out };
-  for pair in query.split(['&', ';']) {
-    let (key, val) = pair.split_once('=').unwrap_or((pair, ""));
-    // Like upstream parse_qsd(), a '+' after the first character of a key
-    // reads as a space
-    let key = match key.char_indices().nth(1) {
-      Some((i, _)) => format!("{}{}", &key[..i], key[i..].replace('+', " ")),
-      None => key.to_string(),
-    };
-    let Some(name) = unquote(&key).strip_prefix(':').map(String::from) else { continue };
-    let val = unquote(val).trim().to_string();
-    match out.iter_mut().find(|(k, _)| *k == name) {
-      Some(entry) => entry.1 = val,
-      None => out.push((name, val)),
-    }
-  }
-  out
 }
 
 /// Upstream `component_key_re` (matched at the start only): a 1-based index
@@ -112,80 +85,6 @@ fn parse_components(args: &[(String, String)]) -> Option<Vec<Component>> {
   Some(components)
 }
 
-/// One match of upstream `PHONE_NO_DETECTION_RE` starting at `start`:
-/// `(?:[+(][+(\s]{0,32})?[0-9][0-9()\s-]{1,32}[0-9]` followed by
-/// `(?=$|[\s,+(]+[0-9])`. Returns where the match ends.
-fn phone_match_at(c: &[char], start: usize) -> Option<usize> {
-  let digit = |i: usize| c.get(i).is_some_and(char::is_ascii_digit);
-  let lead_rest = |ch: &&char| matches!(ch, '+' | '(') || ch.is_whitespace();
-  let middle = |ch: &&char| ch.is_ascii_digit() || matches!(ch, '(' | ')' | '-') || ch.is_whitespace();
-  let sep = |ch: &&char| matches!(ch, ',' | '+' | '(') || ch.is_whitespace();
-
-  // The optional prefix is greedy: try the longest one first, then none
-  let mut starts = Vec::new();
-  if matches!(c.get(start), Some('+' | '(')) {
-    let n = c[start + 1..].iter().take(32).take_while(lead_rest).count();
-    starts.extend((0..=n).rev().map(|k| start + 1 + k));
-  }
-  starts.push(start);
-
-  for p in starts {
-    if !digit(p) {
-      continue;
-    }
-    let n = c[p + 1..].iter().take(32).take_while(middle).count();
-    for m in (1..=n).rev() {
-      let last = p + 1 + m;
-      if !digit(last) {
-        continue;
-      }
-      let end = last + 1;
-      let run = c[end..].iter().take_while(sep).count();
-      if end == c.len() || (run > 0 && digit(end + run)) {
-        return Some(end);
-      }
-    }
-  }
-  None
-}
-
-/// Upstream `parse_phone_no()`: every phone-number-looking run in each
-/// entry. An entry without any is kept, split on the list delimiters, so it
-/// can be reported.
-fn parse_phone_no<'a>(entries: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-  let mut result = Vec::new();
-  for entry in entries {
-    let chars: Vec<char> = entry.chars().collect();
-    let mut found = Vec::new();
-    let mut pos = 0;
-    while pos < chars.len() {
-      match phone_match_at(&chars, pos) {
-        Some(end) => {
-          found.push(chars[pos..end].iter().collect::<String>());
-          pos = end;
-        }
-        None => pos += 1,
-      }
-    }
-    if found.is_empty() {
-      result.extend(entry.split(|c: char| matches!(c, '[' | ']' | ';' | ',') || c.is_whitespace()).filter(|s| !s.is_empty()).map(String::from));
-    } else {
-      result.extend(found);
-    }
-  }
-  result
-}
-
-/// Upstream `is_phone_no()` (minimum length 10): the digits of a phone number.
-fn is_phone_no(s: &str) -> Option<String> {
-  let rest = s.strip_prefix('+').unwrap_or(s);
-  if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit() || matches!(c, '(' | ')' | '+' | '-') || c.is_whitespace()) {
-    return None;
-  }
-  let digits: String = rest.chars().filter(char::is_ascii_digit).collect();
-  (10..=14).contains(&digits.len()).then_some(digits)
-}
-
 /// A WhatsApp group ID: 16 or more digits, with an optional `#` prefix and
 /// `@g.us` suffix.
 fn group_id(s: &str) -> Option<String> {
@@ -199,20 +98,21 @@ fn group_id(s: &str) -> Option<String> {
 
 impl WhatsApp {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let mut phone_id = unquote(url.host.as_deref().unwrap_or_default());
+    let mut phone_id = url.host.clone().unwrap_or_default();
     let (mut template, mut token) = match url.password {
       Some(ref password) => (url.user.clone().filter(|u| !u.is_empty()), password.clone()),
       None => (None, url.user.clone().unwrap_or_default()),
     };
+    // Upstream unquotes ?token=, ?from= and ?source= once more
     if let Some(t) = url.get("token").filter(|t| !t.is_empty()) {
-      token = t.to_string();
+      token = unquote(t);
     }
     if let Some(t) = url.get("template").filter(|t| !t.is_empty()) {
       template = Some(t.to_string());
     }
     let language = url.get("language").filter(|l| !l.is_empty()).or_else(|| url.get("lang").filter(|l| !l.is_empty()));
     if let Some(f) = url.get("source").filter(|f| !f.is_empty()).or_else(|| url.get("from").filter(|f| !f.is_empty())) {
-      phone_id = f.to_string();
+      phone_id = unquote(f);
     }
 
     let token = token.trim().to_string();
@@ -247,12 +147,12 @@ impl WhatsApp {
 
     let mut entries: Vec<String> = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      entries.extend(parse_phone_no([to]));
+      entries.extend(parse_phone_no(&[to]));
     }
     let mut targets = Vec::new();
-    for target in parse_phone_no(entries.iter().map(String::as_str)) {
-      if let Some(digits) = is_phone_no(&target) {
-        targets.push(format!("+{}", digits));
+    for target in parse_phone_no(&entries) {
+      if let Some(phone) = is_phone_no(&target, 10) {
+        targets.push(format!("+{}", phone.full));
       } else if let Some(gid) = group_id(&target) {
         targets.push(format!("#{}", gid));
       } else {
@@ -260,7 +160,8 @@ impl WhatsApp {
       }
     }
 
-    let components = parse_components(&colon_args(&url.raw))?;
+    let mapping: Vec<(String, String)> = url.qsd_colon.iter().map(|(k, v)| (unquote(k), unquote(v))).collect();
+    let components = parse_components(&mapping)?;
 
     Some(Self { token, phone_id, template, language: lang, targets, components, verify_certificate: url.verify_certificate(), tags: url.tags() })
   }
@@ -317,6 +218,9 @@ impl Notify for WhatsApp {
   fn body_maxlen(&self) -> usize {
     1024
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    0.2
+  }
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     if self.targets.is_empty() {
       tracing::warn!("There are no valid WhatsApp targets to notify.");
@@ -327,6 +231,10 @@ impl Notify for WhatsApp {
     let mut payload = self.payload(ctx);
     let mut all_ok = true;
     for target in &self.targets {
+      // A retry skips targets that already accepted the message
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       // Groups are stored as '#{id}'; the API wants '{id}@g.us'
       match target.strip_prefix('#') {
         Some(gid) => {
@@ -338,11 +246,12 @@ impl Notify for WhatsApp {
           payload["recipient_type"] = json!("individual");
         }
       }
+      crate::notify::throttle().await;
       let resp = match client.post(&url).header("User-Agent", APP_ID).header("Accept", "application/json").bearer_auth(&self.token).json(&payload).send().await
       {
         Ok(resp) => resp,
         Err(e) => {
-          tracing::warn!("A Connection error occurred sending WhatsApp:{} notification: {}", target, e);
+          tracing::warn!("A Connection error occurred sending WhatsApp:{} notification: {}", target, crate::error::loggable_http_error(&e));
           all_ok = false;
           continue;
         }
@@ -350,6 +259,7 @@ impl Notify for WhatsApp {
       let status = resp.status().as_u16();
       if status == 200 || status == 201 {
         tracing::info!("Sent WhatsApp notification to {}.", target);
+        crate::delivery::mark_delivered(target, false);
         continue;
       }
       let error = resp.json::<serde_json::Value>().await.ok().map(|v| v["error"].clone()).unwrap_or_default();
@@ -370,7 +280,7 @@ mod tests {
   use super::*;
   use crate::notify::registry::from_url;
   use crate::types::NotifyType;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   const GROUP: &str = "120363043968066561";
@@ -468,6 +378,8 @@ mod tests {
 
   #[test]
   fn test_parse_phone_no() {
+    // The shared helper gives upstream's results
+    let parse_phone_no = |entries: [&str; 1]| parse_phone_no(&entries);
     assert_eq!(parse_phone_no(["+1 (555) 987-6543"]), vec!["+1 (555) 987-6543"]);
     assert_eq!(parse_phone_no(["4444444444,5555555555 +16666666666"]), vec!["4444444444", "5555555555", "+16666666666"]);
     // A '#' prefix is dropped by the pattern; '@g.us' keeps the whole entry
@@ -477,7 +389,7 @@ mod tests {
     // Reference results from upstream parse_phone_no()
     assert_eq!(parse_phone_no(["(+1) 555 1234567, +44 20 1234 5678"]), vec!["(+1) 555 1234567", "+44 20 1234 5678"]);
     assert_eq!(parse_phone_no(["1".repeat(40).as_str()]), vec!["1".repeat(34)]);
-    assert_eq!(parse_phone_no(["12 34", "+(1)23", "++  1-2-3 ,4"]), vec!["12 34", "+(1)23", "++  1-2-3"]);
+    assert_eq!(crate::utils::phone::parse_phone_no(&["12 34", "+(1)23", "++  1-2-3 ,4"]), vec!["12 34", "+(1)23", "++  1-2-3"]);
   }
 
   #[test]
@@ -552,6 +464,7 @@ mod tests {
     // Without components the template is sent bare
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v21.0/12345/messages"))
       .and(body_json(json!({
         "messaging_product": "whatsapp", "to": "+15559876543", "recipient_type": "individual", "type": "template",
         "template": { "name": "tmpl", "language": { "code": "en_US" } },
@@ -574,20 +487,45 @@ mod tests {
     let server = MockServer::start().await;
     let failing = |req: &wiremock::Request| serde_json::from_slice::<serde_json::Value>(&req.body).map(|v| v["to"] == "+4444444444").unwrap_or(false);
     Mock::given(method("POST"))
+      .and(path("/v21.0/12345/messages"))
       .and(failing)
       .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "error": { "code": 131, "message": "bad" } })))
       .expect(1)
       .mount(&server)
       .await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v21.0/12345/messages")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
     let svc = from_url(&format!("whatsapp://{}@12345/4444444444/5555555555", e)).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B", NotifyType::Info))).await.unwrap());
 
     for code in [500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v21.0/12345/messages")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let svc = from_url(&format!("whatsapp://{}@12345/%23{}", e, GROUP)).unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B", NotifyType::Info))).await.unwrap());
     }
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second target fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/v21.0/12345/messages"))
+      .and(body_partial_json(json!({"to": "+5555555555"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/v21.0/12345/messages")).respond_with(ResponseTemplate::new(201)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("whatsapp://{}@12345/4444444444/5555555555?retry=1&wait=0", "e".repeat(32))));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("B", NotifyType::Info))).await.is_success());
+    let sent: Vec<serde_json::Value> = crate::notify::custom_json::requests_to(&server, "POST", "/v21.0/12345/messages")
+      .await
+      .iter()
+      .map(|r| r.body_json::<serde_json::Value>().unwrap()["to"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!("+4444444444"), json!("+5555555555"), json!("+5555555555")]);
   }
 }

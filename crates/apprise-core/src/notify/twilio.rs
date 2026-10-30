@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
-use crate::notify::sms_targets::{is_phone_no, parse_phone_no, unquoted_host, url_credentials};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no_with_prefix};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -81,12 +81,13 @@ fn form_encode(pairs: &[(&str, &str)]) -> String {
 
 impl Twilio {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (url_user, url_password) = url_credentials(url);
     // twilio://account_sid:auth_token@source/targets
-    let qs = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
-    let account_sid = qs("sid").or_else(|| url_user.clone()).unwrap_or_default();
-    let auth_token = qs("token").or_else(|| url_password.clone()).unwrap_or_default();
-    let source = qs("source").or_else(|| qs("from")).or_else(|| unquoted_host(url)).unwrap_or_default();
+    let qs = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(str::to_string);
+    // Upstream unquotes these query values once more
+    let unquoted = |key: &str| qs(key).map(|v| unquote(&v));
+    let account_sid = unquoted("sid").or_else(|| url.user.clone()).unwrap_or_default();
+    let auth_token = unquoted("token").or_else(|| url.password.clone()).unwrap_or_default();
+    let source = unquoted("source").or_else(|| unquoted("from")).or_else(|| url.host.clone()).unwrap_or_default();
 
     if !is_prefixed_hex(&account_sid, "AC") {
       tracing::warn!("An invalid Twilio Account SID ({}) was specified.", account_sid);
@@ -99,7 +100,7 @@ impl Twilio {
     // An invalid API key is ignored, as upstream does
     let apikey = qs("apikey").filter(|k| is_prefixed_hex(k, "SK"));
 
-    let method = match qs("method") {
+    let method = match unquoted("method") {
       Some(m) => match Method::from_prefix(&m) {
         Some(method) => method,
         None => {
@@ -135,10 +136,10 @@ impl Twilio {
 
     let mut entries = url.path_parts.clone();
     if let Some(to) = qs("to") {
-      entries.extend(parse_phone_no([to], true));
+      entries.extend(parse_phone_no_with_prefix(&[to]));
     }
     let mut targets = Vec::new();
-    for entry in parse_phone_no(&entries, true) {
+    for entry in parse_phone_no_with_prefix(&entries) {
       let Some((label, phoneno)) = detect_mode(&entry) else { continue };
       let mode = mode_of(label, default_mode);
       let Some(phone) = is_phone_no(phoneno, 10) else {
@@ -242,8 +243,14 @@ impl Notify for Twilio {
         Mode::Text => (self.source.clone(), target.clone()),
         Mode::WhatsApp => (format!("whatsapp:{}", self.source), format!("whatsapp:{}", target)),
       };
+      // A retry skips targets that already accepted the message; the mode
+      // is part of the key as one number can be reached both ways
+      if crate::delivery::is_delivered(&to, false) {
+        continue;
+      }
       let body = form_encode(&[(content_key, content.as_str()), ("From", from.as_str()), ("To", to.as_str())]);
       tracing::debug!("Twilio POST URL: {} (cert_verify={})", url, self.verify_certificate);
+      crate::notify::throttle().await;
       let result = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -254,7 +261,10 @@ impl Notify for Twilio {
         .send()
         .await;
       match result {
-        Ok(resp) if matches!(resp.status().as_u16(), 200 | 201) => tracing::info!("Sent Twilio notification to {}.", target),
+        Ok(resp) if matches!(resp.status().as_u16(), 200 | 201) => {
+          tracing::info!("Sent Twilio notification to {}.", target);
+          crate::delivery::mark_delivered(&to, false);
+        }
         Ok(resp) => {
           let status = resp.status();
           let text = resp.text().await.unwrap_or_default();
@@ -268,7 +278,7 @@ impl Notify for Twilio {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Twilio:{} notification.", target);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -281,7 +291,7 @@ impl Notify for Twilio {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::matchers::{body_string, body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn sid() -> String {
@@ -439,6 +449,7 @@ mod tests {
     // A TwiML body is sent as is and the title dropped
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path(format!("/2010-04-01/Accounts/{}/Calls.json", a)))
       .and(body_string("Twiml=%3CResponse%3E%3CPlay%2F%3E%3C%2FResponse%3E&From=%2B15551233456&To=%2B15559876543"))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -455,6 +466,7 @@ mod tests {
     // A message goes to the source itself
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path(format!("/2010-04-01/Accounts/{}/Messages.json", a)))
       .and(body_string("Body=body&From=%2B15551233456&To=%2B15551233456"))
       .respond_with(ResponseTemplate::new(201))
       .expect(1)
@@ -478,12 +490,14 @@ mod tests {
     let ctx = NotifyContext { body: "body".into(), ..Default::default() };
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path(format!("/2010-04-01/Accounts/{}/Messages.json", a)))
       .and(body_string("Body=body&From=%2B15551233456&To=%2B15559876543"))
       .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"code": 21211, "message": "The 'To' number is not a valid phone number."}"#))
       .expect(1)
       .mount(&server)
       .await;
     Mock::given(method("POST"))
+      .and(path(format!("/2010-04-01/Accounts/{}/Messages.json", a)))
       .and(body_string("Body=body&From=%2B15551233456&To=%2B15559876544"))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
@@ -492,5 +506,31 @@ mod tests {
     let svc = from_url(&format!("twilio://{}:{}@15551233456/15559876543/15559876544", a, b)).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    let (a, b) = (sid(), "b".repeat(32));
+    let messages = format!("/2010-04-01/Accounts/{}/Messages.json", a);
+    // The second mode fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path(&messages))
+      .and(body_string_contains("To=whatsapp"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path(&messages)).respond_with(ResponseTemplate::new(201)).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("twilio://{}:{}@15551233456/15559876543/w:15559876543?retry=1&wait=0", a, b)));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&NotifyContext { body: "b".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<String> = crate::notify::custom_json::requests_to(&server, "POST", &messages)
+      .await
+      .iter()
+      .map(|r| url::form_urlencoded::parse(&r.body).find(|(k, _)| k == "To").unwrap().1.into_owned())
+      .collect();
+    assert_eq!(sent, vec!["+15559876543", "whatsapp:+15559876543", "whatsapp:+15559876543"]);
   }
 }

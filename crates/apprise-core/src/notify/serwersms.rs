@@ -3,9 +3,10 @@ use reqwest::multipart::{Form, Part};
 use serde_json::{Map, Value};
 
 use crate::error::NotifyError;
-use crate::notify::messaging_targets::{is_phone_no, parse_list, unquote};
 use crate::notify::{APP_ID, Attachment, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::phone::is_phone_no;
 
 /// SerwerSMS SMS/MMS (`serwersms://{user}:{password}@{sender}/{targets}`).
 pub struct SerwerSms {
@@ -65,8 +66,8 @@ impl SerwerSms {
       .get("sender")
       .filter(|s| !s.is_empty())
       .or_else(|| url.get("from").filter(|f| !f.is_empty()))
-      .map(str::to_string)
-      .unwrap_or_else(|| url.host.as_deref().map(unquote).unwrap_or_default());
+      .map(unquote)
+      .unwrap_or_else(|| url.host.clone().unwrap_or_default());
     let Some(sender) = validate_sender(&sender) else {
       tracing::warn!("A SerwerSMS sender name ({}) is invalid.", sender);
       return None;
@@ -74,7 +75,8 @@ impl SerwerSms {
 
     let mut raw_targets = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      raw_targets.extend(parse_list(&[to]));
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      raw_targets.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
 
     let mut target_phones = Vec::new();
@@ -83,7 +85,7 @@ impl SerwerSms {
       if let Some(group) = group_id(&target) {
         target_groups.push(group.to_string());
       } else if let Some(phone) = is_phone_no(&target, 10) {
-        target_phones.push(phone);
+        target_phones.push(phone.full);
       } else {
         tracing::warn!("Dropped invalid SerwerSMS target: {}.", target);
       }
@@ -155,6 +157,10 @@ impl Notify for SerwerSms {
 
     let mut has_error = false;
     for (label, (key, value)) in calls {
+      // A retry skips targets that already accepted the message
+      if crate::delivery::is_delivered(&label, false) {
+        continue;
+      }
       let fields =
         [("username", self.user.clone()), ("password", self.password.clone()), ("text", ctx.body.clone()), ("sender", self.sender.clone()), (key, value)];
 
@@ -175,11 +181,12 @@ impl Notify for SerwerSms {
       };
 
       let kind = if use_mms { "MMS notification" } else { "notification" };
+      crate::notify::throttle().await;
       let resp = match request.send().await {
         Ok(resp) => resp,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending SerwerSMS {} to {}.", kind, label);
-          tracing::debug!("Socket Exception: {}", e.without_url());
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -209,6 +216,7 @@ impl Notify for SerwerSms {
       }
 
       tracing::info!("Sent SerwerSMS {} to {}.", kind, label);
+      crate::delivery::mark_delivered(&label, false);
     }
 
     Ok(!has_error)
@@ -220,7 +228,7 @@ mod tests {
   use super::*;
   use crate::notify::registry::from_url;
   use serde_json::json;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> Option<SerwerSms> {
@@ -318,8 +326,7 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
 
     // Phones are sent before groups
-    // Only our POSTs: other processes on the host may probe the mock port
-    let requests: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/messages/send_sms").await;
     assert!(requests[0].body_json::<Value>().unwrap().get("phone").is_some());
     assert!(requests[1].body_json::<Value>().unwrap().get("group_id").is_some());
   }
@@ -334,8 +341,7 @@ mod tests {
     ctx.attachments.push(Attachment { name: "notes.txt".into(), data: b"plain text".to_vec(), mime_type: "text/plain".into() });
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    // Only our POSTs: other processes on the host may probe the mock port
-    let requests: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/messages/send_mms").await;
     for (request, target) in requests.iter().zip(["name=\"phone\"\r\n\r\n+15551234567\r\n", "name=\"group_id\"\r\n\r\n500\r\n"]) {
       let content_type = request.headers.get("Content-Type").unwrap().to_str().unwrap();
       assert!(content_type.starts_with("multipart/form-data; boundary="));
@@ -366,7 +372,8 @@ mod tests {
     ] {
       for mms in [false, true] {
         let server = MockServer::start().await;
-        Mock::given(method("POST")).respond_with(response.clone()).expect(1).mount(&server).await;
+        let endpoint = if mms { "/messages/send_mms" } else { "/messages/send_sms" };
+        Mock::given(method("POST")).and(path(endpoint)).respond_with(response.clone()).expect(1).mount(&server).await;
         let svc = from_url("serwersms://u:p@Sender/+48123456789").unwrap();
         let ctx = if mms { with_attachment(ctx("msg")) } else { ctx("msg") };
         assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
@@ -375,13 +382,40 @@ mod tests {
 
     // One success and one failure is a failure, and both are attempted
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ok_response()).up_to_n_times(1).expect(1).mount(&server).await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(999)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/messages/send_sms")).respond_with(ok_response()).up_to_n_times(1).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/messages/send_sms")).respond_with(ResponseTemplate::new(999)).expect(1).mount(&server).await;
     let svc = from_url("serwersms://u:p@Sender/+48111000000/+48222000000").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("msg"))).await.unwrap());
 
     let svc = from_url("serwersms://u:p@Sender/+48123456789/%23100").unwrap();
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&ctx("msg"))).await.unwrap());
     assert!(!crate::notify::with_test_base("http://127.0.0.1:1", svc.send(&with_attachment(ctx("msg")))).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The group fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/messages/send_sms"))
+      .and(body_partial_json(json!({"group_id": "123"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/messages/send_sms")).respond_with(ok_response()).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("serwersms://user:pass@Sender/%23123/15551234567?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("body"))).await.is_success());
+    let sent: Vec<Value> = crate::notify::custom_json::requests_to(&server, "POST", "/messages/send_sms")
+      .await
+      .iter()
+      .map(|r| {
+        let body = r.body_json::<Value>().unwrap();
+        body.get("phone").or_else(|| body.get("group_id")).cloned().unwrap()
+      })
+      .collect();
+    assert_eq!(sent, vec![json!("+15551234567"), json!("123"), json!("123")]);
   }
 }

@@ -1,7 +1,6 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::split_path;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -20,7 +19,8 @@ impl PushJet {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // pjet[s]://[user:pass@]host[:port]/{secret_key}
     let host = url.host.clone().filter(|h| !h.is_empty())?;
-    let secret_key = url.get("secret").filter(|s| !s.is_empty()).map(str::to_string).or_else(|| split_path(url).into_iter().next());
+    // Upstream unquotes ?secret= once more
+    let secret_key = url.get("secret").filter(|s| !s.is_empty()).map(unquote).or_else(|| url.path_parts.first().cloned());
     let Some(secret_key) = secret_key.as_deref().and_then(|s| s.split_whitespace().next()).map(str::to_string) else {
       tracing::warn!("An invalid Pushjet Secret Key was specified.");
       return None;
@@ -63,7 +63,10 @@ impl Notify for PushJet {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
-
+  /// Upstream does not throttle Pushjet
+  fn request_rate_per_sec(&self) -> f64 {
+    0.0
+  }
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let url = format!("{}://{}{}/message/", if self.secure { "https" } else { "http" }, self.host, self.port.map(|p| format!(":{}", p)).unwrap_or_default());
     // Upstream posts JSON under a form content type
@@ -79,6 +82,7 @@ impl Notify for PushJet {
       request = request.basic_auth(user, Some(self.password.as_deref().unwrap_or("")));
     }
 
+    crate::notify::throttle().await;
     let resp = request.send().await?;
     let status = resp.status();
     if status.as_u16() == 200 {
@@ -134,7 +138,7 @@ mod tests {
   async fn test_send_failure() {
     for status in [500, 999] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/message/")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let addr = server.address();
       let svc = from_url(&format!("pjet://{}:{}/abc123", addr.ip(), addr.port())).unwrap();
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };

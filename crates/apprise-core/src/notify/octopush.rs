@@ -2,10 +2,11 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::error::NotifyError;
-use crate::notify::messaging_targets::{is_phone_no, parse_phone_no, unquote, validate_token};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::{ParsedUrl, parse_bool};
-use crate::utils::validate::is_email;
+use crate::utils::email::is_email;
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
+use crate::utils::qsd::validate_token;
 
 const OCTOPUSH_PREMIUM: &str = "sms_premium";
 const OCTOPUSH_LOW_COST: &str = "sms_low_cost";
@@ -46,12 +47,14 @@ pub struct Octopush {
 
 impl Octopush {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.as_deref().map(unquote).unwrap_or_default();
+    let host = url.host.clone().unwrap_or_default();
     let mut tokens = url.path_parts.clone();
+    // Upstream unquotes these values once more
+    let qsd = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote);
 
-    let api_key = match url.get("key").filter(|k| !k.is_empty()) {
-      Some(key) => Some(key.to_string()),
-      None if !tokens.is_empty() => Some(tokens.remove(0)),
+    let api_key = match qsd("key") {
+      Some(key) => Some(key),
+      None if !tokens.is_empty() => Some(unquote(&tokens.remove(0))),
       None => None,
     };
 
@@ -66,16 +69,16 @@ impl Octopush {
 
     // With a user and password, the password is the login's local part and
     // the user names the sender
-    let api_login = match url.get("login").filter(|l| !l.is_empty()) {
-      Some(login) => Some(login.to_string()),
+    let api_login = match qsd("login") {
+      Some(login) => Some(login),
       None => password.or(user).map(|local| format!("{}@{}", local, host)),
     };
-    let sender = match url.get("sender").filter(|s| !s.is_empty()) {
-      Some(sender) => Some(sender.to_string()),
+    let sender = match qsd("sender") {
+      Some(sender) => Some(sender),
       None => user.filter(|_| password.is_some()).map(str::to_string),
     };
 
-    let Some(api_login) = api_login.as_deref().and_then(validate_token).filter(|l| is_email(l)) else {
+    let Some(api_login) = api_login.as_deref().and_then(validate_token).filter(|l| is_email(l).is_some()) else {
       tracing::warn!("An invalid Octopush API Login was specified.");
       return None;
     };
@@ -85,7 +88,7 @@ impl Octopush {
       return None;
     };
 
-    let mtype = match url.get("type").filter(|t| !t.is_empty()) {
+    let mtype = match qsd("type") {
       None => OCTOPUSH_PREMIUM,
       Some(requested) => {
         let wanted = requested.to_lowercase().trim().to_string();
@@ -99,9 +102,9 @@ impl Octopush {
       }
     };
 
-    let purpose = match url.get("purpose").filter(|p| !p.is_empty()) {
+    let purpose = match qsd("purpose") {
       None => OCTOPUSH_PURPOSES[0].to_string(),
-      Some(requested) => match validate_token(requested).map(|p| p.to_lowercase()) {
+      Some(requested) => match validate_token(&requested).map(|p| p.to_lowercase()) {
         Some(purpose) if OCTOPUSH_PURPOSES.contains(&purpose.as_str()) => purpose,
         _ => {
           tracing::warn!("The Octopush purpose specified ({}) is invalid.", requested);
@@ -124,7 +127,7 @@ impl Octopush {
     let mut targets = Vec::new();
     for target in parse_phone_no(&raw_targets) {
       match is_phone_no(&target, 10) {
-        Some(phone) => targets.push(format!("+{}", phone)),
+        Some(phone) => targets.push(format!("+{}", phone.full)),
         None => tracing::warn!("Dropped invalid phone ({}) specified.", target),
       }
     }
@@ -188,7 +191,12 @@ impl Notify for Octopush {
     let sender = self.sender.as_deref().unwrap_or(ctx.asset.app_id.as_str());
     let mut has_error = false;
 
-    for chunk in self.targets.chunks(batch_size) {
+    for (index, chunk) in self.targets.chunks(batch_size).enumerate() {
+      // A retry skips batches that already accepted the message
+      let key = index.to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
       let recipients: Vec<_> = chunk.iter().map(|phone| json!({ "phone_number": phone })).collect();
       let payload = json!({
         "recipients": recipients,
@@ -200,6 +208,7 @@ impl Notify for Octopush {
       });
       let verbose_dest = if chunk.len() <= 3 { chunk.join(", ") } else { format!("{} recipients", chunk.len()) };
 
+      crate::notify::throttle().await;
       let result = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -215,6 +224,7 @@ impl Notify for Octopush {
       match result {
         Ok(resp) if resp.status() == reqwest::StatusCode::CREATED => {
           tracing::info!("Sent Octopush notification to {}.", verbose_dest);
+          crate::delivery::mark_delivered(&key, false);
         }
         Ok(resp) => {
           tracing::warn!("Failed to send Octopush notification to {}: error={}.", verbose_dest, resp.status().as_u16());
@@ -223,7 +233,7 @@ impl Notify for Octopush {
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Octopush:{} notification.", verbose_dest);
-          tracing::debug!("Socket Exception: {}", e.without_url());
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -237,7 +247,7 @@ impl Notify for Octopush {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> Option<Octopush> {
@@ -365,6 +375,7 @@ mod tests {
     let server = MockServer::start().await;
     for phone in ["+15551234567", "+15559876543"] {
       Mock::given(method("POST"))
+        .and(path("/v1/public/sms-campaign/send"))
         .and(body_json(json!({
           "recipients": [{"phone_number": phone}],
           "text": "body",
@@ -386,14 +397,13 @@ mod tests {
   #[tokio::test]
   async fn test_send_splits_large_batches() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(201)).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/public/sms-campaign/send")).respond_with(ResponseTemplate::new(201)).expect(2).mount(&server).await;
 
     let targets: Vec<String> = (0..501).map(|i| (1_000_000_000u64 + i).to_string()).collect();
     let svc = from_url(&format!("octopush://user@myaccount.com/apikey/{}?batch=yes", targets.join("/"))).unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
 
-    // Only our POSTs: other processes on the host may probe the mock port
-    let requests: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/v1/public/sms-campaign/send").await;
     let counts: Vec<usize> = requests.iter().map(|r| r.body_json::<serde_json::Value>().unwrap()["recipients"].as_array().unwrap().len()).collect();
     assert_eq!(counts, vec![500, 1]);
   }
@@ -407,15 +417,21 @@ mod tests {
     // Only 201 Created is a success
     for status in [200, 500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1/public/sms-campaign/send")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url("octopush://user@myaccount.com/apikey/1234567890").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap(), "status {}", status);
     }
 
     // One failed target still notifies the rest
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path("/v1/public/sms-campaign/send"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .expect(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/v1/public/sms-campaign/send")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
     let svc = from_url("octopush://user@myaccount.com/apikey/1234567890/2345678901").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
 
@@ -430,5 +446,29 @@ mod tests {
     {
       assert!(crate::notify::registry::from_url(url).is_some(), "Should parse: {}", url);
     }
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second number fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/v1/public/sms-campaign/send"))
+      .and(body_partial_json(json!({"recipients": [{"phone_number": "+2345678901"}]})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/v1/public/sms-campaign/send")).respond_with(ResponseTemplate::new(201)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("octopush://user@myaccount.com/apikey/1234567890/2345678901?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("body"))).await.is_success());
+    let sent: Vec<serde_json::Value> = crate::notify::custom_json::requests_to(&server, "POST", "/v1/public/sms-campaign/send")
+      .await
+      .iter()
+      .map(|r| r.body_json::<serde_json::Value>().unwrap()["recipients"][0]["phone_number"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!("+1234567890"), json!("+2345678901"), json!("+2345678901")]);
   }
 }

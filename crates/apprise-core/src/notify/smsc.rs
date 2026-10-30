@@ -3,9 +3,10 @@ use reqwest::multipart::{Form, Part};
 use serde_json::Value;
 
 use crate::error::NotifyError;
-use crate::notify::messaging_targets::{is_phone_no, parse_phone_no, unquote, validate_token};
 use crate::notify::{APP_ID, Attachment, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
+use crate::utils::qsd::validate_token;
 
 /// SMSC SMS/MMS (`smsc://{login}:{password}@{targets}`).
 pub struct Smsc {
@@ -32,8 +33,9 @@ impl Smsc {
       return None;
     };
 
-    let sender = match url.get("sender").filter(|s| !s.is_empty()) {
-      Some(sender) => match validate_token(sender) {
+    // Upstream unquotes the sender once more
+    let sender = match url.get("sender").filter(|s| !s.is_empty()).map(unquote) {
+      Some(sender) => match validate_token(&sender) {
         Some(sender) => Some(sender),
         None => {
           tracing::warn!("The SMSC sender ID specified ({}) is invalid.", sender);
@@ -44,7 +46,7 @@ impl Smsc {
     };
 
     // The host is the first phone number target
-    let mut raw_targets = vec![url.host.as_deref().map(unquote).unwrap_or_default()];
+    let mut raw_targets = vec![url.host.clone().unwrap_or_default()];
     raw_targets.extend(url.path_parts.iter().cloned());
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
       raw_targets.extend(parse_phone_no(&[to]));
@@ -52,7 +54,7 @@ impl Smsc {
 
     let mut targets = Vec::new();
     for target in parse_phone_no(&raw_targets) {
-      match is_phone_no(&target, 10) {
+      match is_phone_no(&target, 10).map(|p| p.full) {
         Some(phone) => targets.push(phone),
         None => tracing::warn!("Dropped invalid SMSC phone # ({}).", target),
       }
@@ -172,11 +174,12 @@ impl Notify for Smsc {
       client.post(&url).header("User-Agent", APP_ID).form(&params)
     };
 
+    crate::notify::throttle().await;
     let resp = match request.send().await {
       Ok(resp) => resp,
       Err(e) => {
         tracing::warn!("A Connection error occurred sending SMSC {}.", kind);
-        tracing::debug!("Socket Exception: {}", e.without_url());
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return Ok(false);
       }
     };
@@ -290,6 +293,7 @@ mod tests {
   async fn test_send_sms_sender_translit() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/sys/send.php"))
       .and(body_string("login=login&psw=password&phones=15551234567%2C15559876543&fmt=3&sender=Apprise&translit=1&mes=body"))
       .respond_with(ok_response())
       .expect(1)
@@ -312,7 +316,7 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     // Only our POSTs: other processes on the host may probe the mock port
-    let requests: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/sys/send.php").await;
     let content_type = requests[0].headers.get("Content-Type").unwrap().to_str().unwrap().to_string();
     assert!(content_type.starts_with("multipart/form-data; boundary="));
     let body = String::from_utf8_lossy(&requests[0].body).to_string();
@@ -345,7 +349,7 @@ mod tests {
       ResponseTemplate::new(999),
     ] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(response).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/sys/send.php")).respond_with(response).expect(1).mount(&server).await;
       let svc = from_url("smsc://login:password@+71234567890").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("Hello"))).await.unwrap());
     }
@@ -353,7 +357,7 @@ mod tests {
     // A 200 is authoritative even when the body is not a JSON object
     for body in ["OK", "null", "[]"] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string(body)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/sys/send.php")).respond_with(ResponseTemplate::new(200).set_body_string(body)).expect(1).mount(&server).await;
       let svc = from_url("smsc://login:password@+71234567890").unwrap();
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("Hello"))).await.unwrap(), "body {}", body);
     }
@@ -363,7 +367,7 @@ mod tests {
     mms.attachments.push(Attachment { name: "a.png".into(), data: vec![1], mime_type: "image/png".into() });
     for response in [ResponseTemplate::new(500), ResponseTemplate::new(200).set_body_json(json!({"error": "Insufficient funds", "error_code": 3}))] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(response).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/sys/send.php")).respond_with(response).expect(1).mount(&server).await;
       let svc = from_url("smsc://login:password@+71234567890").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&mms)).await.unwrap());
     }
@@ -377,6 +381,6 @@ mod tests {
   fn test_blank_option_value_loads() {
     // Upstream trims query values, so a whitespace-only value counts as unset.
     let url = "smsc://login:password@+71234567890?sender=%20%20";
-    assert!(crate::notify::registry::from_url(&url).is_some(), "Should parse: {}", url);
+    assert!(crate::notify::registry::from_url(url).is_some(), "Should parse: {}", url);
   }
 }
