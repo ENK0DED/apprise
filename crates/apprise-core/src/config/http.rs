@@ -1,149 +1,192 @@
+//! Web configuration (upstream `apprise/config/http.py`).
+//!
+//! The configuration is fetched with a POST to the URL's path; the query
+//! string configures Apprise and is not sent. `?+Name=value` and
+//! `?-Name=value` add request headers, user and password become Basic
+//! auth, and the `Content-Type` of the reply picks the format unless
+//! `?format=` already did.
+
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use regex_lite::Regex;
+
+use super::{ConfigFormat, MAX_BUFFER_SIZE, loggable};
 use crate::asset::AppriseAsset;
 use crate::error::ConfigError;
-use crate::notify::Notify;
-use std::path::PathBuf;
+use crate::utils::parse::{ParsedUrl, URL_PATH_SAFE_CHARS, parse_bool, quote, unquote};
 
-/// Return the cache directory for config HTTP responses.
-fn cache_dir() -> PathBuf {
-  dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp")).join("apprise").join("config_cache")
-}
+/// Upstream `URLBase` socket timeouts, in seconds.
+const DEFAULT_CONNECT_TIMEOUT: f64 = 4.0;
+const DEFAULT_READ_TIMEOUT: f64 = 4.0;
 
-/// Hash a URL to produce a deterministic cache filename.
-fn cache_key(url: &str) -> String {
-  use sha2::{Digest, Sha256};
-  let mut hasher = Sha256::new();
-  hasher.update(url.as_bytes());
-  hex::encode(hasher.finalize())
-}
-
-/// Parse the `cache` query parameter.
-/// Returns `None` if caching is disabled, or `Some(ttl_secs)`.
-/// `cache=yes` => default TTL of 600 s (10 min).
-/// `cache=no`  => disabled.
-/// `cache=120` => 120 s TTL.
-fn parse_cache_param(url: &str) -> Option<u64> {
-  let val = super::extract_query_param(url, "cache")?;
-  match val.to_lowercase().as_str() {
-    "no" | "false" | "0" => None,
-    "yes" | "true" => Some(600),
-    other => other.parse::<u64>().ok(),
+/// The URL the configuration is fetched from: schema, host, port and
+/// path, without the query string.
+pub(crate) fn fetch_url(parsed: &ParsedUrl) -> String {
+  let mut url = format!("{}://{}", parsed.schema, parsed.host.as_deref().unwrap_or_default());
+  if let Some(port) = parsed.port {
+    url.push_str(&format!(":{}", port));
   }
+  // Upstream requests its decoded fullpath, which the HTTP library then
+  // quotes again (so an escaped slash becomes a separator).
+  url.push_str(&quote(&unquote(&parsed.fullpath()), URL_PATH_SAFE_CHARS));
+  url
 }
 
-/// Strip `cache` and `format` params from a URL so they don't get sent to the
-/// remote server.
-fn strip_control_params(url: &str) -> String {
-  if let Some(qmark) = url.find('?') {
-    let base = &url[..qmark];
-    let query = &url[qmark + 1..];
-    let filtered: Vec<&str> = query
-      .split('&')
-      .filter(|pair| {
-        let key = pair.split('=').next().unwrap_or("");
-        key != "cache" && key != "format"
-      })
-      .collect();
-    if filtered.is_empty() { base.to_string() } else { format!("{}?{}", base, filtered.join("&")) }
-  } else {
-    url.to_string()
-  }
-}
-
-/// Try reading a cached response. Returns `Some(content)` if the cache file
-/// exists and is within TTL.
-async fn read_cache(url: &str, ttl_secs: u64) -> Option<String> {
-  let path = cache_dir().join(cache_key(url));
-  let meta = tokio::fs::metadata(&path).await.ok()?;
-  let modified = meta.modified().ok()?;
-  let age = modified.elapsed().ok()?;
-  if age.as_secs() > ttl_secs {
-    return None;
-  }
-  tokio::fs::read_to_string(&path).await.ok()
-}
-
-/// Write content to the cache.
-async fn write_cache(url: &str, content: &str) {
-  let dir = cache_dir();
-  if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-    tracing::debug!("Could not create cache dir {:?}: {}", dir, e);
-    return;
-  }
-  let path = dir.join(cache_key(url));
-  if let Err(e) = tokio::fs::write(&path, content).await {
-    tracing::debug!("Could not write cache file {:?}: {}", path, e);
-  }
-}
-
-/// Load config from an HTTP(S) URL.
-/// Supports `?format=text|yaml` and `?cache=yes|no|SECONDS` query parameters.
-pub async fn load_from_http(url: &str, recursion_depth: u32) -> Result<(Vec<Box<dyn Notify>>, Option<AppriseAsset>), ConfigError> {
-  let cache_ttl = parse_cache_param(url);
-  let fetch_url = strip_control_params(url);
-
-  // Try cache first
-  let content = if let Some(ttl) = cache_ttl {
-    if let Some(cached) = read_cache(&fetch_url, ttl).await {
-      tracing::debug!("Using cached config for {}", fetch_url);
-      cached
+/// Request headers: ?-name first, then ?+name, over the User-Agent.
+pub(crate) fn headers(parsed: &ParsedUrl, asset: &AppriseAsset) -> Vec<(String, String)> {
+  let mut out: Vec<(String, String)> = vec![("User-Agent".into(), asset.app_id.clone())];
+  for (k, v) in parsed.qsd_del.iter().chain(parsed.qsd_add.iter()) {
+    if let Some(existing) = out.iter_mut().find(|(name, _)| name.eq_ignore_ascii_case(k)) {
+      existing.1 = v.clone();
     } else {
-      let body = fetch_http(&fetch_url).await?;
-      write_cache(&fetch_url, &body).await;
-      body
+      out.push((k.clone(), v.clone()));
     }
-  } else {
-    fetch_http(&fetch_url).await?
-  };
+  }
+  out
+}
 
-  match super::detect_format(url) {
-    super::ConfigFormat::Yaml => {
-      #[cfg(feature = "yaml")]
-      return super::yaml::parse_yaml(&content, recursion_depth).await;
-      #[cfg(not(feature = "yaml"))]
-      return Err(ConfigError::InvalidFormat("YAML support not compiled in (rebuild with --features yaml)".into()));
-    }
-    super::ConfigFormat::Text => {
-      let services = super::text::parse_text(&content, recursion_depth).await?;
-      Ok((services, None))
-    }
+fn timeout(parsed: &ParsedUrl, key: &str, default: f64) -> Duration {
+  let secs = parsed.get(key).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(default);
+  Duration::from_secs_f64(secs)
+}
+
+/// Upstream MIME_IS_YAML / MIME_IS_TEXT (matched at the start).
+fn format_from_content_type(content_type: &str) -> Option<ConfigFormat> {
+  static YAML: OnceLock<Regex> = OnceLock::new();
+  static TEXT: OnceLock<Regex> = OnceLock::new();
+  if YAML.get_or_init(|| Regex::new(r"(?i)^(text|application)/(x-)?yaml").unwrap()).is_match(content_type) {
+    Some(ConfigFormat::Yaml)
+  } else if TEXT.get_or_init(|| Regex::new(r"(?i)^text/(plain|html)").unwrap()).is_match(content_type) {
+    Some(ConfigFormat::Text)
+  } else {
+    None
   }
 }
 
-async fn fetch_http(url: &str) -> Result<String, ConfigError> {
+/// Fetch a web configuration.
+pub async fn read_http(parsed: &ParsedUrl, asset: &AppriseAsset) -> Result<(String, Option<ConfigFormat>), ConfigError> {
   crate::ensure_crypto_provider();
-  let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().map_err(|e| ConfigError::Other(e.to_string()))?;
-  let resp = client.get(url).send().await.map_err(|e| ConfigError::Other(e.to_string()))?;
-  resp.text().await.map_err(|e| ConfigError::Other(e.to_string()))
+  let url = fetch_url(parsed);
+  let verify = parsed.verify_certificate();
+  let redirects = parsed.get("redirect").map(parse_bool).unwrap_or(true);
+  tracing::debug!("HTTP POST URL: {} (cert_verify={})", loggable(&url, asset), verify);
+
+  let client = reqwest::Client::builder()
+    .connect_timeout(timeout(parsed, "cto", DEFAULT_CONNECT_TIMEOUT))
+    .read_timeout(timeout(parsed, "rto", DEFAULT_READ_TIMEOUT))
+    .danger_accept_invalid_certs(!verify)
+    .redirect(if redirects { reqwest::redirect::Policy::default() } else { reqwest::redirect::Policy::none() })
+    .build()?;
+
+  let mut request = client.post(&url);
+  for (k, v) in headers(parsed, asset) {
+    request = request.header(k, v);
+  }
+  if parsed.user.is_some() || parsed.password.is_some() {
+    // Basic auth also permits a password with an empty user name
+    request = request.basic_auth(parsed.user.clone().unwrap_or_default(), parsed.password.clone());
+  }
+
+  let fail = |e: reqwest::Error| {
+    tracing::debug!("Socket Exception: {}", e);
+    ConfigError::Other(format!("A Connection error occurred retrieving HTTP configuration from {}.", parsed.host.as_deref().unwrap_or_default()))
+  };
+  let response = request.send().await.map_err(fail)?;
+
+  let status = response.status();
+  if status.is_redirection() {
+    return Err(ConfigError::Other(format!("HTTP redirect encountered but redirect following is disabled: {}", loggable(&url, asset))));
+  }
+  if !status.is_success() {
+    return Err(ConfigError::Other(format!(
+      "Failed to retrieve HTTP configuration from {} (error={}).",
+      parsed.host.as_deref().unwrap_or_default(),
+      status.as_u16()
+    )));
+  }
+
+  let too_big = || ConfigError::Other(format!("HTTP config response exceeds maximum buffer length ({}KB);", MAX_BUFFER_SIZE / 1024));
+  if response.content_length().is_some_and(|n| n as usize > MAX_BUFFER_SIZE) {
+    return Err(too_big());
+  }
+  let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
+  let body = response.text().await.map_err(fail)?;
+  if body.chars().count() > MAX_BUFFER_SIZE {
+    return Err(too_big());
+  }
+
+  Ok((body, format_from_content_type(&content_type)))
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
 
-  #[test]
-  fn test_parse_cache_param() {
-    assert_eq!(parse_cache_param("https://x.com/cfg?cache=yes"), Some(600));
-    assert_eq!(parse_cache_param("https://x.com/cfg?cache=no"), None);
-    assert_eq!(parse_cache_param("https://x.com/cfg?cache=120"), Some(120));
-    assert_eq!(parse_cache_param("https://x.com/cfg?cache=true"), Some(600));
-    assert_eq!(parse_cache_param("https://x.com/cfg?cache=false"), None);
-    assert_eq!(parse_cache_param("https://x.com/cfg"), None);
+  fn parsed(url: &str) -> ParsedUrl {
+    ParsedUrl::parse(url).unwrap()
   }
 
   #[test]
-  fn test_strip_control_params() {
-    assert_eq!(strip_control_params("https://x.com/cfg?cache=yes&format=yaml"), "https://x.com/cfg");
-    assert_eq!(strip_control_params("https://x.com/cfg?a=1&cache=yes"), "https://x.com/cfg?a=1");
-    assert_eq!(strip_control_params("https://x.com/cfg?a=1"), "https://x.com/cfg?a=1");
-    assert_eq!(strip_control_params("https://x.com/cfg"), "https://x.com/cfg");
+  fn test_fetch_url_drops_query() {
+    assert_eq!(fetch_url(&parsed("https://example.com/cfg?format=yaml&cache=no")), "https://example.com/cfg");
+    assert_eq!(fetch_url(&parsed("http://u:p@example.com:8080/a%20b/c%2Fd/100%25?x=1")), "http://example.com:8080/a%20b/c/d/100%25");
+    assert_eq!(fetch_url(&parsed("http://example.com")), "http://example.com/");
   }
 
   #[test]
-  fn test_cache_key_deterministic() {
-    let k1 = cache_key("https://example.com/config");
-    let k2 = cache_key("https://example.com/config");
-    assert_eq!(k1, k2);
-    let k3 = cache_key("https://example.com/other");
-    assert_ne!(k1, k3);
+  fn test_headers() {
+    let h = headers(&parsed("http://example.com/?-X-Del=1&+X-Token=abc&+User-Agent=custom"), &AppriseAsset::default());
+    assert!(h.contains(&("User-Agent".to_string(), "custom".to_string())));
+    assert!(h.contains(&("X-Token".to_string(), "abc".to_string())));
+    assert!(h.contains(&("X-Del".to_string(), "1".to_string())));
+  }
+
+  #[test]
+  fn test_content_type_format() {
+    assert_eq!(format_from_content_type("text/yaml"), Some(ConfigFormat::Yaml));
+    assert_eq!(format_from_content_type("application/x-yaml; charset=utf-8"), Some(ConfigFormat::Yaml));
+    assert_eq!(format_from_content_type("text/plain"), Some(ConfigFormat::Text));
+    assert_eq!(format_from_content_type("text/html"), Some(ConfigFormat::Text));
+    assert_eq!(format_from_content_type("application/json"), None);
+  }
+
+  #[tokio::test]
+  async fn test_read_http_posts_and_detects_yaml() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/get/cfg"))
+      .and(header("User-Agent", "Apprise"))
+      .and(header("X-Token", "abc"))
+      .and(header("Authorization", "Basic dXNlcjpwYXNz"))
+      .and(body_string(""))
+      .respond_with(ResponseTemplate::new(200).set_body_raw("urls:\n  - json://localhost\n", "text/yaml"))
+      .expect(1)
+      .mount(&server)
+      .await;
+
+    let url = server.uri().replace("http://", "http://user:pass@") + "/get/cfg?+X-Token=abc&format=bogus";
+    let (body, format) = read_http(&parsed(&url), &AppriseAsset::default()).await.unwrap();
+    assert!(body.contains("json://localhost"));
+    assert_eq!(format, Some(ConfigFormat::Yaml));
+  }
+
+  #[tokio::test]
+  async fn test_read_http_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/missing")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path("/big"))
+      .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(MAX_BUFFER_SIZE + 1)))
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/moved")).respond_with(ResponseTemplate::new(302).insert_header("Location", "/elsewhere")).mount(&server).await;
+
+    let asset = AppriseAsset::default();
+    assert!(read_http(&parsed(&format!("{}/missing", server.uri())), &asset).await.is_err());
+    assert!(read_http(&parsed(&format!("{}/big", server.uri())), &asset).await.is_err());
+    assert!(read_http(&parsed(&format!("{}/moved?redirect=no", server.uri())), &asset).await.is_err());
   }
 }
