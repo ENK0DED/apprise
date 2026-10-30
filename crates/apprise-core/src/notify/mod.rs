@@ -83,6 +83,7 @@ pub mod notifico;
 pub mod ntfy;
 pub mod office365;
 pub mod one_signal;
+pub mod onebot;
 pub mod opsgenie;
 pub mod pagerduty;
 pub mod pagertree;

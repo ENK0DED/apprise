@@ -96,6 +96,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(ntfy::Ntfy::static_details());
   collect!(office365::Office365::static_details());
   collect!(one_signal::OneSignal::static_details());
+  collect!(onebot::OneBot::static_details());
   collect!(opsgenie::OpsGenie::static_details());
   collect!(pagerduty::PagerDuty::static_details());
   collect!(pagertree::PagerTree::static_details());
@@ -247,6 +248,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(ntfy::Ntfy::from_url, "ntfy", "ntfys");
   reg!(office365::Office365::from_url, "o365", "azure");
   reg!(one_signal::OneSignal::from_url, "onesignal");
+  reg!(onebot::OneBot::from_url, "onebot", "onebots");
   reg!(opsgenie::OpsGenie::from_url, "opsgenie");
   reg!(pagerduty::PagerDuty::from_url, "pagerduty");
   reg!(pagertree::PagerTree::from_url, "pagertree");
