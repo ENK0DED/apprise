@@ -264,7 +264,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(sfr::Sfr::from_url, "sfr");
   reg!(signal_api::SignalApi::from_url, "signal", "signals");
   reg!(signl4::Signl4::from_url, "signl4");
-  reg!(simplepush::SimplePush::from_url, "spush");
+  reg!(simplepush::SimplePush::from_url, "spush", "simplepush");
   reg!(sinch::Sinch::from_url, "sinch");
   reg!(slack::Slack::from_url, "slack");
   reg!(smpp::Smpp::from_url, "smpp", "smpps");

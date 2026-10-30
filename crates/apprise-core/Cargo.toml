@@ -31,6 +31,11 @@ sha1.workspace = true
 hex.workspace = true
 ring.workspace = true
 aes-gcm.workspace = true
+argon2 = { workspace = true, optional = true }
+chacha20poly1305 = { workspace = true, optional = true }
+x25519-dalek = { workspace = true, optional = true }
+salsa20 = { workspace = true, optional = true }
+poly1305 = { workspace = true, optional = true }
 socket2.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true
@@ -40,11 +45,12 @@ notify-rust = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
 
 [features]
-default = ["mqtt", "email", "yaml"]
+default = ["mqtt", "email", "yaml", "simplepush-encryption"]
 mqtt = ["dep:rumqttc"]
 email = ["dep:lettre"]
 yaml = ["dep:serde_yaml"]
 desktop = ["dep:notify-rust"]
+simplepush-encryption = ["dep:argon2", "dep:chacha20poly1305", "dep:x25519-dalek", "dep:salsa20", "dep:poly1305"]
 
 [dev-dependencies]
 wiremock.workspace = true
