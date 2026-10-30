@@ -376,19 +376,46 @@ async fn run(argv: &[String]) -> i32 {
 }
 
 /// `--dry-run`: list what would be notified, with its storage UID and tags.
+/// Entries still waiting for a template value are listed too, and count as
+/// failures, as a real run would count them.
 fn dry_run_listing(apprise: &Apprise) -> ResultStatus {
   let columns = columns();
-  let mut any = false;
-  for (idx, svc) in apprise.find().enumerate() {
-    any = true;
-    println!("{:>4}. {}", idx + 1, fit(&shown_url(svc), columns.saturating_sub(8), columns.saturating_sub(9)));
+  let mut listed = 0usize;
+  for svc in apprise.find() {
+    listed += 1;
+    println!("{:>4}. {}", listed, fit(&shown_url(svc), columns.saturating_sub(8), columns.saturating_sub(9)));
     println!("{:>10}: {}", "uid", apprise.url_id(svc).unwrap_or_else(|| "- n/a -".to_string()));
     let tags = sorted_tags(svc);
     if !tags.is_empty() {
       println!("{:>10}: {}", "tags", tags.join(", "));
     }
   }
-  if any { ResultStatus::Success } else { ResultStatus::NoMatch }
+  let mut unresolved = 0usize;
+  for entry in apprise.pending_matching(apprise.tag_filter()) {
+    listed += 1;
+    unresolved += 1;
+    let url = cwe312_loggable(&entry.display_url(), true);
+    println!("{:>4}. {}", listed, fit(&url, columns.saturating_sub(8), columns.saturating_sub(9)));
+    println!("{:>10}: {}", "uid", "- template; unresolved, would not send -");
+    let mut tags: Vec<String> = apprise_core::tag::parse_service_tags(&entry.tags()).iter().map(|t| t.name().to_string()).collect();
+    tags.sort();
+    if !tags.is_empty() {
+      println!("{:>10}: {}", "tags", tags.join(", "));
+    }
+    let required = entry.required();
+    let names: Vec<String> = entry.names.iter().map(|n| format!("{} ({})", n, if required.contains(n) { "required" } else { "has default" })).collect();
+    println!("{:>10}: {}", "template", names.join(", "));
+  }
+  if unresolved > 0 {
+    println!();
+    println!("{} of {} matched entries could not be resolved and would not be sent. Check the log for the reason.", unresolved, listed);
+  }
+  match (listed, unresolved) {
+    (0, _) => ResultStatus::NoMatch,
+    (_, 0) => ResultStatus::Success,
+    (l, u) if l == u => ResultStatus::Failure,
+    _ => ResultStatus::Partial,
+  }
 }
 
 /// `apprise storage [list|prune|clear] [UID-prefix|URL]...`.

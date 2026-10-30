@@ -134,3 +134,32 @@ async fn test_notify_tagged_selects_services_per_call() {
   // The instance's own filter is untouched
   assert_eq!(a.tag_filter(), &crate::TagFilter::All);
 }
+
+#[cfg(feature = "yaml")]
+#[tokio::test]
+async fn test_unresolved_template_entries_count_as_failures() {
+  use wiremock::matchers::method;
+  use wiremock::{Mock, MockServer, ResponseTemplate};
+
+  let server = MockServer::start().await;
+  Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+  let ctx = crate::NotifyContext { body: "body".into(), ..Default::default() };
+
+  // One entry sends, one waits for ${TARGET}: partial, as upstream
+  let mut a = Apprise::new();
+  let yaml = format!("template:\n  - target\nurls:\n  - json://{0}/?to=${{TARGET}}\n  - xml://{0}/\n", server.address());
+  a.add_config_text(&yaml, None, 1).await.unwrap();
+  assert_eq!(a.pending_matching(a.tag_filter()).count(), 1);
+  let result = a.notify(&ctx).await;
+  assert_eq!(result.status, crate::ResultStatus::Partial);
+  assert_eq!((result.total, result.succeeded, result.failed), (2, 1, 1));
+
+  // Only unresolved entries: a failure, not "nothing matched"
+  let mut a = Apprise::new();
+  a.add_config_text(&format!("template:\n  - target\nurls:\n  - json://{}/?to=${{TARGET}}\n", server.address()), None, 1).await.unwrap();
+  assert_eq!(a.notify(&ctx).await.status, crate::ResultStatus::Failure);
+
+  // A tag filter that skips the entry leaves it out of the result
+  a.set_tag_strings(&["other".to_string()]);
+  assert_eq!(a.pending_matching(a.tag_filter()).count(), 0);
+}

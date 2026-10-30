@@ -220,6 +220,13 @@ impl Apprise {
     &self.config.pending
   }
 
+  /// The entries waiting for a template value that `filter` selects. A
+  /// notification counts each of them as a failed service, as upstream does
+  /// for an entry it cannot resolve.
+  pub fn pending_matching<'a>(&'a self, filter: &'a TagFilter) -> impl Iterator<Item = &'a config::PendingService> + 'a {
+    self.config.pending.iter().filter(move |p| filter.matches(&tag::parse_service_tags(&p.tags())))
+  }
+
   /// Turn YAML `template:` sections on (the default) or off. With them off,
   /// `${NAME}` text is kept literally.
   pub fn set_allow_templates(&mut self, allow: bool) {
@@ -448,7 +455,34 @@ impl Apprise {
   async fn dispatch(&self, ctx: &NotifyContext, opts: &dispatch::DispatchOptions, filter: &TagFilter) -> SendResult {
     let mut ctx = ctx.clone();
     ctx.asset = self.asset.clone();
-    dispatch::notify(&self.services, filter, &ctx, opts).await
+    let result = dispatch::notify(&self.services, filter, &ctx, opts).await;
+    self.with_unresolved(result, filter)
+  }
+
+  /// Add a failed result for every selected entry still waiting for a
+  /// template value: a run with one is partial at best, as upstream.
+  fn with_unresolved(&self, result: SendResult, filter: &TagFilter) -> SendResult {
+    let pending: Vec<&config::PendingService> = self.pending_matching(filter).collect();
+    if pending.is_empty() {
+      return result;
+    }
+    let SendResult { mut results, elapsed, .. } = result;
+    for entry in pending {
+      let optional = notify::ServiceOptions::from_url(&entry.parsed).ok().and_then(|o| o.optional).unwrap_or(false);
+      let mut tags: Vec<String> = tag::parse_service_tags(&entry.tags()).iter().map(|t| t.name().to_string()).collect();
+      tags.sort();
+      results.push(result::ServiceResult::new(
+        registry::service_name(entry.schema()),
+        utils::cwe312::cwe312_loggable(&entry.display_url(), true),
+        tags,
+        optional,
+        1,
+        vec![result::NotifyAttempt { status: ResultStatus::Failure, elapsed: std::time::Duration::ZERO }],
+        std::time::Duration::ZERO,
+      ));
+    }
+    let status = result::aggregate_status(false, &results);
+    SendResult::new(status, results, elapsed)
   }
 
   /// Load an attachment from a file path or URL.

@@ -893,7 +893,6 @@ This port aims to behave like upstream Apprise 2.1. Where it does not:
 
 * **Not ported**: upstream's `url()` serialisation (turning a loaded service back into a URL, including the privacy URL), and custom Python plugins (the `@notify` decorator, `--plugin-path` and `APPRISE_PLUGIN_PATH`, which the CLI accepts but ignores with a warning).
 * **Time zones**: `?tz=` understands UTC and fixed offsets (`+05:00`, `UTC-8`). An IANA name such as `Europe/Paris` is accepted but treated as UTC for now.
-* **Templates**: a service skipped for a missing template value does not change the CLI's exit status (upstream exits with `4`, or `1` if nothing else was notified), and `--dry-run` does not list it.
 * **Upstream bugs fixed deliberately** (several following the Go port, [apprise-go](https://github.com/unraid/apprise-go)):
   * Matrix: every event gets its own transaction ID, so Synapse no longer drops repeats; a room whose encryption cannot be confirmed, or an encrypted room in a build without `matrix-e2ee`, receives nothing rather than plaintext.
   * Viber: `?to=` is split into receiver IDs, not single characters.
