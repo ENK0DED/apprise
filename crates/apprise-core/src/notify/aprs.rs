@@ -543,10 +543,9 @@ mod tests {
     let svc = from_url("aprs://DF1JSL-15:12345@invalid_target").unwrap();
     assert!(!svc.send(&ctx).await.unwrap());
 
-    // Nothing listens on this port
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
-    drop(listener);
+    // Port 1 is privileged, so no test can be listening on it; a port
+    // freed by dropping a listener may be taken by another test meanwhile.
+    let addr = "127.0.0.1:1".to_string();
     let svc = from_url("aprs://DF1JSL-15:12345@DF1ABC").unwrap();
     assert!(!crate::notify::with_test_base(addr, svc.send(&ctx)).await.unwrap());
   }

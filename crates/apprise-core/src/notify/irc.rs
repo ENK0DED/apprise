@@ -905,9 +905,9 @@ mod tests {
     let svc = from_url("irc://irc.example.com").unwrap();
     assert!(!svc.send(&ctx("", "Body")).await.unwrap());
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    // Port 1 is privileged, so no test can be listening on it; a port
+    // freed by dropping a listener may be taken by another test meanwhile.
+    let port = 1;
     let svc = from_url(&format!("irc://127.0.0.1:{}/#chan", port)).unwrap();
     assert!(!svc.send(&ctx("", "Body")).await.unwrap());
 

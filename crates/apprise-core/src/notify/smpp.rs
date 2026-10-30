@@ -673,9 +673,9 @@ mod tests {
     let svc = from_url(&format!("smpp://user:pass@127.0.0.1:{}/15551234567/15559876543", port)).unwrap();
     assert!(!svc.send(&ctx).await.unwrap());
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    // Port 1 is privileged, so no test can be listening on it; a port
+    // freed by dropping a listener may be taken by another test meanwhile.
+    let port = 1;
     let svc = from_url(&format!("smpp://user:pass@127.0.0.1:{}/15551234567/15559876543", port)).unwrap();
     assert!(!svc.send(&ctx).await.unwrap());
 

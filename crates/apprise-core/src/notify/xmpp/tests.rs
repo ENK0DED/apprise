@@ -529,9 +529,9 @@ async fn test_send_tls_verification() {
   assert!(!svc.send(&ctx("", "Body")).await.unwrap());
   assert!(server.await.unwrap().mechanism.is_empty());
 
-  let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-  let port = listener.local_addr().unwrap().port();
-  drop(listener);
+  // Port 1 is privileged, so no test can be listening on it; a port
+  // freed by dropping a listener may be taken by another test meanwhile.
+  let port = 1;
   let svc = from_url(&format!("xmpps://me:secret@127.0.0.1:{}/a", port)).unwrap();
   assert!(!svc.send(&ctx("", "Body")).await.unwrap());
 }
