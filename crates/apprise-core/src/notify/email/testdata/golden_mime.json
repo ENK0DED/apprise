@@ -662,5 +662,62 @@
 ]
 }
 ]
+},
+{
+"name": "deltachat",
+"url": "deltachat://user:pass@smtp.example.com/friend@example.org",
+"title": "Hello",
+"body": "chat body yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+"success": true,
+"sessions": [
+{
+"host": "smtp.example.com",
+"port": 25,
+"ssl": false,
+"starttls": false,
+"login": [
+"user",
+"pass"
+],
+"mails": [
+{
+"from": "user@smtp.example.com",
+"to": [
+"friend@example.org"
+],
+"msg": "Content-Type: text/plain; charset=\"utf-8\"\nMIME-Version: 1.0\nContent-Transfer-Encoding: quoted-printable\nX-Application: Apprise\nChat-Version: 1.0\nSubject: Chat: Hello chat body yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy...\nFrom: Apprise <user@smtp.example.com>\nTo: friend@example.org\nMessage-ID: <MSGID@smtp.example.com>\nDate: DATE\n\nHello\nchat body yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+}
+]
+}
+]
+},
+{
+"name": "deltachat_no_title",
+"url": "deltachats://user:pass@smtp.example.com/friend@example.org?format=html",
+"title": "",
+"body": "<b>hi</b>",
+"format": "html",
+"success": true,
+"sessions": [
+{
+"host": "smtp.example.com",
+"port": 587,
+"ssl": false,
+"starttls": true,
+"login": [
+"user",
+"pass"
+],
+"mails": [
+{
+"from": "user@smtp.example.com",
+"to": [
+"friend@example.org"
+],
+"msg": "Content-Type: text/plain; charset=\"utf-8\"\nMIME-Version: 1.0\nContent-Transfer-Encoding: quoted-printable\nX-Application: Apprise\nChat-Version: 1.0\nSubject: Chat: hi\nFrom: Apprise <user@smtp.example.com>\nTo: friend@example.org\nMessage-ID: <MSGID@smtp.example.com>\nDate: DATE\n\nhi"
+}
+]
+}
+]
 }
 ]

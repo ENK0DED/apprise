@@ -35,6 +35,8 @@ pub mod custom_json;
 pub mod custom_xml;
 pub mod d7networks;
 pub mod dapnet;
+#[cfg(feature = "email")]
+pub mod deltachat;
 #[cfg(feature = "desktop")]
 pub mod desktop;
 pub mod dingtalk;

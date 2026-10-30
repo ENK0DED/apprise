@@ -14,7 +14,7 @@ pub(crate) mod mime;
 pub(crate) mod smtp;
 pub(crate) mod templates;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::collections::HashMap;
 use std::time::Duration;

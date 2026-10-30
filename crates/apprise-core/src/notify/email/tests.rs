@@ -32,7 +32,7 @@ pub(super) fn smtp_target(host: &str, port: u16) -> (String, u16) {
 
 /// One message the fake server accepted.
 #[derive(Debug, Clone, Default)]
-pub(super) struct Mail {
+pub(crate) struct Mail {
   pub from: String,
   pub rcpt: Vec<String>,
   /// The DATA payload as sent (CRLF, dot-stuffed, without the final dot).
@@ -43,7 +43,7 @@ pub(super) struct Mail {
 
 /// One SMTP session that said EHLO or HELO.
 #[derive(Debug, Clone, Default)]
-pub(super) struct Session {
+pub(crate) struct Session {
   pub implicit_tls: bool,
   pub starttls: bool,
   /// Every command line, AUTH answers included.
@@ -54,7 +54,7 @@ pub(super) struct Session {
 }
 
 #[derive(Clone)]
-pub(super) struct ServerConfig {
+pub(crate) struct ServerConfig {
   pub implicit_tls: bool,
   pub offer_starttls: bool,
   /// The AUTH mechanisms advertised ("" for none).
@@ -85,7 +85,7 @@ impl Default for ServerConfig {
   }
 }
 
-pub(super) struct FakeSmtp {
+pub(crate) struct FakeSmtp {
   pub addr: SocketAddr,
   sessions: Arc<Mutex<Vec<Session>>>,
 }
@@ -313,7 +313,7 @@ fn accept_any_tls() -> tokio_rustls::TlsConnector {
 }
 
 /// Run `fut` with SMTP connections going to `server` (TLS unverified).
-async fn against<F: std::future::Future>(server: &FakeSmtp, fut: F) -> (F::Output, Vec<(String, u16)>) {
+pub(crate) async fn against<F: std::future::Future>(server: &FakeSmtp, fut: F) -> (F::Output, Vec<(String, u16)>) {
   let requested = Arc::new(Mutex::new(Vec::new()));
   let out = TEST_SMTP.scope((server.addr, requested.clone()), TEST_TLS.scope(accept_any_tls(), fut)).await;
   let requested = requested.lock().unwrap().clone();
@@ -330,11 +330,11 @@ fn email(url: &str) -> Email {
   Email::from_url(&parsed).unwrap_or_else(|| panic!("rejected: {}", url))
 }
 
-fn ctx(title: &str, body: &str, format: NotifyFormat) -> NotifyContext {
+pub(crate) fn ctx(title: &str, body: &str, format: NotifyFormat) -> NotifyContext {
   NotifyContext { title: title.to_string(), body: body.to_string(), body_format: format, ..Default::default() }
 }
 
-async fn notify_url(url: &str, ctx: &NotifyContext) -> bool {
+pub(crate) async fn notify_url(url: &str, ctx: &NotifyContext) -> bool {
   let mut apprise = crate::Apprise::new();
   assert!(apprise.add(url), "{}", url);
   apprise.notify(ctx).await.is_success()
