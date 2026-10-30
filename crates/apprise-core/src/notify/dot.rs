@@ -4,7 +4,7 @@ use serde_json::{Map, Value, json};
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Attachment, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
 
 const DOT_API: &str = "https://dot.mindreset.tech";
 
@@ -35,7 +35,7 @@ pub struct Dot {
 
 impl Dot {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let device_id = url.host.as_deref().map(unquote).filter(|h| !h.is_empty())?;
+    let device_id = url.host.clone()?;
 
     // An explicit ?mode= wins; the first path element is kept for backward
     // compatibility (dot://apikey@device/image/).
@@ -51,10 +51,11 @@ impl Dot {
       None => DOT_MODES[0],
     };
 
+    // Upstream unquotes query values a second time
     let opt = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(|v| unquote(v.trim()));
 
     Some(Self {
-      apikey: url.user.as_deref().map(unquote).filter(|u| !u.is_empty()),
+      apikey: url.user.clone(),
       device_id,
       mode,
       refresh_now: url.get("refresh").filter(|v| !v.is_empty()).map(|v| parse_bool(v.trim())).unwrap_or(true),
@@ -85,6 +86,7 @@ impl Dot {
   async fn post(&self, client: &reqwest::Client, apikey: &str, api: &str, payload: Value) -> bool {
     let url = format!("{}/api/authV2/open/device/{}/{}", service_base(DOT_API), self.device_id, api);
     tracing::debug!("Dot POST URL: {} (cert_verify={})", url, self.verify_certificate);
+    crate::notify::throttle().await;
     let resp = client
       .post(&url)
       .header("Authorization", format!("Bearer {}", apikey))
@@ -112,7 +114,7 @@ impl Dot {
       }
       Err(e) => {
         tracing::warn!("A Connection error occurred sending Dot notification to {}.", self.device_id);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         false
       }
     }
@@ -233,15 +235,11 @@ impl Notify for Dot {
   }
 }
 
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{header, method, path};
+  use wiremock::matchers::{header, method, path, path_regex};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse_dot(url: &str) -> Dot {
@@ -249,7 +247,8 @@ mod tests {
   }
 
   async fn bodies(server: &MockServer) -> Vec<(String, Value)> {
-    server.received_requests().await.unwrap().iter().map(|r| (r.url.path().to_string(), serde_json::from_slice(&r.body).unwrap())).collect()
+    let requests = server.received_requests().await.unwrap();
+    requests.iter().filter(|r| r.method.as_str() == "POST").map(|r| (r.url.path().to_string(), serde_json::from_slice(&r.body).unwrap())).collect()
   }
 
   #[test]
@@ -324,7 +323,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_task_key() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path_regex("^/api/authV2/open/device/")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
     let svc = from_url("dot://apikey@device123/?task_key=abc123").unwrap();
     let ctx = NotifyContext { title: "title".into(), body: "body".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
@@ -344,7 +343,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_image_mode_without_image_fails() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
+    Mock::given(method("POST")).and(path_regex("^/api/authV2/open/device/")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
     let svc = from_url("dot://apikey@device_id/image/?link=https://example.com&border=1").unwrap();
     let ctx = NotifyContext { body: "body".into(), ..Default::default() };
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
@@ -353,7 +352,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_text_then_attachment() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path_regex("^/api/authV2/open/device/")).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
     let svc = from_url("dot://apikey@device123/?refresh=no&signature=Sig&icon=ICON&link=https://example.com").unwrap();
     let mut ctx = NotifyContext { title: "title".into(), body: "body".into(), ..Default::default() };
     ctx.attachments.push(Attachment { name: "a.png".into(), data: b"PNG1".to_vec(), mime_type: "image/png".into() });
@@ -377,7 +376,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failures() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(999)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path_regex("^/api/authV2/open/device/")).respond_with(ResponseTemplate::new(999)).expect(1).mount(&server).await;
     let ctx = NotifyContext { body: "body".into(), ..Default::default() };
     // Non-200 status
     let svc = from_url("dot://apikey@device_id/").unwrap();

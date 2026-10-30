@@ -14,8 +14,7 @@ use serde_json::{Value, json};
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::types::NotifyFormat;
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{parse_list, qsd_bool, qsd_raw, split_path};
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list};
 
 type Aes192Gcm = AesGcm<aes_gcm::aes::Aes192, aes_gcm::aead::consts::U12>;
 
@@ -124,7 +123,7 @@ impl Bark {
     let host = url.host.clone().filter(|h| !h.is_empty())?;
     let qsd = |k: &str| url.get(k).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
 
-    let mut targets = split_path(url);
+    let mut targets = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
       targets.push(to.to_string());
     }
@@ -164,7 +163,7 @@ impl Bark {
 
     // Encryption is off unless a key was explicitly given; a '+' in the key
     // is kept literally, as upstream reads it
-    let cipher = match qsd_raw(url, "key").filter(|k| !k.is_empty()) {
+    let cipher = match url.get("key").filter(|k| !k.is_empty()) {
       None => None,
       Some(key) => {
         if !key.is_ascii() {
@@ -185,8 +184,8 @@ impl Bark {
       secure: url.schema == "barks",
       user: url.user.clone(),
       password: url.password.clone(),
-      targets: parse_list(targets, true, true),
-      include_image: qsd_bool(url, "image", true),
+      targets: parse_list(&targets.join(" ")),
+      include_image: url.get("image").map(parse_bool).unwrap_or(true),
       sound,
       category: qsd("category"),
       group: qsd("group"),
@@ -195,7 +194,7 @@ impl Bark {
       badge,
       volume,
       icon: qsd("icon"),
-      call: qsd_bool(url, "call", false),
+      call: url.get("call").is_some_and(parse_bool),
       cipher,
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
@@ -291,6 +290,11 @@ impl Notify for Bark {
 
     // Upstream pops targets from the end of its sorted list
     for target in self.targets.iter().rev() {
+      // Skip a device that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
       let device_key = ("device_key", json!(target));
       let body = match &self.cipher {
         Some(cipher) => {
@@ -315,8 +319,12 @@ impl Notify for Bark {
         request = request.basic_auth(user, Some(self.password.as_deref().unwrap_or("")));
       }
 
+      crate::notify::throttle().await;
       match request.send().await {
-        Ok(resp) if resp.status().as_u16() == 200 => tracing::info!("Sent Bark notification."),
+        Ok(resp) if resp.status().as_u16() == 200 => {
+          tracing::info!("Sent Bark notification.");
+          crate::delivery::mark_delivered(target, false);
+        }
         Ok(resp) => {
           let reason = resp.status().canonical_reason().unwrap_or("");
           tracing::warn!("Failed to send Bark notification: {}{}error={}.", reason, if reason.is_empty() { "" } else { ", " }, resp.status().as_u16());
@@ -326,7 +334,7 @@ impl Notify for Bark {
           tracing::warn!("A Connection error occurred sending Bark notification.");
           // The error text may echo request fragments once encryption is on
           if self.cipher.is_none() {
-            tracing::debug!("Socket Exception: {}", e);
+            tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           }
           has_error = true;
         }
@@ -456,7 +464,7 @@ mod tests {
     let ctx = NotifyContext { body: "B ü".into(), ..Default::default() };
     assert!(svc.send(&ctx).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = push_requests(&server).await;
     let expected = |key: &str| {
       json!({
         "device_key": key, "title": "Apprise Notifications", "body": "B ü",
@@ -485,7 +493,7 @@ mod tests {
     let ctx =
       NotifyContext { title: "T".into(), body: "**B**".into(), body_format: NotifyFormat::Markdown, notify_type: NotifyType::Failure, ..Default::default() };
     assert!(svc.send(&ctx).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = push_requests(&server).await;
     assert_eq!(body_json(&requests[0]), json!({"device_key": "k1", "title": "T", "markdown": "**B**", "icon": "http://i/x.png"}));
   }
 
@@ -516,7 +524,7 @@ mod tests {
       let ctx = NotifyContext { title: "Secret".into(), body: "B ü".into(), ..Default::default() };
       assert!(svc.send(&ctx).await.unwrap());
 
-      let requests = server.received_requests().await.unwrap();
+      let requests = push_requests(&server).await;
       let mut ivs = Vec::new();
       for (request, device) in requests.iter().zip(["k2", "k1"]) {
         let payload = body_json(request);
@@ -550,6 +558,25 @@ mod tests {
     assert_eq!(ours, ciphertext);
   }
 
+  /// The pushes the mock received, in order, without stray requests.
+  async fn push_requests(server: &MockServer) -> Vec<wiremock::Request> {
+    crate::notify::custom_json::requests_to(server, "POST", "/push").await
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_devices_that_accepted() {
+    let server = MockServer::builder().start().await;
+    let device = |key: &str| Mock::given(method("POST")).and(path("/push")).and(wiremock::matchers::body_partial_json(json!({"device_key": key})));
+    device("k2").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second device fails once, then accepts the retry
+    device("k1").respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    device("k1").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&mock_url(&server, "k1/k2?retry=1&wait=0")));
+    let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
+    assert!(apprise.notify(&ctx).await.is_success());
+  }
+
   #[tokio::test]
   async fn test_send_failures() {
     let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
@@ -558,7 +585,7 @@ mod tests {
 
     for status in [500, 999, 201] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
+      Mock::given(method("POST")).and(path("/push")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       let svc = from_url(&mock_url(&server, "a/b")).unwrap();
       assert!(!svc.send(&ctx).await.unwrap(), "status {}", status);
     }

@@ -3,21 +3,7 @@ use serde_json::{Value, json};
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
-use crate::utils::parse::ParsedUrl;
-
-/// Upstream `parse_list()`: split on whitespace, commas, semicolons and
-/// brackets, then de-duplicate and sort.
-fn parse_list<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-  let mut items: Vec<String> = values
-    .into_iter()
-    .flat_map(|v| v.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '[' | ']')))
-    .filter(|s| !s.is_empty())
-    .map(String::from)
-    .collect();
-  items.sort();
-  items.dedup();
-  items
-}
+use crate::utils::parse::{ParsedUrl, parse_list};
 
 /// HumHub self-hosted social network posts (REST API module).
 ///
@@ -44,17 +30,12 @@ impl HumHub {
     };
 
     // Container IDs come from the path and ?to=
-    let path_entries: Vec<String> = url
-      .path
-      .split([' ', '\t', '\r', '\n', ',', '\\', '/'])
-      .filter(|s| !s.is_empty())
-      .map(|s| urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string()))
-      .collect();
-    let to = url.get("to").map(str::trim).filter(|t| !t.is_empty());
+    let mut entries = url.path_parts.clone();
+    entries.extend(url.get("to").filter(|t| !t.is_empty()).map(String::from));
 
     // Container IDs must be positive integers
     let mut targets = Vec::new();
-    for target in parse_list(path_entries.iter().map(String::as_str).chain(to)) {
+    for target in parse_list(&entries.join(" ")) {
       match target.trim().parse::<i64>() {
         Ok(cid) if cid > 0 => targets.push(cid.to_string()),
         _ => tracing::warn!("Dropping invalid HumHub container ID: {}", target),
@@ -104,11 +85,12 @@ impl HumHub {
 
   /// POST and return the response body on HTTP 200, `None` otherwise.
   async fn post(&self, req: reqwest::RequestBuilder, what: &str) -> Option<String> {
+    crate::notify::throttle().await;
     let resp = match self.authorize(req.header("User-Agent", APP_ID)).send().await {
       Ok(resp) => resp,
       Err(e) => {
         tracing::warn!("A Connection error occurred sending HumHub {}.", what);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return None;
       }
     };
@@ -150,7 +132,7 @@ impl Notify for HumHub {
   }
   /// Self-hosted service; upstream waits only 0.02s between requests
   fn request_rate_per_sec(&self) -> f64 {
-    50.0
+    0.02
   }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
@@ -162,24 +144,37 @@ impl Notify for HumHub {
 
     // Post to each container in turn
     for container_id in &self.targets {
-      let url = format!("{}/api/v1/post/container/{}", base, container_id);
-      tracing::debug!("HumHub POST URL: {} (cert_verify={})", url, self.verify_certificate);
-      let Some(content) = self.post(client.post(&url).header("Content-Type", "application/json").body(payload.clone()), "notification").await else {
-        has_error = true;
-        continue;
-      };
-      tracing::info!("Sent HumHub notification to container {}.", container_id);
+      // A post made by an earlier attempt keeps its ID so a retry can still
+      // upload attachments to it without posting again
+      let message_key = format!("message|{}", container_id);
+      let mut post_id = crate::delivery::recall(&message_key, false).and_then(|v| v.as_str().map(String::from));
+
+      if !crate::delivery::is_delivered(&message_key, false) {
+        let url = format!("{}/api/v1/post/container/{}", base, container_id);
+        tracing::debug!("HumHub POST URL: {} (cert_verify={})", url, self.verify_certificate);
+        let Some(content) = self.post(client.post(&url).header("Content-Type", "application/json").body(payload.clone()), "notification").await else {
+          has_error = true;
+          continue;
+        };
+        tracing::info!("Sent HumHub notification to container {}.", container_id);
+
+        if !ctx.attachments.is_empty() {
+          // Attachments are uploaded to the post just created
+          post_id = match serde_json::from_str::<Value>(&content).ok().as_ref().and_then(|r| r.get("id")) {
+            Some(Value::Number(n)) => Some(n.to_string()),
+            Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+          };
+          // Keep the ID in case an upload fails and is retried
+          crate::delivery::remember(&message_key, json!(post_id), false);
+        }
+        // The post is visible now, even if an upload later fails
+        crate::delivery::mark_delivered(&message_key, false);
+      }
 
       if ctx.attachments.is_empty() {
         continue;
       }
-
-      // Attachments are uploaded to the post just created
-      let post_id = match serde_json::from_str::<Value>(&content).ok().as_ref().and_then(|r| r.get("id")) {
-        Some(Value::Number(n)) => Some(n.to_string()),
-        Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
-        _ => None,
-      };
       let Some(post_id) = post_id else {
         tracing::warn!("Failed to parse HumHub post ID from response; attachments will not be sent to container {}.", container_id);
         has_error = true;
@@ -187,13 +182,20 @@ impl Notify for HumHub {
       };
 
       let attach_url = format!("{}/api/v1/post/{}/upload-files", base, post_id);
-      for attachment in &ctx.attachments {
+      for (no, attachment) in ctx.attachments.iter().enumerate() {
+        let attachment_key = format!("attachment|{}|{}", container_id, no + 1);
+        if crate::delivery::is_delivered(&attachment_key, false) {
+          continue;
+        }
         let part = reqwest::multipart::Part::bytes(attachment.data.clone()).file_name(attachment.name.clone());
         let form = reqwest::multipart::Form::new().part("files[]", part);
         tracing::debug!("HumHub POST URL: {} (cert_verify={})", attach_url, self.verify_certificate);
         if self.post(client.post(&attach_url).multipart(form), "attachment").await.is_none() {
           has_error = true;
+          continue;
         }
+        // The attachment is now visible on the existing post
+        crate::delivery::mark_delivered(&attachment_key, false);
       }
     }
 
@@ -206,7 +208,7 @@ mod tests {
   use super::*;
   use crate::notify::Attachment;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, header, method, path, path_regex};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> Option<HumHub> {
@@ -314,7 +316,7 @@ mod tests {
     ctx.attachments.push(Attachment { name: "b.txt".into(), data: b"TXT".to_vec(), mime_type: "text/plain".into() });
     assert!(svc.send(&ctx).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/api/v1/post/55/upload-files").await;
     let upload = requests.iter().find(|r| r.url.path() == "/api/v1/post/55/upload-files").unwrap();
     let content_type = upload.headers.get("Content-Type").unwrap().to_str().unwrap();
     assert!(content_type.starts_with("multipart/form-data"));
@@ -373,5 +375,44 @@ mod tests {
     let svc = parse("humhub://t@h/1").unwrap();
     assert_eq!(svc.title_maxlen(), 0);
     assert_eq!(svc.body_maxlen(), 4000);
+    assert_eq!(svc.request_rate_per_sec(), 0.02);
+  }
+
+  #[tokio::test]
+  async fn test_retry_reuses_the_post_and_skips_uploaded_files() {
+    use wiremock::matchers::body_string_contains;
+    let server = MockServer::start().await;
+    // The post is made once; its ID carries over to the retry
+    Mock::given(method("POST"))
+      .and(path("/api/v1/post/container/1"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 9})))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let upload = |name: &str| Mock::given(method("POST")).and(path("/api/v1/post/9/upload-files")).and(body_string_contains(format!("filename=\"{}\"", name)));
+    upload("a.png").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second file fails once, then uploads on the retry
+    upload("b.png").respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    upload("b.png").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+
+    let mut ctx = NotifyContext { body: "B".into(), ..Default::default() };
+    for name in ["a.png", "b.png"] {
+      ctx.attachments.push(Attachment { name: name.into(), data: b"PNG".to_vec(), mime_type: "image/png".into() });
+    }
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("humhub://mytoken@{}/1?retry=1&wait=0", base(&server))));
+    assert!(apprise.notify(&ctx).await.is_success());
+  }
+
+  #[tokio::test]
+  async fn test_requests_are_spaced_out() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path_regex("^/api/v1/post/container/")).respond_with(ResponseTemplate::new(200)).expect(3).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("humhub://mytoken@{}/1/2/3", base(&server))));
+    let started = std::time::Instant::now();
+    assert!(crate::notify::with_throttling_in_tests(apprise.notify(&NotifyContext { body: "B".into(), ..Default::default() })).await.is_success());
+    // Upstream waits 0.02s between requests
+    assert!(started.elapsed() >= std::time::Duration::from_millis(40), "{:?}", started.elapsed());
   }
 }

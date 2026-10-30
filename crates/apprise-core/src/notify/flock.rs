@@ -1,19 +1,16 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::asset::AppriseAsset;
+use crate::asset::NotifyImageSize;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::types::{NotifyFormat, NotifyType};
-use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::types::NotifyFormat;
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list};
 
 /// Webhook endpoint; the token is appended as the last path segment.
 const NOTIFY_URL: &str = "https://api.flock.com";
 /// Bot API used when one or more users or channels are targeted.
 const NOTIFY_API: &str = "https://api.flock.co";
-
-/// Upstream `AppriseAsset.image_url_mask` default.
-const DEFAULT_IMAGE_URL_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
 
 pub struct Flock {
   token: String,
@@ -27,22 +24,12 @@ pub struct Flock {
 
 impl Flock {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let (token, mut raw_targets) = if url.schema == "https" || url.schema == "http" {
-      // Native URL: https://api.flock.com/hooks/sendMessage/{token}/
-      if !url.host.as_deref().is_some_and(|h| h.eq_ignore_ascii_case("api.flock.com")) {
-        return None;
-      }
-      match url.path_parts.as_slice() {
-        [hooks, send, token] if hooks.eq_ignore_ascii_case("hooks") && send.eq_ignore_ascii_case("sendMessage") && token.len() == 24 => {
-          (token.clone(), Vec::new())
-        }
-        _ => return None,
-      }
-    } else {
-      (unquote(url.host.as_deref().unwrap_or_default()), url.path_parts.clone())
-    };
+    // Native https://api.flock.com/hooks/sendMessage/{token}/ URLs arrive
+    // here already rewritten by the registry as flock://{token}/
+    let token = url.host.clone().unwrap_or_default();
+    let mut raw_targets = url.path_parts.clone();
     if let Some(to) = url.get("to") {
-      raw_targets.extend(parse_list(to));
+      raw_targets.push(to.to_string());
     }
 
     if token.is_empty() || !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
@@ -52,7 +39,7 @@ impl Flock {
 
     let mut targets = Vec::new();
     let mut has_error = false;
-    for target in parse_list_of(&raw_targets) {
+    for target in parse_list(&raw_targets.join(" ")) {
       if let Some(id) = match_target(&target, &["@", "u:"], true) {
         targets.push(format!("u:{}", id));
       } else if let Some(id) = match_target(&target, &["#", "g:"], false) {
@@ -90,6 +77,7 @@ impl Flock {
 
   async fn post(&self, client: &reqwest::Client, url: &str, payload: &Value) -> bool {
     tracing::debug!("Flock POST URL: {} (cert_verify={})", url, self.verify_certificate);
+    crate::notify::throttle().await;
     let resp = client.post(url).header("User-Agent", APP_ID).header("Content-Type", "application/json").body(payload.to_string()).send().await;
     match resp {
       Ok(r) if r.status().as_u16() == 200 => {
@@ -104,7 +92,7 @@ impl Flock {
       }
       Err(e) => {
         tracing::warn!("A Connection error occurred sending Flock notification.");
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         false
       }
     }
@@ -133,7 +121,7 @@ impl Notify for Flock {
     let body = if ctx.body_format == NotifyFormat::Html { ctx.body.clone() } else { escape_html(&ctx.body) };
     let flockml = format!("<flockml>{}{}</flockml>", if title.is_empty() { String::new() } else { format!("<b>{}</b><br/>", title) }, body);
 
-    let profile_image = if self.include_image { image_url(&ctx.asset, &ctx.notify_type).map(Value::String).unwrap_or(Value::Null) } else { Value::Null };
+    let profile_image = if self.include_image { ctx.image_url(NotifyImageSize::Xy72).map(Value::String).unwrap_or(Value::Null) } else { Value::Null };
     let payload = json!({
       "token": self.token,
       "flockml": flockml,
@@ -151,9 +139,16 @@ impl Notify for Flock {
     } else {
       let url = format!("{}/v1/chat.sendMessage", service_base(NOTIFY_API));
       for target in &self.targets {
+        // Skip a target that already accepted this message so a retry
+        // does not deliver it twice
+        if crate::delivery::is_delivered(target, false) {
+          continue;
+        }
         let mut p = payload.clone();
         p["to"] = json!(target);
-        if !self.post(&client, &url, &p).await {
+        if self.post(&client, &url, &p).await {
+          crate::delivery::mark_delivered(target, false);
+        } else {
           has_error = true;
         }
       }
@@ -180,36 +175,11 @@ fn escape_html(s: &str) -> String {
   s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\'', "&apos;").replace('"', "&quot;")
 }
 
-/// Upstream `AppriseAsset.image_url()` at the 72x72 size Flock uses.
-fn image_url(asset: &AppriseAsset, notify_type: &NotifyType) -> Option<String> {
-  let mask = asset.image_url_mask.as_deref().unwrap_or(DEFAULT_IMAGE_URL_MASK);
-  if mask.is_empty() {
-    return None;
-  }
-  Some(mask.replace("{THEME}", &asset.theme).replace("{TYPE}", notify_type.as_str()).replace("{XY}", "72x72").replace("{EXTENSION}", ".png"))
-}
-
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
-/// Upstream `parse_list()`: split on `[]`, `;`, `,` and whitespace.
-fn parse_list(s: &str) -> Vec<String> {
-  s.split(|c: char| c == '[' || c == ']' || c == ';' || c == ',' || c.is_whitespace()).filter(|t| !t.is_empty()).map(String::from).collect()
-}
-
-/// Upstream `parse_list()` over a list: split, de-duplicate and sort.
-fn parse_list_of(items: &[String]) -> Vec<String> {
-  let mut out: Vec<String> = items.iter().flat_map(|i| parse_list(i)).collect();
-  out.sort();
-  out.dedup();
-  out
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
+  use crate::types::NotifyType;
   use wiremock::matchers::{header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -260,7 +230,7 @@ mod tests {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
     // Native URL with a token of the wrong length
-    assert!(Flock::from_url(&ParsedUrl::parse("https://api.flock.com/hooks/sendMessage/abc/").unwrap()).is_none());
+    assert!(from_url("https://api.flock.com/hooks/sendMessage/abc/").is_none());
   }
 
   #[test]
@@ -274,7 +244,8 @@ mod tests {
 
   #[test]
   fn test_native_url() {
-    let f = parse_flock(&format!("https://api.flock.com/hooks/sendMessage/{}/", "a".repeat(24)));
+    // What the registry makes of https://api.flock.com/hooks/sendMessage/{token}/
+    let f = parse_flock(&format!("flock://{}/", "a".repeat(24)));
     assert_eq!(f.token, "a".repeat(24));
     assert!(f.targets.is_empty());
   }
@@ -282,7 +253,8 @@ mod tests {
   #[test]
   fn test_escape_and_image() {
     assert_eq!(escape_html("T<a>&'\" x"), "T&lt;a&gt;&amp;&apos;&quot; x");
-    assert_eq!(image_url(&AppriseAsset::default(), &NotifyType::Info).as_deref(), Some(LOGO));
+    let ctx = NotifyContext::default();
+    assert_eq!(ctx.image_url(NotifyImageSize::Xy72).as_deref(), Some(LOGO));
   }
 
   #[tokio::test]
@@ -300,7 +272,7 @@ mod tests {
     let ctx = NotifyContext { title: "T<a>".into(), body: "B&<b>".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect();
     let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
     assert_eq!(
       body,
@@ -315,7 +287,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_html_body_untouched_and_no_title() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/hooks/sendMessage/token123")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
 
     let svc = from_url("flock://token123").unwrap();
     let ctx = NotifyContext { title: "Title & more".into(), body: "<i>Body</i>".into(), body_format: NotifyFormat::Html, ..Default::default() };
@@ -323,7 +295,7 @@ mod tests {
     let ctx = NotifyContext { body: "Body".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect();
     let first: Value = serde_json::from_slice(&reqs[0].body).unwrap();
     assert_eq!(first["flockml"], "<flockml><b>Title &amp; more</b><br/><i>Body</i></flockml>");
     let second: Value = serde_json::from_slice(&reqs[1].body).unwrap();
@@ -339,7 +311,7 @@ mod tests {
     let ctx = NotifyContext { title: "alert".into(), body: "hello".into(), notify_type: NotifyType::Warning, ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect();
     let bodies: Vec<Value> = reqs.iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect();
     assert_eq!(
       bodies[0],
@@ -356,7 +328,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure_continues_targets() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500)).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/chat.sendMessage")).respond_with(ResponseTemplate::new(500)).expect(2).mount(&server).await;
 
     let svc = from_url("flock://token123/g:abc/u:def").unwrap();
     let ctx = NotifyContext { body: "b".into(), ..Default::default() };
@@ -366,10 +338,24 @@ mod tests {
   #[tokio::test]
   async fn test_send_webhook_failure() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(999)).mount(&server).await;
+    Mock::given(method("POST")).and(path(format!("/hooks/sendMessage/{}", "t".repeat(24)))).respond_with(ResponseTemplate::new(999)).mount(&server).await;
     let svc = from_url(&format!("flock://{}/", "t".repeat(24))).unwrap();
     let ctx = NotifyContext { body: "b".into(), ..Default::default() };
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_targets_that_accepted() {
+    let server = MockServer::start().await;
+    let to = |t: &str| Mock::given(method("POST")).and(path("/v1/chat.sendMessage")).and(wiremock::matchers::body_partial_json(json!({"to": t})));
+    to("g:abc").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second target fails once, then accepts the retry
+    to("u:def").respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    to("u:def").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("flock://token123/g:abc/u:def?retry=1&wait=0"));
+    let ctx = NotifyContext { body: "b".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx)).await.is_success());
   }
 
   #[test]

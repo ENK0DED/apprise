@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::NotifyFormat;
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, parse_list};
 
 /// Supported GitHub REST API version
 const API_VERSION: &str = "2022-11-28";
@@ -75,16 +75,6 @@ fn parse_number(value: &str) -> Option<u64> {
     return None;
   }
   digits.parse().ok()
-}
-
-/// Upstream `parse_list()`: split on whitespace, commas, semicolons and
-/// brackets, then de-duplicate and sort.
-fn parse_list(value: &str) -> Vec<String> {
-  let mut items: Vec<String> =
-    value.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '[' | ']')).filter(|s| !s.is_empty()).map(String::from).collect();
-  items.sort();
-  items.dedup();
-  items
 }
 
 /// Every character of a non-empty `value` matches `allowed`
@@ -213,6 +203,7 @@ impl GitHub {
   async fn post(&self, client: &reqwest::Client, url: &str, payload: &Value) -> Result<Map<String, Value>, NotifyError> {
     tracing::debug!("GitHub POST URL: {} (cert_verify={})", url, self.verify_certificate);
     tracing::debug!("GitHub Payload: {}", payload);
+    crate::notify::throttle().await;
     let resp = client
       .post(url)
       .header("User-Agent", APP_ID)
@@ -406,7 +397,7 @@ impl Notify for GitHub {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, header, method, path, path_regex};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   const TOKEN: &str = "github_pat_11ABCDEFG0123456789_abcdef";
@@ -596,7 +587,12 @@ mod tests {
   async fn test_send_http_errors() {
     for code in [401u16, 403, 404, 410, 422, 500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code).set_body_json(json!({"message": "Not Found"}))).expect(1).mount(&server).await;
+      Mock::given(method("POST"))
+        .and(path_regex("^/(repos/|graphql)"))
+        .respond_with(ResponseTemplate::new(code).set_body_json(json!({"message": "Not Found"})))
+        .expect(1)
+        .mount(&server)
+        .await;
       let svc = from_url(&format!("github://{}@caronc/apprise", TOKEN)).unwrap();
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", "test"))).await.is_err(), "code {}", code);
     }
@@ -607,14 +603,24 @@ mod tests {
     // A truthy errors value that is not a list still counts as a failure
     for reply in [json!({"errors": [{"message": "Resource not accessible by integration"}, "unexpected"]}), json!({"errors": true})] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(reply)).expect(1).mount(&server).await;
+      Mock::given(method("POST"))
+        .and(path_regex("^/(repos/|graphql)"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(reply))
+        .expect(1)
+        .mount(&server)
+        .await;
       let svc = from_url(&format!("github://{}@caronc/apprise", TOKEN)).unwrap();
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", "test"))).await.is_err());
     }
 
     // An empty errors list is not a failure
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(201).set_body_json(json!({"errors": []}))).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path_regex("^/(repos/|graphql)"))
+      .respond_with(ResponseTemplate::new(201).set_body_json(json!({"errors": []})))
+      .expect(1)
+      .mount(&server)
+      .await;
     let svc = from_url(&format!("github://{}@caronc/apprise", TOKEN)).unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", "test"))).await.unwrap());
   }
@@ -656,14 +662,24 @@ mod tests {
       json!([]),
     ] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(reply.clone())).expect(1).mount(&server).await;
+      Mock::given(method("POST"))
+        .and(path_regex("^/(repos/|graphql)"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(reply.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
       let svc = from_url(&format!("github://{}@caronc/apprise/discussions/7", TOKEN)).unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("", "test"))).await.unwrap(), "reply {}", reply);
     }
 
     // A failed lookup fails without commenting
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(401).set_body_json(json!({}))).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path_regex("^/(repos/|graphql)"))
+      .respond_with(ResponseTemplate::new(401).set_body_json(json!({})))
+      .expect(1)
+      .mount(&server)
+      .await;
     let svc = from_url(&format!("github://{}@caronc/apprise/discussions/7", TOKEN)).unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("", "test"))).await.is_err());
   }
@@ -700,7 +716,12 @@ mod tests {
   async fn test_send_new_discussion_failures() {
     // An unknown category fails without creating anything
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(graphql_ok())).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path_regex("^/(repos/|graphql)"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(graphql_ok()))
+      .expect(1)
+      .mount(&server)
+      .await;
     let svc = from_url(&format!("github://{}@caronc/apprise/discussions?category=Polls", TOKEN)).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("", "test"))).await.unwrap());
 
@@ -714,14 +735,24 @@ mod tests {
       json!({"data": {"repository": {"id": "R_1", "discussionCategories": {"nodes": [{"id": "C_1", "name": 5, "slug": "x"}]}}}}),
     ] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(reply.clone())).expect(1).mount(&server).await;
+      Mock::given(method("POST"))
+        .and(path_regex("^/(repos/|graphql)"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(reply.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
       let svc = from_url(&format!("github://{}@caronc/apprise/discussions", TOKEN)).unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("", "test"))).await.unwrap(), "reply {}", reply);
     }
 
     // A failed category lookup fails without creating anything
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(404).set_body_json(json!({}))).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path_regex("^/(repos/|graphql)"))
+      .respond_with(ResponseTemplate::new(404).set_body_json(json!({})))
+      .expect(1)
+      .mount(&server)
+      .await;
     let svc = from_url(&format!("github://{}@caronc/apprise/discussions", TOKEN)).unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("", "test"))).await.is_err());
   }

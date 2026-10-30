@@ -5,9 +5,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
+use crate::notify::{APP_ID, ClientDefaults, Notify, NotifyContext, ServiceDetails, build_client, client_builder, service_base};
+use crate::utils::http::{is_secure_http_url, read_bounded_response};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::validate::{is_hostname, is_ipaddr};
 
 const DEFAULT_HOST: &str = "bsky.social";
 const PUBLIC_API: &str = "https://public.api.bsky.app";
@@ -21,9 +21,24 @@ const XRPC_BLOB: &str = "/xrpc/com.atproto.repo.uploadBlob";
 /// Replies to lookups and logins larger than this are discarded.
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
-/// State upstream keeps in its persistent store (session token, resolved
-/// DIDs and PDS endpoints) and in class-level rate limit fields. The Rust
-/// port keeps it in memory for the life of the instance.
+/// How long a session token is kept (upstream `access_token_lifetime_sec`
+/// minus its `clock_skew`).
+const ACCESS_TOKEN_LIFETIME: Duration = Duration::from_secs(3600 - 10);
+
+/// A string upstream keeps in the service's persistent store.
+fn stored(key: &str) -> Option<String> {
+  crate::storage::with_service_store(|s| s.get(key)).flatten().and_then(|v| v.as_str().map(String::from))
+}
+
+/// Keep `value` in the persistent store, when there is one.
+fn store(key: &str, value: &str, expires: Option<Duration>) {
+  crate::storage::with_service_store(|s| s.set(key, json!(value), expires, true));
+}
+
+/// The session token, resolved DIDs and PDS endpoints, and the rate limit
+/// the server last reported. Tokens and identities also go to the
+/// persistent store, as upstream keeps them; this copy serves the instance
+/// when there is no store.
 #[derive(Default)]
 struct Session {
   access_token: Option<String>,
@@ -70,7 +85,7 @@ impl BlueSky {
       tracing::warn!("A BlueSky UserID/Handle must be specified.");
       return None;
     };
-    let password = url.password.clone().filter(|p| !p.is_empty()).or_else(|| url.host.as_deref().filter(|h| !h.is_empty()).map(unquote)).unwrap_or_default();
+    let password = url.password.clone().or_else(|| url.host.clone()).unwrap_or_default();
 
     // A handle such as user.example.ca targets example.ca
     let (user, host) = match user.split_once('.') {
@@ -123,8 +138,8 @@ impl BlueSky {
     };
     if let Some(wait) = wait {
       tracing::debug!("BlueSky rate limit reached; waiting {:.2}s", wait.as_secs_f64());
-      tokio::time::sleep(wait).await;
     }
+    crate::notify::throttle_for(wait).await;
 
     tracing::debug!("BlueSky {} URL: {} (cert_verify={})", req.method, req.url, self.verify_certificate);
     let c = if req.credentials { nofollow } else { client };
@@ -147,7 +162,7 @@ impl BlueSky {
       Ok(r) => r,
       Err(e) => {
         tracing::warn!("Exception received when sending BlueSky {} to {}: ", req.method, req.url);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return (false, json!({}));
       }
     };
@@ -163,7 +178,7 @@ impl BlueSky {
         }
         Err(e) => {
           tracing::warn!("Exception received when sending BlueSky {} to {}: ", req.method, req.url);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           return (false, json!({}));
         }
       }
@@ -202,6 +217,11 @@ impl BlueSky {
     let user = if self.user.contains('.') { self.user.clone() } else { format!("{}.{}", self.user, self.host) };
     if let Some(found) = self.session().identities.get(&user) {
       return Some(found.clone());
+    }
+    let (did_key, endpoint_key) = (format!("did.{}", user), format!("endpoint.{}", user));
+    if let (Some(did), Some(endpoint)) = (stored(&did_key), stored(&endpoint_key)) {
+      self.session().identities.insert(user, (did.clone(), endpoint.clone()));
+      return Some((did, endpoint));
     }
 
     let url = format!("{}{}", service_base(PUBLIC_API), XRPC_DID);
@@ -249,6 +269,8 @@ impl BlueSky {
       return None;
     };
 
+    store(&did_key, &did, None);
+    store(&endpoint_key, &endpoint, None);
     self.session().identities.insert(user, (did.clone(), endpoint.clone()));
     Some((did, endpoint))
   }
@@ -266,7 +288,15 @@ impl BlueSky {
       return false;
     }
 
-    self.session().access_token = response.get("accessJwt").and_then(Value::as_str).map(String::from);
+    let token = response.get("accessJwt").and_then(Value::as_str).map(String::from);
+    if let Some(token) = &token {
+      store("access_token", token, Some(ACCESS_TOKEN_LIFETIME));
+    }
+    if let Some(refresh) = response.get("refreshJwt").and_then(Value::as_str) {
+      store("refresh_token", refresh, Some(ACCESS_TOKEN_LIFETIME));
+    }
+    store("endpoint", &endpoint, None);
+    self.session().access_token = token;
     tracing::info!("Authenticated to BlueSky as {}.{}", self.user, self.host);
     true
   }
@@ -295,17 +325,26 @@ impl Notify for BlueSky {
   fn title_maxlen(&self) -> usize {
     0
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    // The server's own rate limit headers decide when to wait
+    0.0
+  }
+  fn url_identifier(&self) -> Option<Vec<String>> {
+    Some(vec!["bsky".to_string(), self.user.clone(), self.password.clone()])
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let client = build_client(self.verify_certificate)?;
-    crate::ensure_crypto_provider();
-    let nofollow = reqwest::Client::builder()
-      .timeout(Duration::from_secs(15))
-      .danger_accept_invalid_certs(!self.verify_certificate)
-      .redirect(reqwest::redirect::Policy::none())
-      .build()
-      .map_err(NotifyError::Http)?;
+    // Never redirect a request carrying our password
+    let nofollow =
+      client_builder(self.verify_certificate, ClientDefaults::default()).redirect(reqwest::redirect::Policy::none()).build().map_err(NotifyError::Http)?;
 
+    // A session from an earlier run may still be good
+    if self.session().access_token.is_none()
+      && let Some(token) = stored("access_token")
+    {
+      self.session().access_token = Some(token);
+    }
     if self.session().access_token.is_none() && !self.login(&client, &nofollow).await {
       return Ok(false);
     }
@@ -367,7 +406,13 @@ impl Notify for BlueSky {
         .collect()
     };
 
-    for payload in payloads {
+    for (no, payload) in payloads.into_iter().enumerate() {
+      // Skip a post that was already created so a retry does not publish
+      // it twice
+      let key = (no + 1).to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
       let req = Request {
         url: format!("{}{}", base, XRPC_RECORD),
         method: reqwest::Method::POST,
@@ -380,6 +425,7 @@ impl Notify for BlueSky {
       if !self.fetch(&client, &nofollow, req).await.0 {
         return Ok(false);
       }
+      crate::delivery::mark_delivered(&key, false);
     }
     Ok(true)
   }
@@ -394,51 +440,6 @@ fn is_truthy(v: &Value) -> bool {
     Value::Object(o) => !o.is_empty(),
     Value::Number(n) => n.as_f64() != Some(0.0),
   }
-}
-
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
-// The two helpers below mirror upstream `apprise/utils/http.py`. They are
-// kept private here until the shared versions land in the core.
-
-/// Upstream `is_secure_http_url()`: an HTTPS URL with a valid host, no
-/// credentials (even empty ones), a usable port and no fragment.
-fn is_secure_http_url(s: &str) -> bool {
-  if s.contains('#') {
-    return false;
-  }
-  let Ok(u) = url::Url::parse(s) else { return false };
-  if !u.scheme().eq_ignore_ascii_case("https") || u.port() == Some(0) {
-    return false;
-  }
-  // Reject credentials embedded in the URL, including an empty "@"
-  let authority = s.split_once("://").map(|(_, rest)| rest).unwrap_or_default();
-  let authority = authority.split(['/', '?']).next().unwrap_or_default();
-  if authority.contains('@') {
-    return false;
-  }
-  match u.host_str() {
-    Some(h) if !h.is_empty() => {
-      let h = h.trim_start_matches('[').trim_end_matches(']');
-      is_ipaddr(h) || is_hostname(&h.replace('_', "a"))
-    }
-    _ => false,
-  }
-}
-
-/// Upstream `read_bounded_response()`: read the reply body, or `None` once
-/// it grows past `max_bytes`.
-async fn read_bounded_response(mut resp: reqwest::Response, max_bytes: usize) -> Result<Option<Vec<u8>>, reqwest::Error> {
-  let mut body = Vec::new();
-  while let Some(chunk) = resp.chunk().await? {
-    if body.len() + chunk.len() > max_bytes {
-      return Ok(None);
-    }
-    body.extend_from_slice(&chunk);
-  }
-  Ok(Some(body))
 }
 
 #[cfg(test)]
@@ -750,6 +751,96 @@ mod tests {
     assert_eq!(svc.session().ratelimit_reset, reset);
     // A reset time in the past does not block the next post
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_session_and_identity_come_from_the_store() {
+    let server = MockServer::start().await;
+    // One lookup and one login across both runs
+    Mock::given(method("GET"))
+      .and(path(XRPC_DID))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"did": "did:plc:123"})))
+      .expect(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("GET"))
+      .and(path("/did:plc:123"))
+      .respond_with(
+        ResponseTemplate::new(200).set_body_json(json!({"service": [{"type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://example.pds.io"}]})),
+      )
+      .expect(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST"))
+      .and(path(XRPC_SESSION))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"accessJwt": "jwt-token", "refreshJwt": "refresh"})))
+      .expect(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST"))
+      .and(path(XRPC_RECORD))
+      .and(header("Authorization", "Bearer jwt-token"))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(2)
+      .mount(&server)
+      .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    for _ in 0..2 {
+      // A fresh instance each time, as a new process would have
+      let asset = crate::AppriseAsset { storage_path: Some(tmp.path().to_path_buf()), ..Default::default() };
+      let mut apprise = crate::Apprise::with_asset(asset);
+      assert!(apprise.add("bsky://handle@token"));
+      assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx)).await.is_success());
+      apprise.flush_stores();
+    }
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_posts_already_created() {
+    let server = MockServer::start().await;
+    mount_login(&server, "https://example.pds.io").await;
+    Mock::given(method("POST")).and(path(XRPC_BLOB)).respond_with(ResponseTemplate::new(200).set_body_json(json!({"blob": {"ref": "x"}}))).mount(&server).await;
+    let record =
+      |text: &str| Mock::given(method("POST")).and(path(XRPC_RECORD)).and(wiremock::matchers::body_string_contains(format!("\"text\":\"{}\"", text)));
+    record("body").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second post fails once, then goes through on the retry
+    record("02/02").respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    record("02/02").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+
+    let mut ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    for name in ["a.png", "b.png"] {
+      ctx.attachments.push(Attachment { name: name.into(), data: b"PNG".to_vec(), mime_type: "image/png".into() });
+    }
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("bsky://handle@token?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx)).await.is_success());
+  }
+
+  #[tokio::test]
+  async fn test_waits_out_the_rate_limit() {
+    let server = MockServer::start().await;
+    mount_login(&server, "https://example.pds.io").await;
+    // The window resets about a second from now
+    let reset = chrono::Utc::now().timestamp() + 1;
+    Mock::given(method("POST"))
+      .and(path(XRPC_RECORD))
+      .respond_with(ResponseTemplate::new(200).insert_header("ratelimit-remaining", "0").insert_header("ratelimit-reset", reset.to_string().as_str()))
+      .expect(2)
+      .mount(&server)
+      .await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("bsky://handle@token"));
+    let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    crate::notify::with_throttling_in_tests(crate::notify::with_test_base(server.uri(), async {
+      assert!(apprise.notify(&ctx).await.is_success());
+      let started = std::time::Instant::now();
+      assert!(apprise.notify(&ctx).await.is_success());
+      // Upstream waits for the reset plus 0.3s of grace
+      assert!(started.elapsed() >= Duration::from_millis(300), "{:?}", started.elapsed());
+    }))
+    .await;
   }
 
   #[test]

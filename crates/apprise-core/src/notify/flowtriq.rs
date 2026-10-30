@@ -69,6 +69,10 @@ impl Notify for Flowtriq {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
+    0.0
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let schema = if self.secure { "https" } else { "http" };
@@ -85,6 +89,7 @@ impl Notify for Flowtriq {
 
     tracing::debug!("Flowtriq POST URL: {} (cert_verify={})", url, self.verify_certificate);
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client
       .post(&url)
       .header("User-Agent", APP_ID)

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::types::NotifyFormat;
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, parse_list};
 
 /// Gorush reports each device it could not reach with this log type
 const FAILED_PUSH: &str = "failed-push";
@@ -42,20 +42,6 @@ impl Platform {
   }
 }
 
-/// Upstream `parse_list()`: split on whitespace, commas, semicolons and
-/// brackets, then de-duplicate and sort.
-fn parse_list<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-  let mut items: Vec<String> = values
-    .into_iter()
-    .flat_map(|v| v.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '[' | ']')))
-    .filter(|s| !s.is_empty())
-    .map(String::from)
-    .collect();
-  items.sort();
-  items.dedup();
-  items
-}
-
 /// Self-hosted Gorush push server (APNs, FCM and HMS).
 ///
 /// `gorush://[user[:password]@]host[:port]/token1/token2?platform=ios`;
@@ -83,13 +69,9 @@ impl Gorush {
     let get = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty());
 
     // Every path entry is a device token; ?to= adds more
-    let path_entries: Vec<String> = url
-      .path
-      .split([' ', '\t', '\r', '\n', ',', '\\', '/'])
-      .filter(|s| !s.is_empty())
-      .map(|s| urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string()))
-      .collect();
-    let targets = parse_list(path_entries.iter().map(String::as_str).chain(get("to")));
+    let mut entries = url.path_parts.clone();
+    entries.extend(get("to").map(String::from));
+    let targets = parse_list(&entries.join(" "));
 
     // Every token in this URL goes to the same platform; platform= wins
     // over its mode= alias
@@ -131,10 +113,8 @@ impl Gorush {
       None => None,
     };
 
-    // Extra key/value pairs handed to the mobile app (?+key=value; a raw
-    // '+' arrives decoded as a space)
-    let data =
-      url.qsd.iter().filter_map(|(k, v)| k.strip_prefix('+').or_else(|| k.strip_prefix(' ')).map(|key| (key.to_string(), v.trim().to_string()))).collect();
+    // Extra key/value pairs handed to the mobile app (?+key=value)
+    let data = url.qsd_add.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
     Some(Self {
       host,
@@ -165,9 +145,9 @@ impl Gorush {
     }
   }
 
-  fn payload(&self, ctx: &NotifyContext) -> Value {
+  fn payload(&self, ctx: &NotifyContext, tokens: &[&String]) -> Value {
     let mut notification = Map::new();
-    notification.insert("tokens".into(), json!(self.targets));
+    notification.insert("tokens".into(), json!(tokens));
     notification.insert("platform".into(), json!(self.platform.number()));
     notification.insert("message".into(), json!(ctx.body));
     if !ctx.title.is_empty() {
@@ -210,6 +190,10 @@ impl Notify for Gorush {
   fn notify_format(&self) -> NotifyFormat {
     NotifyFormat::Text
   }
+  fn request_rate_per_sec(&self) -> f64 {
+    // Upstream disables throttling for this service
+    0.0
+  }
   /// APNs, FCM and HMS each cap a push at roughly 4KB in total
   fn body_maxlen(&self) -> usize {
     4000
@@ -224,7 +208,10 @@ impl Notify for Gorush {
     let schema = if self.secure { "https" } else { "http" };
     let port = self.port.map(|p| format!(":{}", p)).unwrap_or_default();
     let url = format!("{}://{}{}/api/push", schema, self.host, port);
-    let payload = self.payload(ctx);
+    // Skip devices an earlier attempt already reached. A failed attempt
+    // always leaves at least one device for the retry.
+    let tokens: Vec<&String> = self.targets.iter().filter(|t| !crate::delivery::is_delivered(t, false)).collect();
+    let payload = self.payload(ctx, &tokens);
 
     tracing::debug!("Gorush POST URL: {} (cert_verify={})", url, self.verify_certificate);
     tracing::debug!("Gorush Payload: {}", payload);
@@ -236,6 +223,7 @@ impl Notify for Gorush {
     if let Some(user) = &self.user {
       req = req.basic_auth(user, Some(self.password.as_deref().unwrap_or("None")));
     }
+    crate::notify::throttle().await;
     let resp = req.send().await?;
 
     let status = resp.status().as_u16();
@@ -259,13 +247,22 @@ impl Notify for Gorush {
       .collect();
 
     if failed.is_empty() {
-      tracing::info!("Sent Gorush notification to {} device(s).", self.targets.len());
+      tracing::info!("Sent Gorush notification to {} device(s).", tokens.len());
       return Ok(true);
     }
 
-    for entry in failed {
+    for entry in &failed {
       let error = entry.get("error").filter(|e| !e.is_null() && e.as_str() != Some("")).map(|e| e.as_str().map(String::from).unwrap_or_else(|| e.to_string()));
       tracing::warn!("Gorush could not notify a device: {}", error.as_deref().unwrap_or("unknown error"));
+    }
+
+    // Gorush can hide part of each token in its reply. Only let a retry
+    // skip devices when every failure names one of ours exactly.
+    let failed_tokens: Vec<Option<&str>> = failed.iter().map(|entry| entry.get("token").and_then(Value::as_str)).collect();
+    if failed_tokens.iter().all(|t| t.is_some_and(|t| tokens.iter().any(|ours| ours.as_str() == t))) {
+      for token in tokens.iter().filter(|t| !failed_tokens.contains(&Some(t.as_str()))) {
+        crate::delivery::mark_delivered(token, false);
+      }
     }
     Ok(false)
   }
@@ -403,7 +400,13 @@ mod tests {
   async fn test_send_user_without_password() {
     let server = MockServer::start().await;
     // Upstream sends the literal password "None" (user:None)
-    Mock::given(method("POST")).and(header("Authorization", "Basic dXNlcjpOb25l")).respond_with(ok_reply()).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path("/api/push"))
+      .and(header("Authorization", "Basic dXNlcjpOb25l"))
+      .respond_with(ok_reply())
+      .expect(1)
+      .mount(&server)
+      .await;
     let addr = server.address();
     let svc = from_url(&format!("gorush://user@{}:{}/token?mode=3", addr.ip(), addr.port())).unwrap();
     assert!(svc.send(&NotifyContext { body: "Body".into(), ..Default::default() }).await.unwrap());
@@ -420,7 +423,7 @@ mod tests {
     // An HTTP 200 without failed devices is a success
     for reply in [r#"["unexpected"]"#, r#"{"logs": "unexpected"}"#, r#"{"logs": ["text", {"type": "succeeded-push"}]}"#, "<html/>", ""] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string(reply)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/api/push")).respond_with(ResponseTemplate::new(200).set_body_string(reply)).expect(1).mount(&server).await;
       let addr = server.address();
       let svc = from_url(&format!("gorush://{}:{}/token", addr.ip(), addr.port())).unwrap();
       assert!(svc.send(&NotifyContext { body: "body".into(), ..Default::default() }).await.unwrap(), "reply {}", reply);
@@ -431,6 +434,7 @@ mod tests {
   async fn test_send_failed_devices() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/api/push"))
       .respond_with(ResponseTemplate::new(200).set_body_json(json!({
         "counts": 3,
         "logs": [{"type": "failed-push", "token": "tok2", "error": "invalid token"}],
@@ -445,10 +449,41 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn test_retry_resends_to_failed_devices_only() {
+    let server = MockServer::start().await;
+    let push = |tokens: Value| {
+      Mock::given(method("POST")).and(path("/api/push")).and(wiremock::matchers::body_partial_json(json!({"notifications": [{"tokens": tokens}]})))
+    };
+    let failed = json!({"logs": [{"type": "failed-push", "token": "tok2", "error": "busy"}]});
+    push(json!(["tok1", "tok2", "tok3"])).respond_with(ResponseTemplate::new(200).set_body_json(failed)).expect(1).mount(&server).await;
+    push(json!(["tok2"])).respond_with(ok_reply()).expect(1).mount(&server).await;
+    let addr = server.address();
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("gorush://{}:{}/tok1/tok2/tok3?retry=1&wait=0", addr.ip(), addr.port())));
+    assert!(apprise.notify(&NotifyContext { body: "body".into(), ..Default::default() }).await.is_success());
+  }
+
+  #[tokio::test]
+  async fn test_retry_resends_everything_when_failures_are_unclear() {
+    let server = MockServer::start().await;
+    let push = || {
+      Mock::given(method("POST")).and(path("/api/push")).and(wiremock::matchers::body_partial_json(json!({"notifications": [{"tokens": ["tok1", "tok2"]}]})))
+    };
+    // A masked token cannot be matched to a device
+    let failed = json!({"logs": [{"type": "failed-push", "token": "tok***", "error": "busy"}]});
+    push().respond_with(ResponseTemplate::new(200).set_body_json(failed)).up_to_n_times(1).expect(1).mount(&server).await;
+    push().respond_with(ok_reply()).expect(1).mount(&server).await;
+    let addr = server.address();
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("gorush://{}:{}/tok1/tok2?retry=1&wait=0", addr.ip(), addr.port())));
+    assert!(apprise.notify(&NotifyContext { body: "body".into(), ..Default::default() }).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_http_errors() {
     for code in [400u16, 500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/api/push")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let addr = server.address();
       let svc = from_url(&format!("gorush://{}:{}/token", addr.ip(), addr.port())).unwrap();
       assert!(svc.send(&NotifyContext { body: "body".into(), ..Default::default() }).await.is_err(), "code {}", code);
