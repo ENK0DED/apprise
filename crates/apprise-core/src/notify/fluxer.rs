@@ -116,7 +116,7 @@ impl Fluxer {
     let webhook_token = tokens.pop().unwrap_or_default();
     let webhook_id = tokens.pop().unwrap_or_default();
     if !is_webhook_id(&webhook_id) {
-      tracing::warn!("An invalid Fluxer Webhook ID ({}) was specified.", webhook_id);
+      tracing::warn!("An invalid Fluxer Webhook ID was specified.");
       return None;
     }
     if !is_webhook_token(&webhook_token) {
@@ -217,15 +217,26 @@ impl Fluxer {
 
   /// The webhook URL (upstream `notify_url` with its `prefix`).
   fn webhook_url(&self) -> String {
-    let prefix = match self.mode {
+    format!("{}/webhooks/{}/{}", self.prefix(), self.webhook_id, self.webhook_token)
+  }
+
+  /// [`Self::webhook_url`] with the webhook details masked, for logs.
+  fn loggable_url(&self) -> String {
+    let mask = |s: &str| format!("{}...{}", &s[..1], &s[s.len() - 1..]);
+    format!("{}/webhooks/{}/{}", self.prefix(), mask(&self.webhook_id), mask(&self.webhook_token))
+  }
+
+  /// Where the webhooks live: the cloud API, or the self-hosted server and
+  /// its API path.
+  fn prefix(&self) -> String {
+    match self.mode {
       Mode::Cloud => service_base("https://api.fluxer.app"),
       Mode::Private => {
         let schema = if self.secure { "https" } else { "http" };
         let port = self.port.map(|p| format!(":{p}")).unwrap_or_default();
         format!("{schema}://{}{port}{}", self.host, self.fullpath.trim_end_matches('/'))
       }
-    };
-    format!("{prefix}/webhooks/{}/{}", self.webhook_id, self.webhook_token)
+    }
   }
 
   /// How long to wait before the next request when an earlier 429 has
@@ -256,11 +267,7 @@ impl Fluxer {
   /// after its `Retry-After` delay.
   async fn post(&self, client: &reqwest::Client, payload: &mut Map<String, Value>, attach: Option<&Attachment>) -> bool {
     let url = self.webhook_url();
-    tracing::debug!(
-      "Fluxer POST URL: {} (cert_verify={})",
-      url.replace(&self.webhook_token, &format!("{}...{}", &self.webhook_token[..1], &self.webhook_token[self.webhook_token.len() - 1..])),
-      self.verify_certificate
-    );
+    tracing::debug!("Fluxer POST URL: {} (cert_verify={})", self.loggable_url(), self.verify_certificate);
 
     if let Some(a) = attach {
       // Fluxer requires content with an attachment
@@ -642,6 +649,7 @@ mod tests {
       assert_eq!(f.mode, mode, "{}", url);
       assert_eq!(f.fullpath, fullpath, "{}", url);
       assert_eq!(f.webhook_url(), endpoint, "{}", url);
+      assert_eq!(f.loggable_url(), endpoint.replace(&format!("{ID}/{TOKEN}"), "0...0/B...B"), "{}", url);
     }
 
     // Leading and trailing slashes are normalized

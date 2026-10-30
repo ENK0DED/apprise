@@ -32,14 +32,8 @@ pub struct Evolution {
 
 /// Whether `text` holds `pat` starting at character index `i`.
 fn starts_with_at(text: &[char], i: usize, pat: &str) -> bool {
-  let mut k = i;
-  for c in pat.chars() {
-    if text.get(k) != Some(&c) {
-      return false;
-    }
-    k += 1;
-  }
-  true
+  let mut rest = text.get(i..).unwrap_or_default().iter();
+  pat.chars().all(|c| rest.next() == Some(&c))
 }
 
 fn collect(chars: &[char]) -> String {
