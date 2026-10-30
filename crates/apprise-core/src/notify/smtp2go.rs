@@ -227,7 +227,14 @@ mod tests {
   }
 
   async fn bodies(server: &MockServer) -> Vec<Value> {
-    server.received_requests().await.unwrap().iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect()
+    server
+      .received_requests()
+      .await
+      .unwrap()
+      .iter()
+      .filter(|r| r.method == wiremock::http::Method::POST)
+      .map(|r| serde_json::from_slice(&r.body).unwrap())
+      .collect()
   }
 
   fn ctx(title: &str, body_format: NotifyFormat) -> NotifyContext {

@@ -13,9 +13,9 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::error::NotifyError;
-use crate::utils::phone::{is_phone_no, parse_phone_no};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 
 /// The API host that serves each region.
 const REGIONS: &[(&str, &str)] = &[("in", "https://api.in.kaleyra.io"), ("sg", "https://api.kaleyra.io"), ("eu", "https://api.eu.kaleyra.io")];

@@ -13,9 +13,9 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::error::NotifyError;
-use crate::utils::phone::{is_phone_no, parse_phone_no};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 
 /// The service accepts up to 10,000 messages in a single request.
 const BATCH_SIZE: usize = 10000;
