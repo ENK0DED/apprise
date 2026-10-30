@@ -55,6 +55,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(freemobile::FreeMobile::static_details());
   collect!(github::GitHub::static_details());
   collect!(google_chat::GoogleChat::static_details());
+  collect!(gorush::Gorush::static_details());
   collect!(gotify::Gotify::static_details());
   collect!(growl::Growl::static_details());
   collect!(guilded::Guilded::static_details());
@@ -201,6 +202,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(freemobile::FreeMobile::from_url, "freemobile");
   reg!(github::GitHub::from_url, "github");
   reg!(google_chat::GoogleChat::from_url, "gchat");
+  reg!(gorush::Gorush::from_url, "gorush", "gorushs");
   reg!(gotify::Gotify::from_url, "gotify", "gotifys");
   reg!(growl::Growl::from_url, "growl");
   reg!(guilded::Guilded::from_url, "guilded");
