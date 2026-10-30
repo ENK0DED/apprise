@@ -6,6 +6,7 @@ use crate::asset::AppriseAsset;
 use crate::error::NotifyError;
 use crate::types::{NotifyFormat, NotifyType};
 
+mod messaging_targets;
 pub mod options;
 pub mod registry;
 
@@ -124,6 +125,7 @@ pub mod synology;
 pub mod syslog;
 pub mod techuluspush;
 pub mod telegram;
+pub mod telnyx;
 pub mod threema;
 pub mod twilio;
 pub mod twist;
