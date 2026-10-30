@@ -39,6 +39,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(chanify::Chanify::static_details());
   collect!(clickatell::Clickatell::static_details());
   collect!(clicksend::ClickSend::static_details());
+  collect!(cm::Cm::static_details());
   collect!(d7networks::D7Networks::static_details());
   collect!(dapnet::Dapnet::static_details());
   collect!(dingtalk::DingTalk::static_details());
@@ -183,6 +184,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(chanify::Chanify::from_url, "chanify");
   reg!(clickatell::Clickatell::from_url, "clickatell");
   reg!(clicksend::ClickSend::from_url, "clicksend");
+  reg!(cm::Cm::from_url, "cm");
   reg!(d7networks::D7Networks::from_url, "d7sms");
   reg!(dapnet::Dapnet::from_url, "dapnet");
   reg!(dingtalk::DingTalk::from_url, "dingtalk");

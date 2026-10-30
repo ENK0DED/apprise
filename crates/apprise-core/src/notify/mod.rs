@@ -24,6 +24,7 @@ pub mod burstsms;
 pub mod chanify;
 pub mod clickatell;
 pub mod clicksend;
+pub mod cm;
 pub mod custom_form;
 pub mod custom_json;
 pub mod custom_xml;
