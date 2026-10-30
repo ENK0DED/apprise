@@ -39,6 +39,7 @@ pub mod enigma2;
 pub mod fcm;
 pub mod feishu;
 pub mod flock;
+pub mod flowtriq;
 pub mod fluxer;
 pub mod fortysixelks;
 pub mod freemobile;

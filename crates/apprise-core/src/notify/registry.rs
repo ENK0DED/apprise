@@ -49,6 +49,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(fcm::Fcm::static_details());
   collect!(feishu::FeiShu::static_details());
   collect!(flock::Flock::static_details());
+  collect!(flowtriq::Flowtriq::static_details());
   collect!(fluxer::Fluxer::static_details());
   collect!(fortysixelks::FortySixElks::static_details());
   collect!(freemobile::FreeMobile::static_details());
@@ -193,6 +194,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(fcm::Fcm::from_url, "fcm");
   reg!(feishu::FeiShu::from_url, "feishu");
   reg!(flock::Flock::from_url, "flock");
+  reg!(flowtriq::Flowtriq::from_url, "flowtriq", "flowtriqs");
   reg!(fluxer::Fluxer::from_url, "fluxer", "fluxers");
   reg!(fortysixelks::FortySixElks::from_url, "46elks", "elks");
   reg!(freemobile::FreeMobile::from_url, "freemobile");
