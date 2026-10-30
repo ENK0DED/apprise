@@ -229,7 +229,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(notica::Notica::from_url, "notica", "noticas");
   reg!(notifiarr::Notifiarr::from_url, "notifiarr");
   reg!(notificationapi::NotificationApi::from_url, "napi", "notificationapi");
-  reg!(notifico::Notifico::from_url, "notifico");
+  reg!(notifico::Notifico::from_url, "notifico", "notificos");
   reg!(ntfy::Ntfy::from_url, "ntfy", "ntfys");
   reg!(office365::Office365::from_url, "o365", "azure");
   reg!(one_signal::OneSignal::from_url, "onesignal");
