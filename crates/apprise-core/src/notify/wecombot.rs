@@ -1,18 +1,54 @@
 use crate::error::NotifyError;
-use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use async_trait::async_trait;
 use serde_json::json;
 
+/// WeCom group robot webhook: `wecombot://{key}`.
 pub struct WeComBot {
   key: String,
   verify_certificate: bool,
   tags: Vec<String>,
 }
+
+fn is_key(s: &str) -> bool {
+  !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Strip `prefix` from the start of `s`, ignoring ASCII case.
+fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+  s.get(..prefix.len()).filter(|p| p.eq_ignore_ascii_case(prefix)).map(|_| &s[prefix.len()..])
+}
+
+/// Upstream `parse_native_url`:
+/// `https?://qyapi.weixin.qq.com/cgi-bin/webhook/send/?key={key}/&{params}`.
+/// Returns the equivalent `wecombot://{key}?{params}` URL.
+fn native_to_apprise(raw: &str) -> Option<String> {
+  let rest = strip_prefix_ci(raw, "https://").or_else(|| strip_prefix_ci(raw, "http://"))?;
+  let rest = strip_prefix_ci(rest, "qyapi.weixin.qq.com/cgi-bin/webhook/send")?;
+  let rest = rest.strip_prefix('/').unwrap_or(rest);
+  let rest = strip_prefix_ci(rest, "?key=")?;
+  let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).unwrap_or(rest.len());
+  let (key, rest) = rest.split_at(end);
+  if key.is_empty() {
+    return None;
+  }
+  let rest = rest.strip_prefix('/').unwrap_or(rest);
+  let params = rest.strip_prefix('&').unwrap_or(rest);
+  Some(if params.is_empty() { format!("wecombot://{}", key) } else { format!("wecombot://{}?{}", key, params) })
+}
+
 impl WeComBot {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let key = url.host.clone().filter(|h| !h.is_empty()).or_else(|| url.get("key").map(|s| s.to_string()))?;
-    if key.trim().is_empty() {
+    if url.schema == "https" || url.schema == "http" {
+      return Self::from_url(&ParsedUrl::parse(&native_to_apprise(&url.raw)?)?);
+    }
+    let mut key = urlencoding::decode(url.host.as_deref().unwrap_or_default()).ok()?.into_owned();
+    if let Some(k) = url.get("key").filter(|k| !k.is_empty()) {
+      key = k.to_string();
+    }
+    if !is_key(&key) {
+      tracing::warn!("An invalid WeCom Bot Webhook Key was specified.");
       return None;
     }
     Some(Self { key, verify_certificate: url.verify_certificate(), tags: url.tags() })
@@ -20,14 +56,15 @@ impl WeComBot {
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "WeCom Bot",
-      service_url: Some("https://work.weixin.qq.com"),
-      setup_url: None,
+      service_url: Some("https://weixin.qq.com/"),
+      setup_url: Some("https://appriseit.com/services/wecombot/"),
       protocols: vec!["wecombot"],
       description: "Send messages via WeCom group robot.",
       attachment_support: false,
     }
   }
 }
+
 #[async_trait]
 impl Notify for WeComBot {
   fn schemas(&self) -> &[&str] {
@@ -42,13 +79,32 @@ impl Notify for WeComBot {
   fn tags(&self) -> Vec<String> {
     self.tags.clone()
   }
+  fn title_maxlen(&self) -> usize {
+    0
+  }
+  fn body_maxlen(&self) -> usize {
+    2048
+  }
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
+    let payload = json!({ "msgtype": "text", "text": { "content": ctx.body } });
+    let url = format!("{}/cgi-bin/webhook/send", service_base("https://qyapi.weixin.qq.com"));
     let client = build_client(self.verify_certificate)?;
-    let msg = format!("{}{}", if ctx.title.is_empty() { String::new() } else { format!("{}\n", ctx.title) }, ctx.body);
-    let payload = json!({ "msgtype": "text", "text": { "content": msg } });
-    let url = format!("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={}", self.key);
-    let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
-    Ok(resp.status().is_success())
+    let resp = client
+      .post(&url)
+      .query(&[("key", &self.key)])
+      .header("User-Agent", APP_ID)
+      .header("Content-Type", "application/json; charset=utf-8")
+      .body(serde_json::to_vec(&payload)?)
+      .send()
+      .await?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::OK {
+      tracing::info!("Sent WeCom Bot notification.");
+      Ok(true)
+    } else {
+      tracing::warn!("Failed to send WeCom Bot notification: error={}", status.as_u16());
+      Err(NotifyError::ServiceError { status: status.as_u16(), body: resp.text().await.unwrap_or_default() })
+    }
   }
 }
 
@@ -56,6 +112,12 @@ impl Notify for WeComBot {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
+  use wiremock::matchers::{body_json, header, method, path, query_param};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
+
+  fn key_of(url: &str) -> Option<String> {
+    ParsedUrl::parse(url).and_then(|p| WeComBot::from_url(&p)).map(|w| w.key)
+  }
 
   #[test]
   fn test_valid_urls() {
@@ -64,6 +126,7 @@ mod tests {
       "wecombot://?key=botkey",
       "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=BOTKEY",
       "https://qyapi.weixin.qq.com/cgi-bin/webhook/send/?key=BOTKEY&data=123",
+      "http://QYAPI.weixin.qq.com/cgi-bin/webhook/send?KEY=ab_c",
     ];
     for url in &urls {
       assert!(from_url(url).is_some(), "Should parse: {}", url);
@@ -72,45 +135,69 @@ mod tests {
 
   #[test]
   fn test_invalid_urls() {
-    let urls = vec!["wecombot://", "wecombot://:@/"];
+    let urls = vec![
+      "wecombot://",
+      "wecombot://:@/",
+      "wecombot://a.b",
+      "https://qyapi.weixin.qq.com/cgi-bin/webhook/send",
+      "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=",
+    ];
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
   }
 
   #[test]
-  fn test_from_url_key_from_host() {
-    let parsed = ParsedUrl::parse("wecombot://mykey").unwrap();
-    let w = WeComBot::from_url(&parsed).unwrap();
-    assert_eq!(w.key, "mykey");
+  fn test_from_url_key() {
+    assert_eq!(key_of("wecombot://mykey").as_deref(), Some("mykey"));
+    // ?key= takes priority over the host
+    assert_eq!(key_of("wecombot://host?key=k-1").as_deref(), Some("k-1"));
+    assert_eq!(key_of("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=BOTKEY").as_deref(), Some("BOTKEY"));
+    // The rest of a native query string is kept, so a later key= wins
+    assert_eq!(key_of("https://qyapi.weixin.qq.com/cgi-bin/webhook/send/?key=BOTKEY/&key=OTHER").as_deref(), Some("OTHER"));
   }
 
   #[test]
-  fn test_from_url_key_from_query() {
-    let parsed = ParsedUrl::parse("wecombot://?key=mykey2").unwrap();
-    let w = WeComBot::from_url(&parsed).unwrap();
-    assert_eq!(w.key, "mykey2");
-  }
-
-  #[test]
-  fn test_from_url_native_url() {
-    // Native https URL: host=qyapi.weixin.qq.com, key=BOTKEY in query
-    // WeComBot::from_url looks at host first, then key= query param
-    // Since host is qyapi.weixin.qq.com (non-empty), it gets used as key
-    // The registry handles mapping native URLs; here we test direct from_url
-    // which sees key=BOTKEY in the query param
-    let parsed = ParsedUrl::parse("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=BOTKEY").unwrap();
-    let w = WeComBot::from_url(&parsed).unwrap();
-    // host is non-empty so it takes precedence in from_url
-    assert!(!w.key.is_empty());
+  fn test_native_options_are_kept() {
+    let w = WeComBot::from_url(&ParsedUrl::parse("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=BOTKEY&verify=no").unwrap()).unwrap();
+    assert!(!w.verify_certificate);
   }
 
   #[test]
   fn test_service_details() {
     let details = WeComBot::static_details();
     assert_eq!(details.service_name, "WeCom Bot");
-    assert_eq!(details.service_url, Some("https://work.weixin.qq.com"));
+    assert_eq!(details.service_url, Some("https://weixin.qq.com/"));
     assert!(details.protocols.contains(&"wecombot"));
-    assert!(!details.attachment_support);
+    let svc = from_url("wecombot://botkey").unwrap();
+    assert_eq!(svc.title_maxlen(), 0);
+    assert_eq!(svc.body_maxlen(), 2048);
+  }
+
+  #[tokio::test]
+  async fn test_send() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/cgi-bin/webhook/send"))
+      .and(query_param("key", "botkey"))
+      .and(header("Content-Type", "application/json; charset=utf-8"))
+      .and(body_json(json!({ "msgtype": "text", "text": { "content": "T\r\nB" } })))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let svc = from_url("wecombot://botkey").unwrap();
+    let ctx = NotifyContext { body: "T\r\nB".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_send_failure() {
+    for code in [500, 999] {
+      let server = MockServer::start().await;
+      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      let svc = from_url("wecombot://botkey").unwrap();
+      assert!(crate::notify::with_test_base(server.uri(), svc.send(&NotifyContext::default())).await.is_err());
+    }
   }
 }

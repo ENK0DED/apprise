@@ -361,7 +361,6 @@ fn instantiate(parsed: &ParsedUrl) -> Option<Box<dyn Notify>> {
         ("www.pushplus.plus", "pushplus"),
         ("pushplus.plus", "pushplus"),
         ("qmsg.zendee.cn", "qq"),
-        ("push.spug.cc", "spugpush"),
         ("push.spug.dev", "spugpush"),
         ("qyapi.weixin.qq.com", "wecombot"),
         ("n.tkte.ch", "notifico"),
