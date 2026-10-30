@@ -89,6 +89,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(infobip::Infobip::static_details());
   collect!(irc::Irc::static_details());
   collect!(jellyfin::Jellyfin::static_details());
+  collect!(jira::Jira::static_details());
   collect!(join::Join::static_details());
   collect!(custom_json::Json::static_details());
   collect!(custom_form::Form::static_details());
@@ -124,7 +125,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(office365::Office365::static_details());
   collect!(one_signal::OneSignal::static_details());
   collect!(onebot::OneBot::static_details());
-  collect!(opsgenie::OpsGenie::static_details());
+  collect!(opsgenie::Opsgenie::static_details());
   collect!(pagerduty::PagerDuty::static_details());
   collect!(pagertree::PagerTree::static_details());
   collect!(parseplatform::ParsePlatform::static_details());
@@ -283,6 +284,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(infobip::Infobip::from_url, "infobip");
   reg!(irc::Irc::from_url, "irc", "ircs");
   reg!(jellyfin::Jellyfin::from_url, "jellyfin", "jellyfins");
+  reg!(jira::Jira::from_url, "jira");
   reg!(join::Join::from_url, "join");
   reg!(custom_json::Json::from_url, "json", "jsons");
   reg!(custom_form::Form::from_url, "form", "forms");
@@ -319,7 +321,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(office365::Office365::from_url, "o365", "azure");
   reg!(one_signal::OneSignal::from_url, "onesignal");
   reg!(onebot::OneBot::from_url, "onebot", "onebots");
-  reg!(opsgenie::OpsGenie::from_url, "opsgenie");
+  reg!(opsgenie::Opsgenie::from_url, "opsgenie");
   reg!(pagerduty::PagerDuty::from_url, "pagerduty");
   reg!(pagertree::PagerTree::from_url, "pagertree");
   reg!(parseplatform::ParsePlatform::from_url, "parsep", "parseps");

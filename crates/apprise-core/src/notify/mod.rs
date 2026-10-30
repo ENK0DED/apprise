@@ -73,6 +73,7 @@ pub mod incidentio;
 pub mod infobip;
 pub mod irc;
 pub mod jellyfin;
+pub mod jira;
 pub mod join;
 pub mod kaleyra;
 pub mod kavenegar;
