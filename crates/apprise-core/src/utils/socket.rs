@@ -211,6 +211,21 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCertificate {
   }
 }
 
+/// A TLS acceptor for tests of the raw-socket plugins, with a self-signed
+/// certificate for `localhost` and `127.0.0.1` (valid until 2126).
+#[cfg(test)]
+pub(crate) fn test_tls_acceptor() -> tokio_rustls::TlsAcceptor {
+  use base64::Engine;
+  const CERT_DER: &str = "MIIBmzCCAUGgAwIBAgIUHDSzYecy1X4n48MGhv8zBUVdsOgwCgYIKoZIzj0EAwIwFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTAzMDA1MDMxOFoYDzIxMjYxMDA2MDUwMzE4WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATVYK0hJr30ola9SZxnmyK5EHVY+n9n3RlYQGXrRdR1+MTSEhP3IuKidzohfbKhcVvKXT9F+DZXHJX/NXMHVHzuo28wbTAdBgNVHQ4EFgQUn2wtLITa3gfGa/s6IYZPB7+YEcMwHwYDVR0jBBgwFoAUn2wtLITa3gfGa/s6IYZPB7+YEcMwDwYDVR0TAQH/BAUwAwEB/zAaBgNVHREEEzARgglsb2NhbGhvc3SHBH8AAAEwCgYIKoZIzj0EAwIDSAAwRQIgfu3SM0e5ylzsHSoV34x8CrxccRR1kjKvO70IYa04Pc4CIQD9c+VNfOpXdGAZigNorHAbaxs3Tgtb4psOjrfWr8VJdg==";
+  const KEY_DER: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg/HKD2wnsJF0wgJ7HrPuBTscl39R6RBDPk0kfyv0A/OWhRANCAATVYK0hJr30ola9SZxnmyK5EHVY+n9n3RlYQGXrRdR1+MTSEhP3IuKidzohfbKhcVvKXT9F+DZXHJX/NXMHVHzu";
+  crate::ensure_crypto_provider();
+  let decode = |s: &str| base64::engine::general_purpose::STANDARD.decode(s).unwrap();
+  let cert = rustls::pki_types::CertificateDer::from(decode(CERT_DER));
+  let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(decode(KEY_DER)));
+  let config = rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(vec![cert], key).unwrap();
+  tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
