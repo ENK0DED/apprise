@@ -25,6 +25,10 @@ url = "2"
 
 # Email
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls-tls", "builder"] }
+# OpenPGP (email PGP/MIME signing and encryption, WKD keys); pure Rust
+pgp = { version = "0.21", default-features = false }
+# The RNG traits rPGP takes (rand_core 0.6); rand 0.8 already pulls it in
+rand_core06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
 
 # Logging
 tracing = "0.1"
