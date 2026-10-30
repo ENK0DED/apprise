@@ -79,6 +79,14 @@ pub(crate) fn attachment_filename(att: &Attachment, no: usize) -> String {
   if att.name.is_empty() { format!("file{:03}.dat", no) } else { att.name.clone() }
 }
 
+/// The requests a test mock server received for `method` and `path`, in
+/// order. Other local processes sometimes probe random ports, so tests must
+/// never pick requests by position among everything received.
+#[cfg(test)]
+pub(crate) async fn requests_to(server: &wiremock::MockServer, method: &str, path: &str) -> Vec<wiremock::Request> {
+  server.received_requests().await.unwrap_or_default().into_iter().filter(|r| r.method.as_str() == method && r.url.path() == path).collect()
+}
+
 pub struct Json {
   host: String,
   port: Option<u16>,
@@ -317,7 +325,7 @@ mod tests {
     let j = json_for(&format!("json://localhost:{}/notify", server.address().port()));
     assert!(j.send(&ctx("hello", "world")).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/notify").await;
     assert!(requests[0].headers.get("Authorization").is_none());
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(body, json!({"version": "1.0", "title": "hello", "message": "world", "attachments": [], "type": "info"}));
@@ -344,7 +352,7 @@ mod tests {
     let c = NotifyContext { notify_type: NotifyType::Success, ..ctx("title", "hello") };
     assert!(j.send(&c).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "PUT", "/notify").await;
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(body, json!({"version": "1.0", "title": "title", "body": "hello", "type": "success", "extra": "note"}));
   }
@@ -354,6 +362,7 @@ mod tests {
     let server = MockServer::start().await;
     // "user:None", as upstream sends it
     Mock::given(method("POST"))
+      .and(path("/"))
       .and(header("Authorization", "Basic dXNlcjpOb25l"))
       .and(header("Content-Type", "text/plain"))
       .and(query_param("Param", "a+b"))
@@ -364,7 +373,7 @@ mod tests {
 
     let j = json_for(&format!("json://user@localhost:{}/?+Content-Type=text/plain&-Param=a+b", server.address().port()));
     assert!(j.send(&ctx("t", "b")).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/").await;
     assert_eq!(requests[0].headers.get_all("Content-Type").iter().count(), 1);
   }
 
@@ -389,7 +398,7 @@ mod tests {
     ));
     assert_eq!(j.method, "POST");
     assert!(j.send(&ctx("title", "body")).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/webapi/entry.cgi").await;
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(body, json!({"text": "body", "file_url": "https://i.redd.it/my2t4d2fx0u31.jpg"}));
   }
@@ -398,18 +407,19 @@ mod tests {
   async fn test_custom_methods_and_encoded_path() {
     for m in ["UPDATE", "OPTIONS", "GET", "DELETE", "PATCH"] {
       let server = MockServer::start().await;
-      Mock::given(method(m)).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+      let p = "/api/v4/projects/my%2Frepo/a%20b";
+      Mock::given(method(m)).and(path(p)).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
       let j = json_for(&format!("json://localhost:{}/api/v4/projects/my%2Frepo/a%20b?method={}", server.address().port(), m.to_lowercase()));
       assert!(j.send(&ctx("t", "b")).await.unwrap(), "{}", m);
-      let requests = server.received_requests().await.unwrap();
-      assert_eq!(requests[0].url.path(), "/api/v4/projects/my%2Frepo/a%20b");
+      // The encoded path reaches the server exactly as written
+      assert_eq!(requests_to(&server, m, p).await.len(), 1);
     }
   }
 
   #[tokio::test]
   async fn test_attachments() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
 
     let j = json_for(&format!("json://localhost:{}/", server.address().port()));
     let mut c = ctx("t", "b");
@@ -417,7 +427,7 @@ mod tests {
     c.attachments.push(Attachment { name: String::new(), data: b"\x89PNG\r\n".to_vec(), mime_type: "image/png".into() });
     assert!(j.send(&c).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/").await;
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(
       body["attachments"],
@@ -431,7 +441,7 @@ mod tests {
   #[tokio::test]
   async fn test_failure_status() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500).set_body_string("boom")).mount(&server).await;
+    Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(500).set_body_string("boom")).mount(&server).await;
     let j = json_for(&format!("jsons://localhost:{}/", server.address().port()));
     // jsons:// talks TLS, which the mock server does not; use json:// for the status check
     assert!(j.send(&ctx("t", "b")).await.is_err());

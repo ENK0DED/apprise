@@ -256,6 +256,7 @@ impl Notify for AppriseApi {
 mod tests {
   use super::*;
   use crate::notify::Attachment;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
   use crate::types::NotifyFormat;
   use wiremock::matchers::{header, method, path};
@@ -361,7 +362,7 @@ mod tests {
 
     let a = api(&format!("apprise://localhost:{}/mytoken?tags=b,a", server.address().port()));
     assert!(a.send(&ctx("title", "**b**")).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/notify").await;
     assert!(requests[0].headers.get("Authorization").is_none());
     let got: Vec<(String, String)> = url::form_urlencoded::parse(&requests[0].body).into_owned().collect();
     let expected: Vec<(String, String)> = [("title", "title"), ("body", "**b**"), ("type", "info"), ("format", "text"), ("tag", "a"), ("tag", "b")]
@@ -391,7 +392,7 @@ mod tests {
     c.attachments.push(Attachment { name: String::new(), data: b"x".to_vec(), mime_type: "image/png".into() });
     assert!(a.send(&c).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/path/notify/mytoken").await;
     assert!(requests[0].headers.get("X-Apprise-Config-ID").is_none());
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(
@@ -418,7 +419,7 @@ mod tests {
     c.attachments.push(Attachment { name: "b.gif".into(), data: b"GIF89a".to_vec(), mime_type: "image/gif".into() });
     assert!(a.send(&c).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/notify").await;
     assert_eq!(requests[0].headers.get("Authorization").unwrap(), "Basic OnBhc3M=");
     let body = String::from_utf8_lossy(&requests[0].body);
     for expected in [
@@ -436,7 +437,7 @@ mod tests {
   async fn test_only_200_is_success() {
     for status in [201u16, 204, 500] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/notify")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let a = api(&format!("apprise://localhost:{}/tok", server.address().port()));
       assert!(matches!(a.send(&ctx("t", "b")).await, Err(NotifyError::ServiceError { status: s, .. }) if s == status));
     }

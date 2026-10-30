@@ -225,7 +225,7 @@ mod tests {
   async fn test_acknowledgement_required() {
     for body in ["{", r#"{"result": false}"#, "{}", "[]"] {
       let server = MockServer::start().await;
-      Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_string(body)).expect(1).mount(&server).await;
+      Mock::given(method("GET")).and(path("/api/message")).respond_with(ResponseTemplate::new(200).set_body_string(body)).expect(1).mount(&server).await;
       let e = enigma(&format!("enigma2://localhost:{}", server.address().port()));
       assert!(!e.send(&ctx(NotifyType::Info)).await.unwrap(), "{body}");
     }
@@ -234,7 +234,12 @@ mod tests {
   #[tokio::test]
   async fn test_failure_status() {
     let server = MockServer::start().await;
-    Mock::given(method("GET")).respond_with(ResponseTemplate::new(500).set_body_json(json!({"result": true}))).expect(1).mount(&server).await;
+    Mock::given(method("GET"))
+      .and(path("/api/message"))
+      .respond_with(ResponseTemplate::new(500).set_body_json(json!({"result": true})))
+      .expect(1)
+      .mount(&server)
+      .await;
     let e = enigma(&format!("enigma2://user@localhost:{}", server.address().port()));
     assert!(matches!(e.send(&ctx(NotifyType::Info)).await, Err(NotifyError::ServiceError { status: 500, .. })));
     assert!(enigma("enigma2://127.0.0.1:1").send(&ctx(NotifyType::Info)).await.is_err());

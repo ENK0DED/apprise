@@ -257,6 +257,7 @@ impl Notify for HomeAssistant {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
   use wiremock::matchers::{body_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -376,7 +377,7 @@ mod tests {
       .await;
     let h = ha(&format!("hassio://user@localhost:{}/long.lived.token", server.address().port()));
     assert!(h.send(&ctx()).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/api/services/persistent_notification/create").await;
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(body["notification_id"].as_str().unwrap().len(), 36);
     // "user:None": basic auth replaces the bearer token, as with `requests`
@@ -408,7 +409,14 @@ mod tests {
         batch
       ));
       assert!(h.send(&ctx()).await.unwrap());
-      let requests = server.received_requests().await.unwrap();
+      // Only the service calls, in the order they were made
+      let requests: Vec<wiremock::Request> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.path().starts_with("/ha/api/services/"))
+        .collect();
       let paths: Vec<&str> = requests.iter().map(|r| r.url.path()).collect();
       assert_eq!(&paths[..2], &["/ha/api/services/domain1/service3", "/ha/api/services/notify/service2"]);
       let targets: Vec<Value> = requests[2..].iter().map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["targets"].clone()).collect();
@@ -427,7 +435,12 @@ mod tests {
 
     // Only 200 is success
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path("/api/services/persistent_notification/create"))
+      .respond_with(ResponseTemplate::new(201))
+      .expect(1)
+      .mount(&server)
+      .await;
     assert!(ha(&format!("hassio://localhost:{}/long.lived.token", server.address().port())).send(&ctx()).await.is_err());
 
     // Every service entry was invalid

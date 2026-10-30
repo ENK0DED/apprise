@@ -230,6 +230,7 @@ impl Notify for Form {
 mod tests {
   use super::*;
   use crate::notify::Attachment;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
   use wiremock::matchers::{header, method, path, query_param};
   use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -341,7 +342,7 @@ mod tests {
 
     let f = form_for(&format!("form://user:pass@localhost:{}/command?:message=msg&:abcd=test&-ParamA=a+b&+X-Key=v", server.address().port()));
     assert!(f.send(&ctx("title", "body & more")).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/command").await;
     let got: Vec<(String, String)> = url::form_urlencoded::parse(&requests[0].body).into_owned().collect();
     assert_eq!(got, pairs(&[("version", "1.0"), ("title", "title"), ("msg", "body & more"), ("type", "info"), ("abcd", "test")]));
   }
@@ -362,7 +363,7 @@ mod tests {
 
     let f = form_for(&format!("form://localhost:{}/command?method=GET&-message=test-override", server.address().port()));
     assert!(f.send(&ctx("title", "body")).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "GET", "/command").await;
     assert!(requests[0].body.is_empty());
     assert!(requests[0].headers.get("Content-Type").is_none());
   }
@@ -370,7 +371,7 @@ mod tests {
   #[tokio::test]
   async fn test_multipart_attachments() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
 
     let f = form_for(&format!("form://localhost:{}/?attach-as=meta*data", server.address().port()));
     let mut c = ctx("title", "body");
@@ -378,7 +379,7 @@ mod tests {
     c.attachments.push(Attachment { name: String::new(), data: b"GIF89a".to_vec(), mime_type: "image/gif".into() });
     assert!(f.send(&c).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/").await;
     let ct = requests[0].headers.get("Content-Type").unwrap().to_str().unwrap().to_string();
     assert!(ct.starts_with("multipart/form-data; boundary="));
     let body = String::from_utf8_lossy(&requests[0].body);
@@ -396,7 +397,7 @@ mod tests {
   #[tokio::test]
   async fn test_single_name_for_every_file() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
 
     let f = form_for(&format!("form://localhost:{}/?attach-as=upload", server.address().port()));
     let mut c = ctx("t", "b");
@@ -404,14 +405,14 @@ mod tests {
       c.attachments.push(Attachment { name: "x.gif".into(), data: b"GIF89a".to_vec(), mime_type: "image/gif".into() });
     }
     assert!(f.send(&c).await.unwrap());
-    let body = String::from_utf8_lossy(&server.received_requests().await.unwrap()[0].body).to_string();
+    let body = String::from_utf8_lossy(&requests_to(&server, "POST", "/").await[0].body).to_string();
     assert_eq!(body.matches("name=\"upload\"; filename=\"x.gif\"").count(), 2);
   }
 
   #[tokio::test]
   async fn test_failure() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(500)).expect(1).mount(&server).await;
     let f = form_for(&format!("form://localhost:{}/", server.address().port()));
     assert!(matches!(f.send(&ctx("t", "b")).await, Err(NotifyError::ServiceError { status: 500, .. })));
     assert!(matches!(form_for("form://127.0.0.1:1/").send(&ctx("t", "b")).await, Err(NotifyError::Http(_))));

@@ -505,6 +505,7 @@ impl Notify for Ntfy {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
   use wiremock::matchers::{body_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -710,7 +711,7 @@ mod tests {
     assert!(n.send(&ctx("title", "body")).await.unwrap());
 
     // wiremock splits header values on commas, so check these directly
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/").await;
     assert_eq!(requests[0].headers.get("X-Tags").unwrap(), "a,b");
     assert_eq!(requests[0].headers.get("X-Actions").unwrap(), "view,x,y");
     let topics: Vec<Value> = requests.iter().map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()).collect();
@@ -735,7 +736,7 @@ mod tests {
     let n = ntfy(&format!("ntfy://tk_abc@localhost:{}/topic?attach=http://example.com/path/file.jpg&image=no", server.address().port()));
     let c = NotifyContext { body_format: NotifyFormat::Markdown, ..ctx("", "body") };
     assert!(n.send(&c).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/").await;
     assert!(requests[0].headers.get("X-Icon").is_none());
   }
 
@@ -750,7 +751,7 @@ mod tests {
     c.attachments.push(Attachment { name: "b.png".into(), data: b"\x89PNG\r\n".to_vec(), mime_type: "image/png".into() });
     assert!(n.send(&c).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/topic").await;
     let query = |i: usize| -> Vec<(String, String)> { requests[i].url.query_pairs().into_owned().collect() };
     assert_eq!(query(0), vec![("filename".into(), "a.txt".into()), ("title".into(), "title".into()), ("message".into(), "body".into())]);
     assert_eq!(query(1), vec![("filename".to_string(), "b.png".to_string())]);
@@ -775,7 +776,7 @@ mod tests {
     let body = "x".repeat(8000);
     assert!(crate::notify::with_test_base(server.uri(), n.send(&ctx("Title", &body))).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "POST", "/topic").await;
     let query: Vec<(String, String)> = requests[0].url.query_pairs().into_owned().collect();
     assert_eq!(query.len(), 1);
     assert!(query[0].1.ends_with(".txt") && query[0].1.len() == 40);
@@ -785,14 +786,19 @@ mod tests {
   #[tokio::test]
   async fn test_failures() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(400).set_body_string(r#"{"code": 40001, "error": "bad"}"#)).expect(2).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path("/"))
+      .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"code": 40001, "error": "bad"}"#))
+      .expect(2)
+      .mount(&server)
+      .await;
     // Every topic is tried even after a failure
     let n = ntfy(&format!("ntfy://localhost:{}/t1/t2", server.address().port()));
     assert!(!n.send(&ctx("t", "b")).await.unwrap());
 
     // 2xx other than 200 is a failure too
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(202)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(202)).expect(1).mount(&server).await;
     assert!(!ntfy(&format!("ntfy://localhost:{}/t1", server.address().port())).send(&ctx("t", "b")).await.unwrap());
 
     // No topics, missing token, connection failure

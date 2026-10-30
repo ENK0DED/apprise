@@ -250,6 +250,7 @@ impl Notify for Emby {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
   use wiremock::matchers::{body_json, header, method, path, query_param};
   use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -328,10 +329,14 @@ mod tests {
     assert!(emby_for(&server, "l2g:pass", "").send(&ctx()).await.unwrap());
 
     // wiremock splits header values on commas, so compare these directly
-    let requests = server.received_requests().await.unwrap();
-    let auth: Vec<String> = requests.iter().map(|r| r.headers.get("X-Emby-Authorization").unwrap().to_str().unwrap().to_string()).collect();
-    assert_eq!(auth[0], format!("{}{}\"", AUTH, version));
-    assert!(auth[1..].iter().all(|a| *a == logged_in));
+    let auth = |r: &wiremock::Request| r.headers.get("X-Emby-Authorization").unwrap().to_str().unwrap().to_string();
+    let login = requests_to(&server, "POST", "/Users/AuthenticateByName").await;
+    assert_eq!(auth(&login[0]), format!("{}{}\"", AUTH, version));
+    for (m, p) in [("GET", "/Sessions"), ("POST", "/Sessions/s1/Message"), ("POST", "/Sessions/s2/Message"), ("POST", "/Sessions/Logout")] {
+      let requests = requests_to(&server, m, p).await;
+      assert_eq!(requests.len(), 1, "{m} {p}");
+      assert_eq!(auth(&requests[0]), logged_in);
+    }
   }
 
   #[tokio::test]

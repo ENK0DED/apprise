@@ -198,6 +198,7 @@ impl Notify for Xml {
 mod tests {
   use super::*;
   use crate::notify::Attachment;
+  use crate::notify::custom_json::requests_to;
   use crate::notify::registry::from_url;
   use wiremock::matchers::{header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -314,7 +315,7 @@ mod tests {
     assert!(x.send(&ctx("t", "b")).await.unwrap());
 
     // GET parameters are not sent, as upstream
-    let requests = server.received_requests().await.unwrap();
+    let requests = requests_to(&server, "GET", "/command").await;
     assert_eq!(requests[0].url.query(), None);
     assert_eq!(String::from_utf8_lossy(&requests[0].body), x.payload(&ctx("t", "b")));
   }
@@ -322,7 +323,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(404)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(404)).expect(1).mount(&server).await;
     let x = xml_for(&format!("xml://localhost:{}/", server.address().port()));
     assert!(matches!(x.send(&ctx("t", "b")).await, Err(NotifyError::ServiceError { status: 404, .. })));
     assert!(matches!(xml_for("xml://127.0.0.1:1/").send(&ctx("t", "b")).await, Err(NotifyError::Http(_))));
