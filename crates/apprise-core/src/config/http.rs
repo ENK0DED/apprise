@@ -111,7 +111,10 @@ pub async fn read_http(parsed: &ParsedUrl, asset: &AppriseAsset) -> Result<(Stri
     return Err(too_big());
   }
   let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
-  let body = response.text().await.map_err(fail)?;
+  // Read at most what MAX_BUFFER_SIZE characters can take in UTF-8, so a
+  // reply without Content-Length cannot exhaust memory.
+  let bytes = crate::utils::http::read_bounded_response(response, MAX_BUFFER_SIZE * 4).await.map_err(fail)?.ok_or_else(too_big)?;
+  let body = String::from_utf8_lossy(&bytes).into_owned();
   if body.chars().count() > MAX_BUFFER_SIZE {
     return Err(too_big());
   }
@@ -188,5 +191,35 @@ mod tests {
     assert!(read_http(&parsed(&format!("{}/missing", server.uri())), &asset).await.is_err());
     assert!(read_http(&parsed(&format!("{}/big", server.uri())), &asset).await.is_err());
     assert!(read_http(&parsed(&format!("{}/moved?redirect=no", server.uri())), &asset).await.is_err());
+  }
+
+  #[tokio::test]
+  async fn test_read_http_stops_at_the_limit_without_content_length() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // A chunked reply that would go on far past the limit
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+      loop {
+        let Ok((mut socket, _)) = listener.accept().await else { return };
+        let mut request = [0u8; 4096];
+        let n = socket.read(&mut request).await.unwrap_or(0);
+        if !request[..n].starts_with(b"POST") {
+          continue; // a stray local probe
+        }
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n").await.ok();
+        let chunk = format!("{:x}\r\n{}\r\n", 64 * 1024, "a".repeat(64 * 1024));
+        for _ in 0..64 {
+          if socket.write_all(chunk.as_bytes()).await.is_err() {
+            return; // the client stopped reading
+          }
+        }
+        return;
+      }
+    });
+    let parsed = ParsedUrl::parse(&format!("http://127.0.0.1:{}/cfg", port)).unwrap();
+    let err = read_http(&parsed, &AppriseAsset::default()).await.unwrap_err();
+    assert!(err.to_string().contains("exceeds maximum buffer length"), "{}", err);
+    server.abort();
   }
 }
