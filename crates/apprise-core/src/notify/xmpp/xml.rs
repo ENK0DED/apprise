@@ -162,8 +162,11 @@ fn find_element_end(text: &str) -> Result<Option<usize>, String> {
   Ok(None)
 }
 
+/// A start tag: its name, attributes and whether it closes itself.
+type StartTag = (String, Vec<(String, String)>, bool);
+
 /// Parse `<name attr='v' ...>` (or `.../>`).
-fn parse_start_tag(tag: &str) -> Result<(String, Vec<(String, String)>, bool), String> {
+fn parse_start_tag(tag: &str) -> Result<StartTag, String> {
   let self_closing = tag.ends_with("/>");
   let inner = tag.trim_start_matches('<').trim_end_matches('>').trim_end_matches('/');
   let name_end = inner.find(|c: char| c.is_whitespace()).unwrap_or(inner.len());
