@@ -717,7 +717,7 @@ ORhLPuBVA+eLw73wx7FgbyPuxxVY6JN1M7xsFy4GSXFH4Ub3TV67PsgUVr7H7Btw
   #[tokio::test]
   async fn test_legacy_send() {
     // Matches pycapture.py for this URL (targets sorted, '#' kept in topics)
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/fcm/send"))
       .and(header("authorization", "key=apikey"))
@@ -748,7 +748,7 @@ ORhLPuBVA+eLw73wx7FgbyPuxxVY6JN1M7xsFy4GSXFH4Ub3TV67PsgUVr7H7Btw
   #[tokio::test]
   async fn test_legacy_default_payload() {
     // apprise-go parity golden "legacy-basic"
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).and(path("/fcm/send")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
     let svc = from_url("fcm://apikey/device-token").unwrap();
     let ctx = NotifyContext { title: "apprise parity".into(), body: "hello from python".into(), ..Default::default() };
@@ -762,7 +762,7 @@ ORhLPuBVA+eLw73wx7FgbyPuxxVY6JN1M7xsFy4GSXFH4Ub3TV67PsgUVr7H7Btw
 
   #[tokio::test]
   async fn test_oauth2_send() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/token"))
       .and(header("content-type", "application/x-www-form-urlencoded"))
@@ -825,7 +825,7 @@ ORhLPuBVA+eLw73wx7FgbyPuxxVY6JN1M7xsFy4GSXFH4Ub3TV67PsgUVr7H7Btw
 
   #[tokio::test]
   async fn test_oauth2_failures() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).and(path("/token")).respond_with(ResponseTemplate::new(400)).mount(&server).await;
     Mock::given(method("POST")).and(path("/badjson")).respond_with(ResponseTemplate::new(200).set_body_string("{")).mount(&server).await;
     Mock::given(method("POST")).and(path("/notoken")).respond_with(ResponseTemplate::new(200).set_body_json(json!({}))).mount(&server).await;
@@ -853,14 +853,14 @@ ORhLPuBVA+eLw73wx7FgbyPuxxVY6JN1M7xsFy4GSXFH4Ub3TV67PsgUVr7H7Btw
     assert!(!from_url("fcm://apikey/").unwrap().send(&ctx).await.unwrap());
 
     for status in [400, 401, 404, 500, 999] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       let svc = from_url("fcm://apikey/a/b").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "status {}", status);
     }
 
     // 204 is accepted
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).respond_with(ResponseTemplate::new(204)).expect(1).mount(&server).await;
     assert!(crate::notify::with_test_base(server.uri(), from_url("fcm://apikey/a").unwrap().send(&ctx)).await.unwrap());
   }

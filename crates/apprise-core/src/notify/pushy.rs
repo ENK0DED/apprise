@@ -187,7 +187,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/push"))
       .and(query_param("api_key", "apikey"))
@@ -223,7 +223,7 @@ mod tests {
       ResponseTemplate::new(401).set_body_json(json!({"success": true})),
       ResponseTemplate::new(999),
     ] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(response).expect(1).mount(&server).await;
       assert!(!crate::notify::with_test_base(server.uri(), from_url("pushy://apikey/topic").unwrap().send(&ctx)).await.unwrap());
     }

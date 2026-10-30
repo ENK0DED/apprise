@@ -303,7 +303,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_matches_upstream() {
     // pycapture.py for this URL: one request per target, in category order
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/notifications"))
       .and(header("authorization", "Basic apikey"))
@@ -338,7 +338,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send_batches_and_contents() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).respond_with(ResponseTemplate::new(204)).expect(2).mount(&server).await;
     let svc = from_url("onesignal://appid@apikey/pid1/pid2/@u1/@u2?batch=yes&image=no").unwrap();
     let ctx = NotifyContext { body: "B".into(), ..Default::default() };
@@ -357,7 +357,7 @@ mod tests {
     // No targets
     assert!(!from_url("onesignal://appid@apikey/").unwrap().send(&ctx).await.unwrap());
     for status in [500, 999, 201] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       let svc = from_url("onesignal://appid@apikey/p1/p2").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "status {}", status);

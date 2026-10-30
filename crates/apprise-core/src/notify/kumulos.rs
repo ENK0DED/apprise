@@ -128,7 +128,7 @@ mod tests {
   async fn test_send() {
     let serverkey = "w".repeat(36);
     let auth = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", UUID4, serverkey)));
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/v2/notifications"))
       .and(header("authorization", auth.as_str()))
@@ -147,7 +147,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure() {
     for status in [400, 401, 422, 500, 999] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("kumulos://{}/{}/", UUID4, "w".repeat(36))).unwrap();
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };

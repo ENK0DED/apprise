@@ -366,7 +366,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/api"))
       .and(body_string("t=T&m=B&i=25&c=%23CACF29&d=a&s=32&v=2&k=pkey"))
@@ -382,7 +382,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_pictures() {
     // Matches pycapture.py for one image; four images take two requests
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).respond_with(good()).expect(2).mount(&server).await;
     let svc = from_url("psafer://pkey/dev1").unwrap();
     let image = |n: &str| Attachment { name: n.into(), data: b"jpeg-bytes".to_vec(), mime_type: "image/jpeg".into() };
@@ -406,7 +406,7 @@ mod tests {
       ResponseTemplate::new(500),
       ResponseTemplate::new(999),
     ] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(response).expect(2).mount(&server).await;
       assert!(!crate::notify::with_test_base(server.uri(), from_url("psafer://pkey/d1/d2").unwrap().send(&ctx)).await.unwrap());
     }

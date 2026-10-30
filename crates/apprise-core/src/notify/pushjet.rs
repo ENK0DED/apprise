@@ -105,7 +105,7 @@ mod tests {
       assert!(from_url(&url).is_some(), "Should parse: {}", url);
     }
     for url in
-      ["pjet://".to_string(), "pjets://".to_string(), "pjet://:@/".to_string(), "pjet://localhost".to_string(), format!("pjet://localhost/%20?secret=%20")]
+      ["pjet://".to_string(), "pjets://".to_string(), "pjet://:@/".to_string(), "pjet://localhost".to_string(), "pjet://localhost/%20?secret=%20".to_string()]
     {
       assert!(from_url(&url).is_none(), "Should not parse: {}", url);
     }
@@ -113,7 +113,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/message/"))
       .and(query_param("secret", "abc123"))
@@ -133,7 +133,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure() {
     for status in [500, 999] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let addr = server.address();
       let svc = from_url(&format!("pjet://{}:{}/abc123", addr.ip(), addr.port())).unwrap();

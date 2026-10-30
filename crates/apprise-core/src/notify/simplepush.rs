@@ -865,7 +865,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_topics() {
     // Matches pycapture.py for this URL
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/v1/tasks/json"))
       .and(header("api-token", "token123"))
@@ -896,7 +896,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send_own_devices_and_title_only() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).and(path("/v1/tasks/json")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
     let svc = from_url("spush://token123").unwrap();
     // A message without a body carries its title as content
@@ -907,7 +907,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send_attachments() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     let presigned = format!("{}/s3/put", server.uri());
     Mock::given(method("POST"))
       .and(path("/v1/tasks/json"))
@@ -946,7 +946,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_failed_upload_is_reported() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/v1/tasks/json"))
       .respond_with(ResponseTemplate::new(200).set_body_json(json!({"attachments": [{"id": "att_1"}]})))
@@ -972,20 +972,20 @@ mod tests {
   async fn test_send_failures() {
     let ctx = NotifyContext { body: "B".into(), ..Default::default() };
     for (status, body) in [(401, r#"{"error": "authorization_error", "msg": "Invalid API token"}"#), (999, ""), (500, "garbage")] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(2).mount(&server).await;
       let svc = from_url("spush://token123/a/b").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "status {}", status);
     }
     // An unreadable success response still counts as sent
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).expect(1).mount(&server).await;
     assert!(crate::notify::with_test_base(server.uri(), from_url("spush://token123").unwrap().send(&ctx)).await.unwrap());
   }
 
   #[tokio::test]
   async fn test_organization_without_encryption() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("GET"))
       .and(path("/v1/org/integration/keys"))
       .and(header("authorization", "Bearer spi_cred"))
@@ -1022,13 +1022,13 @@ mod tests {
       json!({"scopes": ["send"], "enabled": true}),
       json!({"scopes": ["send"], "enabled": true, "adminPubkeyB64": ADMIN_PUBKEY, "wrappedKeys": [{"version": 1, "blob": "AAAA"}]}),
     ] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(response.clone())).mount(&server).await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
       let svc = from_url(&format!("spush://{}/?broadcast=yes", spi())).unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "{}", response);
     }
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("GET")).respond_with(ResponseTemplate::new(401)).mount(&server).await;
     let svc = from_url(&format!("spush://{}/?broadcast=yes", spi())).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
@@ -1061,7 +1061,7 @@ mod tests {
   #[cfg(feature = "simplepush-encryption")]
   #[tokio::test]
   async fn test_send_encrypted_topic() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).and(path("/v1/tasks/json")).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
     // A topic send is salted with the topic; the account salt is not fetched
     Mock::given(method("GET")).and(path("/v1/user")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
@@ -1087,7 +1087,7 @@ mod tests {
   #[cfg(feature = "simplepush-encryption")]
   #[tokio::test]
   async fn test_send_encrypted_own_devices() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("GET"))
       .and(path("/v1/user"))
       .and(header("api-token", "token123"))
@@ -1114,7 +1114,7 @@ mod tests {
   #[cfg(feature = "simplepush-encryption")]
   #[tokio::test]
   async fn test_send_encrypted_limits_and_salt_failures() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).and(path("/v1/tasks/json")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
     let svc = from_url("spush://secret@token123/alerts").unwrap();
     // Multi-byte text within the character limits is too long once encrypted
@@ -1133,7 +1133,7 @@ mod tests {
       ResponseTemplate::new(200).set_body_json(json!({})),
       ResponseTemplate::new(200).set_body_string("garbage"),
     ] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("GET")).and(path("/v1/user")).respond_with(response).mount(&server).await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
       let svc = from_url("spush://secret@token123").unwrap();
@@ -1145,7 +1145,7 @@ mod tests {
   #[cfg(feature = "simplepush-encryption")]
   #[tokio::test]
   async fn test_send_organization_encrypted() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("GET"))
       .and(path("/v1/org/integration/keys"))
       .respond_with(ResponseTemplate::new(200).set_body_json(json!({

@@ -165,7 +165,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_app() {
     let (k, s) = keys();
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/1/push"))
       .and(header("content-type", "application/json"))
@@ -183,7 +183,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_targets() {
     let (k, s) = keys();
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(3).mount(&server).await;
     let svc = from_url(&format!("pushed://{}/{}/@ABCD/%23c2/%23c1", k, s)).unwrap();
     let ctx = NotifyContext { body: "B".into(), ..Default::default() };
@@ -205,7 +205,7 @@ mod tests {
   async fn test_send_failure() {
     let (k, s) = keys();
     for status in [500, 999] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       let svc = from_url(&format!("pushed://{}/{}/%23c/@u", k, s)).unwrap();
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };

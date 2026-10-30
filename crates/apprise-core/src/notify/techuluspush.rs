@@ -96,7 +96,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/api/v1/notify"))
       .and(header("x-api-key", UUID4))
@@ -115,7 +115,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure() {
     for status in [500, 999] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), from_url(&format!("push://{}", UUID4)).unwrap().send(&ctx)).await.is_err());

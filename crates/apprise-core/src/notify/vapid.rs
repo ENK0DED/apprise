@@ -1003,7 +1003,7 @@ Oc4My77ylXst/I1fVk62i06E2YwM//ZmgQ==
       &serde_json::json!({ "user@example.com": subscription_json("https://fcm.googleapis.com/fcm/send/abc123", &b) }).to_string(),
     );
 
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     let capture = Capture::default();
     Mock::given(method("POST")).and(path("/fcm/send/abc123")).respond_with(capture.clone()).expect(1).mount(&server).await;
 
@@ -1067,7 +1067,7 @@ Oc4My77ylXst/I1fVk62i06E2YwM//ZmgQ==
     // A single entry file is named after the endpoint's last path entry
     let subfile = write(&dir, "subscriptions.json", &subscription_json("https://push.example.com/send/abc123", &b).to_string());
 
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).and(path("/send/abc123")).and(header("ttl", "0")).respond_with(ResponseTemplate::new(204)).expect(2).mount(&server).await;
 
     // One known and one unknown target: delivered, but reported as an error
@@ -1086,7 +1086,7 @@ Oc4My77ylXst/I1fVk62i06E2YwM//ZmgQ==
       let keyfile = write(&dir, "private_key.pem", SEC1_KEY);
       let b = browser();
       let subfile = write(&dir, "subscriptions.json", &serde_json::json!({ "user1": subscription_json("https://push.example.com/a", &b) }).to_string());
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("vapid://user@example.com/user1?keyfile={}&subfile={}", keyfile, subfile)).unwrap();
       let ctx = NotifyContext { body: "hello".into(), ..Default::default() };
@@ -1106,7 +1106,7 @@ Oc4My77ylXst/I1fVk62i06E2YwM//ZmgQ==
     });
     let subfile = write(&dir, "subscriptions.json", &serde_json::to_string_pretty(&content).unwrap());
 
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).and(path("/gone")).respond_with(ResponseTemplate::new(410)).expect(1).mount(&server).await;
     Mock::given(method("POST")).and(path("/ok")).respond_with(ResponseTemplate::new(201)).expect(2).mount(&server).await;
 
@@ -1142,7 +1142,7 @@ Oc4My77ylXst/I1fVk62i06E2YwM//ZmgQ==
       return;
     }
 
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).and(path("/gone")).respond_with(ResponseTemplate::new(404)).expect(1).mount(&server).await;
     Mock::given(method("POST")).and(path("/ok")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
 

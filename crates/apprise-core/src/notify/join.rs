@@ -197,7 +197,7 @@ mod tests {
   async fn test_send() {
     // Matches pycapture.py: one POST per target with everything in the query
     let (a, d) = ("a".repeat(32), "d".repeat(32));
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).and(path("/_ah/api/messaging/v1/sendPush")).respond_with(ResponseTemplate::new(200)).expect(3).mount(&server).await;
     let svc = from_url(&format!("join://{}/{}/Allison/myphone?priority=high", a, d)).unwrap();
     let ctx = NotifyContext { title: "T".into(), body: "B ü".into(), ..Default::default() };
@@ -221,7 +221,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure() {
     for status in [401, 500, 999] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       let svc = from_url(&format!("join://{}/a1/a2?image=no", "a".repeat(32))).unwrap();
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };

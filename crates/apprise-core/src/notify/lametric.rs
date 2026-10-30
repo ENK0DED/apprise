@@ -405,7 +405,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_device() {
     // Matches pycapture.py for this URL
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/api/v2/device/notifications"))
       .and(header("authorization", format!("Basic {}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, format!("root:{}", UUID4))).as_str()))
@@ -427,7 +427,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_device_default_user() {
     // apprise-go parity golden "lametric-default": dev:{apikey}
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(header("authorization", "Basic ZGV2OmFwaWtleQ=="))
       .and(body_json(json!({"priority": "info", "icon_type": "none", "lifetime": 120000, "model": {"cycles": 1, "frames": [{"icon": "i620", "text": "B"}]}})))
@@ -443,7 +443,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_cloud() {
     let token = format!("{}==", "D".repeat(88));
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/api/v1/dev/widget/update/com.lametric.ABCD123/2"))
       .and(header("x-access-token", token.as_str()))
@@ -460,7 +460,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure() {
     for status in [500, 999, 204] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let addr = server.address();
       let svc = from_url(&format!("lametric://{}@{}:{}/", UUID4, addr.ip(), addr.port())).unwrap();

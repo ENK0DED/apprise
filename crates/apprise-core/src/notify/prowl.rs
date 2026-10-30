@@ -213,7 +213,7 @@ mod tests {
   async fn test_send_with_provider_key() {
     let a40 = "a".repeat(40);
     let b40 = "b".repeat(40);
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     // Matches pycapture.py for prowl://a.../b...?priority=-1
     Mock::given(method("POST"))
       .and(path("/publicapi/add"))
@@ -232,7 +232,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_default() {
     let a40 = "a".repeat(40);
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/publicapi/add"))
       .and(body_string(format!("apikey={}&application=Apprise&event=apprise+parity&description=hello+from+python&priority=0", a40)))
@@ -249,7 +249,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure() {
     for status in [406, 500, 999] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("prowl://{}", "a".repeat(40))).unwrap();
       let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };

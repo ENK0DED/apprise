@@ -440,7 +440,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_matches_upstream() {
     // pycapture.py for bark://user@host:8080/k2/k1?sound=NOiR&badge=3&volume=5&level=critical&click=http://x&category=c&group=g&call=yes
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/push"))
       .and(header("content-type", "application/json; charset=utf-8"))
@@ -472,7 +472,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send_markdown_and_icon() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/push"))
       .and(header("authorization", "Basic dXNlcjpwYXNz"))
@@ -510,7 +510,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_encrypted() {
     for key in ["0123456789abcdef", "0123456789abcdef01234567", "0123456789abcdef0123456789abcde+"] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).and(path("/push")).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
       let svc = from_url(&mock_url(&server, &format!("k1/k2?icon=http://i/x.png&key={}", key))).unwrap();
       let ctx = NotifyContext { title: "Secret".into(), body: "B ü".into(), ..Default::default() };
@@ -557,7 +557,7 @@ mod tests {
     assert!(!bark("bark://localhost").send(&ctx).await.unwrap());
 
     for status in [500, 999, 201] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       let svc = from_url(&mock_url(&server, "a/b")).unwrap();
       assert!(!svc.send(&ctx).await.unwrap(), "status {}", status);

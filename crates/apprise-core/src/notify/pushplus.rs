@@ -283,7 +283,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_webhook_topics() {
     // Matches pycapture.py for pushplus://myhook@<token>/g1/bad!t?to=g0
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).and(path("/send")).and(header("content-type", "application/json")).respond_with(good()).expect(2).mount(&server).await;
     let token = "a".repeat(32);
     let svc = from_url(&format!("pushplus://myhook@{}/g1/bad!t?to=g0", token)).unwrap();
@@ -303,7 +303,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_templates() {
     for (format, template) in [(NotifyFormat::Text, "txt"), (NotifyFormat::Markdown, "markdown"), (NotifyFormat::Html, "html")] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(good()).expect(1).mount(&server).await;
       let svc = from_url(&format!("pushplus://{}", GOOD_TOKEN)).unwrap();
       let ctx = NotifyContext { title: "T".into(), body: "B".into(), body_format: format, ..Default::default() };
@@ -324,7 +324,7 @@ mod tests {
       ResponseTemplate::new(500),
       ResponseTemplate::new(999),
     ] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(response).expect(1).mount(&server).await;
       let svc = from_url(&format!("pushplus://{}", GOOD_TOKEN)).unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());

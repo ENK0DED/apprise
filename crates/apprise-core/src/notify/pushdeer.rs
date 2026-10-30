@@ -122,7 +122,7 @@ mod tests {
   #[tokio::test]
   async fn test_send() {
     // Matches pycapture.py for pushdeer://abc123
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/message/push"))
       .and(query_param("pushkey", "abc123"))
@@ -137,7 +137,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send_own_host_without_title() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/message/push"))
       .and(body_string("text=B&type=text&desp="))
@@ -154,7 +154,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure() {
     for status in [500, 999] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), from_url("pushdeer://abc123").unwrap().send(&ctx)).await.is_err());

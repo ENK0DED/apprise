@@ -117,7 +117,7 @@ mod tests {
   #[tokio::test]
   async fn test_send() {
     // Matches pycapture.py: a warning gets "[~] " in front of the title
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/"))
       .and(query_param("push_key", "tok123"))
@@ -135,7 +135,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send_markdown_without_status() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(query_param("title", ""))
       .and(query_param("type", "markdown"))
@@ -150,7 +150,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failure() {
     for status in [500, 999] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), from_url("pushme://tok").unwrap().send(&ctx)).await.is_err());

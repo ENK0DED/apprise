@@ -207,7 +207,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send_notes() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/v2/pushes"))
       .and(header("authorization", "Basic dG9rMTIzOg=="))
@@ -227,7 +227,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send_all_devices_with_attachment() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     let upload_url = format!("{}/upload/here", server.uri());
     Mock::given(method("POST"))
       .and(path("/v2/upload-request"))
@@ -259,7 +259,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_file_pushes_are_addressed() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     let upload_url = format!("{}/upload/here", server.uri());
     Mock::given(method("POST"))
       .and(path("/v2/upload-request"))
@@ -288,7 +288,7 @@ mod tests {
   async fn test_send_failures() {
     let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
     for status in [401, 500, 999] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       let svc = from_url("pbul://tok123/d1/d2").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
@@ -298,7 +298,7 @@ mod tests {
     for response in
       [ResponseTemplate::new(500), ResponseTemplate::new(200).set_body_json(json!({"file_name": "x"})), ResponseTemplate::new(200).set_body_string("bad")]
     {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).and(path("/v2/upload-request")).respond_with(response).mount(&server).await;
       Mock::given(method("POST")).and(path("/v2/pushes")).respond_with(ResponseTemplate::new(200)).expect(0).mount(&server).await;
       let svc = from_url("pbul://tok123").unwrap();

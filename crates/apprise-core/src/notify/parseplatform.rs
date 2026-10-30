@@ -154,7 +154,7 @@ mod tests {
   #[tokio::test]
   async fn test_send() {
     // Matches pycapture.py: the encoded path is kept as-is
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/my%2Fapp/sub/parse/push/"))
       .and(header("x-parse-application-id", "app"))
@@ -172,14 +172,14 @@ mod tests {
 
   #[tokio::test]
   async fn test_send_root_path_and_failure() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST")).and(path("/parse/push/")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
     let addr = server.address();
     let ctx = NotifyContext { body: "B".into(), ..Default::default() };
     assert!(from_url(&format!("parsep://app:key@{}:{}", addr.ip(), addr.port())).unwrap().send(&ctx).await.unwrap());
 
     for status in [500, 999] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let addr = server.address();
       assert!(from_url(&format!("parsep://app:key@{}:{}", addr.ip(), addr.port())).unwrap().send(&ctx).await.is_err());

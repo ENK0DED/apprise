@@ -227,7 +227,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_alert() {
     // Matches pycapture.py for this URL
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/api/v1.0/alerts"))
       .and(body_string(format!(
@@ -247,7 +247,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send_alert_without_title() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/api/v1.0/alerts"))
       .and(body_string(format!("access_token={}&type=donation&image_href=&sound_href=&message=B&user_message=&duration=1000&special_text_color=", TOKEN)))
@@ -262,7 +262,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_send_donation() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/api/v1.0/donations"))
       .and(body_string(format!("name=MixedCase&identifier=PyT&amount=20&currency=USD&access_token={}&message=T%0D%0AB", TOKEN)))
@@ -278,7 +278,7 @@ mod tests {
   #[tokio::test]
   async fn test_send_failures() {
     for (call, status) in [("alerts", 500), ("donations", 500), ("alerts", 999), ("donations", 201)] {
-      let server = MockServer::start().await;
+      let server = MockServer::builder().start().await;
       Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("strmlabs://{}/?call={}", TOKEN, call)).unwrap();
       let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
