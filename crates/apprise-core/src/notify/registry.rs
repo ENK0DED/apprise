@@ -148,6 +148,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(vapid::Vapid::static_details());
   collect!(vonage::Vonage::static_details());
   collect!(webexteams::WebexTeams::static_details());
+  collect!(wechat::WeChat::static_details());
   collect!(wecombot::WeComBot::static_details());
   collect!(whatsapp::WhatsApp::static_details());
   collect!(workflows::Workflows::static_details());
@@ -297,6 +298,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(vapid::Vapid::from_url, "vapid");
   reg!(vonage::Vonage::from_url, "vonage", "nexmo");
   reg!(webexteams::WebexTeams::from_url, "wxteams", "webex");
+  reg!(wechat::WeChat::from_url, "wechat");
   reg!(wecombot::WeComBot::from_url, "wecombot");
   reg!(whatsapp::WhatsApp::from_url, "whatsapp");
   reg!(workflows::Workflows::from_url, "workflow", "workflows");

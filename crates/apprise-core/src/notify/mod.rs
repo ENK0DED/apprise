@@ -135,6 +135,7 @@ pub mod viber;
 pub mod voipms;
 pub mod vonage;
 pub mod webexteams;
+pub mod wechat;
 pub mod wecombot;
 pub mod whatsapp;
 pub mod workflows;
