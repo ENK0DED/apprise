@@ -21,7 +21,7 @@
 //!     };
 //!
 //!     let result = apprise.notify(&ctx).await;
-//!     println!("Sent to {}/{} services", result.succeeded, result.total);
+//!     println!("{}: sent to {}/{} services", result.status, result.succeeded, result.total);
 //! }
 //! ```
 
@@ -32,6 +32,7 @@ mod dispatch;
 pub mod error;
 pub mod notify;
 mod prepare;
+pub mod result;
 pub mod storage;
 pub mod tag;
 pub mod types;
@@ -42,22 +43,21 @@ pub use asset::AppriseAsset;
 pub use error::{AttachError, ConfigError, NotifyError};
 pub use notify::registry;
 pub use notify::{Attachment, Notify, NotifyContext, OverflowMode, ServiceDetails};
+pub use result::{NotifyAttempt, ResultStatus, SendResult, ServiceResult};
+pub use tag::{AppriseTag, TagFilter};
 pub use types::{NotifyFormat, NotifyType, StorageMode};
+
+/// Delivery tracking for plugins that send one notification to several
+/// targets: with retries enabled, a retry can skip targets that already
+/// accepted the message, and reuse work (uploads, tokens) from an earlier
+/// attempt.
+pub mod delivery {
+  pub use crate::dispatch::{is_delivered, mark_delivered, recall, remember};
+}
 
 /// Install the ring crypto provider for rustls. Safe to call multiple times.
 pub fn ensure_crypto_provider() {
   let _ = rustls::crypto::ring::default_provider().install_default();
-}
-
-/// Result of a notification dispatch.
-#[derive(Debug, Clone)]
-pub struct SendResult {
-  /// Total number of services targeted.
-  pub total: usize,
-  /// Number of services that succeeded.
-  pub succeeded: usize,
-  /// Number of services that failed.
-  pub failed: usize,
 }
 
 /// The main Apprise orchestrator.
@@ -68,7 +68,8 @@ pub struct SendResult {
 pub struct Apprise {
   services: Vec<Box<dyn Notify>>,
   asset: AppriseAsset,
-  tag_groups: Vec<Vec<String>>,
+  tag_filter: TagFilter,
+  timeout: Option<std::time::Duration>,
 }
 
 impl Default for Apprise {
@@ -80,13 +81,13 @@ impl Default for Apprise {
 impl Apprise {
   /// Create a new empty Apprise instance.
   pub fn new() -> Self {
-    ensure_crypto_provider();
-    Self { services: Vec::new(), asset: AppriseAsset::default(), tag_groups: Vec::new() }
+    Self::with_asset(AppriseAsset::default())
   }
 
-  /// Create with a custom asset (branding/theming).
+  /// Create with a custom asset (branding, delivery and storage settings).
   pub fn with_asset(asset: AppriseAsset) -> Self {
-    Self { services: Vec::new(), asset, tag_groups: Vec::new() }
+    ensure_crypto_provider();
+    Self { services: Vec::new(), asset, tag_filter: TagFilter::All, timeout: None }
   }
 
   /// Set the asset (branding/theming) for this instance.
@@ -177,14 +178,46 @@ impl Apprise {
 
   /// Set tag filter groups.
   /// Each inner Vec is an AND group (all tags must match); outer Vec is OR'd.
+  /// An empty list selects every service.
   pub fn set_tags(&mut self, tag_groups: Vec<Vec<String>>) {
-    self.tag_groups = tag_groups;
+    self.tag_filter = if tag_groups.is_empty() { TagFilter::All } else { TagFilter::Groups(tag_groups) };
   }
 
-  /// Parse tag strings from CLI format (each string is comma-separated AND group).
+  /// Parse tag strings from CLI format: each string is one AND group
+  /// (tokens separated by commas or spaces) and the strings are OR'd. Tokens
+  /// may carry a priority (`2:tag`) and a retry count (`tag:3`). An empty
+  /// list selects every service.
   pub fn set_tag_strings(&mut self, tags: &[String]) {
-    self.tag_groups =
-      tags.iter().map(|g| g.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect::<Vec<_>>()).filter(|g| !g.is_empty()).collect();
+    self.tag_filter = if tags.is_empty() { TagFilter::All } else { TagFilter::from_cli(tags) };
+  }
+
+  /// Set which services notifications go to.
+  pub fn set_tag_filter(&mut self, filter: TagFilter) {
+    self.tag_filter = filter;
+  }
+
+  /// The current tag filter.
+  pub fn tag_filter(&self) -> &TagFilter {
+    &self.tag_filter
+  }
+
+  /// Limit every notification call to `seconds` (upstream
+  /// `notify(timeout=)`); unfinished services report a timeout. `0` removes
+  /// the limit, leaving only the asset's per-service limit. Negative or
+  /// non-finite values are rejected.
+  pub fn set_timeout(&mut self, seconds: f64) -> Result<(), String> {
+    self.timeout = dispatch::validate_timeout(seconds)?;
+    Ok(())
+  }
+
+  /// The services the current tag filter selects, in load order.
+  pub fn find(&self) -> impl Iterator<Item = &dyn Notify> {
+    self.services.iter().filter(|svc| self.tag_filter.matches(&tag::parse_service_tags(&svc.tags()))).map(|svc| svc.as_ref())
+  }
+
+  /// Every loaded service, in load order.
+  pub fn services(&self) -> impl Iterator<Item = &dyn Notify> {
+    self.services.iter().map(|svc| svc.as_ref())
   }
 
   /// Get the current number of loaded services.
@@ -217,27 +250,38 @@ impl Apprise {
     &self.asset
   }
 
-  /// Send notifications to all matching services.
+  /// Send a notification to the services the tag filter selects.
+  ///
+  /// Services are notified concurrently (unless the asset disables async
+  /// mode), each with its own retries (`?retry=`, `?wait=`) and time limit
+  /// (the asset's `service_timeout`, and the call limit from
+  /// [`set_timeout`](Self::set_timeout)). Without an explicit priority in
+  /// the filter, services are tried by tag priority and lower-priority
+  /// groups only run if a more urgent one failed. Plugins see the asset of
+  /// this instance in `ctx.asset`.
   pub async fn notify(&self, ctx: &NotifyContext) -> SendResult {
-    dispatch::notify(&self.services, &self.filtered_indices(), ctx).await
+    let mut opts = dispatch::DispatchOptions::from_asset(&self.asset);
+    opts.call_timeout = self.timeout;
+    self.dispatch(ctx, &opts).await
   }
 
-  /// Send notifications one service at a time, honouring each service's
-  /// request rate.
+  /// [`notify`](Self::notify), but one service at a time.
   pub async fn notify_sequential(&self, ctx: &NotifyContext) -> SendResult {
-    dispatch::notify_sequential(&self.services, &self.filtered_indices(), ctx).await
+    let mut opts = dispatch::DispatchOptions::from_asset(&self.asset);
+    opts.call_timeout = self.timeout;
+    opts.sequential = true;
+    self.dispatch(ctx, &opts).await
+  }
+
+  async fn dispatch(&self, ctx: &NotifyContext, opts: &dispatch::DispatchOptions) -> SendResult {
+    let mut ctx = ctx.clone();
+    ctx.asset = self.asset.clone();
+    dispatch::notify(&self.services, &self.tag_filter, &ctx, opts).await
   }
 
   /// Load an attachment from a file path or URL.
   pub async fn load_attachment(source: &str) -> Result<Attachment, AttachError> {
     attachment::load_attachment(source).await
-  }
-
-  // ── Internal helpers ──────────────────────────────────────────────
-
-  /// Get indices of services matching the current tag filters.
-  fn filtered_indices(&self) -> Vec<usize> {
-    self.services.iter().enumerate().filter(|(_, svc)| tag::is_match(&svc.tags(), &self.tag_groups)).map(|(i, _)| i).collect()
   }
 }
 

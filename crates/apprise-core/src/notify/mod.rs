@@ -322,14 +322,110 @@ pub trait Notify: Send + Sync {
   fn service_options(&self) -> Option<&ServiceOptions> {
     None
   }
+
+  /// The URL this service was loaded from, exactly as given. It may hold
+  /// secrets: mask it (`utils::cwe312::cwe312_loggable`) before showing it.
+  /// Only `ConfiguredService` returns `Some`.
+  fn source_url(&self) -> Option<&str> {
+    None
+  }
+
+  /// The values that make this service distinct from a similar one, for
+  /// its persistent storage namespace (upstream `url_identifier`). Leave
+  /// targets out. `None` uses the URL's schema, credentials, host, port and
+  /// path.
+  fn url_identifier(&self) -> Option<Vec<String>> {
+    None
+  }
 }
 
 // ── Helper: build a reqwest client ───────────────────────────────────────────
 
+/// Socket connect timeout used when a URL sets no `?cto=`, in seconds
+/// (upstream `URLBase.socket_connect_timeout`).
+pub const DEFAULT_CONNECT_TIMEOUT: f64 = 4.0;
+
+/// Socket read timeout used when a URL sets no `?rto=`, in seconds
+/// (upstream `URLBase.socket_read_timeout`).
+pub const DEFAULT_READ_TIMEOUT: f64 = 4.0;
+
+/// Redirects followed before giving up (the `requests` default).
+const MAX_REDIRECTS: usize = 30;
+
+/// The HTTP settings of the service currently being sent, taken from its
+/// URL (`?cto=`, `?rto=`, `?redirect=`, `?verify=`) and the asset. The
+/// orchestrator sets them around every `send()`, so [`build_client`] picks
+/// them up without the plugin passing them along.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HttpOptions {
+  /// Connect timeout in seconds; `None` uses the plugin or global default.
+  pub connect_timeout: Option<f64>,
+  /// Read timeout in seconds; `None` uses the plugin or global default.
+  pub read_timeout: Option<f64>,
+  /// Follow 3xx redirects; `None` follows them.
+  pub redirect: Option<bool>,
+  /// Verify TLS certificates; `None` leaves it to the plugin.
+  pub verify: Option<bool>,
+}
+
+tokio::task_local! {
+  static HTTP_OPTIONS: HttpOptions;
+}
+
+/// Run `fut` with [`build_client`] honouring `options`.
+pub async fn with_http_options<F: std::future::Future>(options: HttpOptions, fut: F) -> F::Output {
+  HTTP_OPTIONS.scope(options, fut).await
+}
+
+/// The HTTP settings of the service being sent, if the orchestrator set any.
+pub fn current_http_options() -> HttpOptions {
+  HTTP_OPTIONS.try_with(|o| o.clone()).unwrap_or_default()
+}
+
+/// Defaults a plugin can give [`build_client_with`] when upstream's class
+/// uses other timeouts than the global ones (for example Apprise API reads
+/// for 30 s). A URL's `?cto=` and `?rto=` still win.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClientDefaults {
+  pub connect_timeout: f64,
+  pub read_timeout: f64,
+}
+
+impl Default for ClientDefaults {
+  fn default() -> Self {
+    Self { connect_timeout: DEFAULT_CONNECT_TIMEOUT, read_timeout: DEFAULT_READ_TIMEOUT }
+  }
+}
+
+/// Build an HTTP client for the service being sent.
+///
+/// Timeouts, redirect handling and certificate checks follow the service's
+/// URL options (`?cto=`, `?rto=`, `?redirect=`, `?verify=`), defaulting to
+/// upstream's 4 s connect and 4 s read timeouts. `verify_cert` is the
+/// plugin's own choice; either it or `?verify=no` turns verification off.
 pub fn build_client(verify_cert: bool) -> Result<reqwest::Client, NotifyError> {
+  build_client_with(verify_cert, ClientDefaults::default())
+}
+
+/// [`build_client`] with plugin-specific default timeouts.
+pub fn build_client_with(verify_cert: bool, defaults: ClientDefaults) -> Result<reqwest::Client, NotifyError> {
+  client_builder(verify_cert, defaults).build().map_err(NotifyError::Http)
+}
+
+/// The builder behind [`build_client_with`], for plugins that need to add
+/// settings of their own before building.
+pub fn client_builder(verify_cert: bool, defaults: ClientDefaults) -> reqwest::ClientBuilder {
   crate::ensure_crypto_provider();
-  let builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).danger_accept_invalid_certs(!verify_cert);
-  builder.build().map_err(NotifyError::Http)
+  let options = current_http_options();
+  let connect = options.connect_timeout.filter(|t| t.is_finite() && *t > 0.0).unwrap_or(defaults.connect_timeout);
+  let read = options.read_timeout.filter(|t| t.is_finite() && *t > 0.0).unwrap_or(defaults.read_timeout);
+  let verify = verify_cert && options.verify.unwrap_or(true);
+  let redirect = if options.redirect.unwrap_or(true) { reqwest::redirect::Policy::limited(MAX_REDIRECTS) } else { reqwest::redirect::Policy::none() };
+  reqwest::Client::builder()
+    .connect_timeout(std::time::Duration::from_secs_f64(connect))
+    .read_timeout(std::time::Duration::from_secs_f64(read))
+    .redirect(redirect)
+    .danger_accept_invalid_certs(!verify)
 }
 
 pub const APP_ID: &str = concat!("Apprise/", env!("CARGO_PKG_VERSION"));

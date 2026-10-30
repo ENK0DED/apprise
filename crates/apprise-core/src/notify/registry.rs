@@ -318,7 +318,7 @@ pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
     }
   };
   let plugin = instantiate(&parsed)?;
-  Some(Box::new(ConfiguredService::new(plugin, options)))
+  Some(Box::new(ConfiguredService::new(plugin, options).with_url(url)))
 }
 
 /// Find the plugin for a parsed URL and build it, without the common options.

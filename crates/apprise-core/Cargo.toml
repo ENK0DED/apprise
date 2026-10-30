@@ -45,6 +45,7 @@ yaml = ["dep:serde_yaml"]
 desktop = ["dep:notify-rust"]
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 tokio-test.workspace = true
 tempfile.workspace = true
