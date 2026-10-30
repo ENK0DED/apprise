@@ -40,11 +40,13 @@ notify-rust = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
 
 [features]
-default = ["mqtt", "email", "yaml"]
+default = ["mqtt", "email", "yaml", "images"]
 mqtt = ["dep:rumqttc"]
 email = ["dep:lettre"]
 yaml = ["dep:serde_yaml"]
 desktop = ["dep:notify-rust"]
+# Bundle the default theme's PNG icons for AppriseAsset::image_raw() (~280 KB).
+images = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

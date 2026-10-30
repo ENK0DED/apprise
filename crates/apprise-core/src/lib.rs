@@ -39,7 +39,7 @@ pub mod types;
 pub mod utils;
 
 // Public re-exports for convenience
-pub use asset::AppriseAsset;
+pub use asset::{AppriseAsset, NotifyImageSize};
 pub use error::{AttachError, ConfigError, NotifyError};
 pub use notify::registry;
 pub use notify::{Attachment, Notify, NotifyContext, OverflowMode, ServiceDetails};

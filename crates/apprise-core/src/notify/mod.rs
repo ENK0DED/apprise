@@ -216,6 +216,30 @@ impl Default for NotifyContext {
   }
 }
 
+impl NotifyContext {
+  /// The icon URL for this notification's type at `image_size` (upstream
+  /// `NotifyBase.image_url()` with the plugin's `image_size`).
+  pub fn image_url(&self, image_size: crate::asset::NotifyImageSize) -> Option<String> {
+    self.asset.image_url(&self.notify_type, Some(image_size), false, None)
+  }
+
+  /// The logo URL (upstream `image_url(logo=True)`).
+  pub fn logo_url(&self) -> Option<String> {
+    self.asset.image_url(&self.notify_type, None, true, None)
+  }
+
+  /// The icon file for this notification's type, if one exists on disk
+  /// (upstream `NotifyBase.image_path()`).
+  pub fn image_path(&self, image_size: crate::asset::NotifyImageSize) -> Option<std::path::PathBuf> {
+    self.asset.image_path(&self.notify_type, image_size, true, None)
+  }
+
+  /// The icon's PNG bytes (upstream `NotifyBase.image_raw()`).
+  pub fn image_raw(&self, image_size: crate::asset::NotifyImageSize) -> Option<std::borrow::Cow<'static, [u8]>> {
+    self.asset.image_raw(&self.notify_type, image_size, None)
+  }
+}
+
 /// Information about a notification service for --details / --schema output
 #[derive(Debug, Clone)]
 pub struct ServiceDetails {
