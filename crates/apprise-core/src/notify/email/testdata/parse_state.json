@@ -1,0 +1,5266 @@
+[
+{
+"url": "mailto://",
+"ok": false
+},
+{
+"url": "mailtos://",
+"ok": false
+},
+{
+"url": "mailto://:@/",
+"ok": false
+},
+{
+"url": "mailtos://:pass@nuxref.com:567",
+"ok": false
+},
+{
+"url": "mailto://user:pass@gmail.com",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"user@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@hotmail.com",
+"ok": true,
+"user": "user@hotmail.com",
+"password": "pass",
+"host": "hotmail.com",
+"smtp_host": "smtp-mail.outlook.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@hotmail.com",
+"targets": [
+[
+null,
+"user@hotmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@hotmail.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@live.com",
+"ok": true,
+"user": "user@live.com",
+"password": "pass",
+"host": "live.com",
+"smtp_host": "smtp-mail.outlook.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@live.com",
+"targets": [
+[
+null,
+"user@live.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@live.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@prontomail.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "prontomail.com",
+"smtp_host": "prontomail.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@prontomail.com",
+"targets": [
+[
+null,
+"user@prontomail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@prontomail.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@yahoo.com",
+"ok": true,
+"user": "user@yahoo.com",
+"password": "pass",
+"host": "yahoo.com",
+"smtp_host": "smtp.mail.yahoo.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@yahoo.com",
+"targets": [
+[
+null,
+"user@yahoo.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@yahoo.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@yahoo.ca",
+"ok": true,
+"user": "user@yahoo.ca",
+"password": "pass",
+"host": "yahoo.ca",
+"smtp_host": "smtp.mail.yahoo.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@yahoo.ca",
+"targets": [
+[
+null,
+"user@yahoo.ca"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@yahoo.ca": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@sendgrid.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "sendgrid.com",
+"smtp_host": "smtp.sendgrid.net",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@sendgrid.com",
+"targets": [
+[
+null,
+"user@sendgrid.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@sendgrid.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@gmx.net",
+"ok": true,
+"user": "user@gmx.net",
+"password": "pass",
+"host": "gmx.net",
+"smtp_host": "mail.gmx.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmx.net",
+"targets": [
+[
+null,
+"user@gmx.net"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmx.net": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@gmx.com",
+"ok": true,
+"user": "user@gmx.com",
+"password": "pass",
+"host": "gmx.com",
+"smtp_host": "mail.gmx.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmx.com",
+"targets": [
+[
+null,
+"user@gmx.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmx.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@gmx.de",
+"ok": true,
+"user": "user@gmx.de",
+"password": "pass",
+"host": "gmx.de",
+"smtp_host": "mail.gmx.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmx.de",
+"targets": [
+[
+null,
+"user@gmx.de"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmx.de": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@gmx.net?mode=starttls",
+"ok": true,
+"user": "user@gmx.net",
+"password": "pass",
+"host": "gmx.net",
+"smtp_host": "mail.gmx.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmx.net",
+"targets": [
+[
+null,
+"user@gmx.net"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmx.net": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@yandex.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "yandex.com",
+"smtp_host": "smtp.yandex.ru",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@yandex.com",
+"targets": [
+[
+null,
+"user@yandex.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@yandex.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@yandex.ru",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "yandex.ru",
+"smtp_host": "smtp.yandex.ru",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@yandex.ru",
+"targets": [
+[
+null,
+"user@yandex.ru"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@yandex.ru": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@yandex.fr",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "yandex.fr",
+"smtp_host": "smtp.yandex.ru",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@yandex.fr",
+"targets": [
+[
+null,
+"user@yandex.fr"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@yandex.fr": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@nuxref.com:567",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 567,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?mode=ssl",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com:567?format=html",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 567,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@nuxref.com:567?to=l2g@nuxref.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 567,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"l2g@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@domain.com?user=admin@mail-domain.com",
+"ok": true,
+"user": "admin@mail-domain.com",
+"password": "pass",
+"host": "domain.com",
+"smtp_host": "domain.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "admin@domain.com",
+"targets": [
+[
+null,
+"admin@domain.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"admin@domain.com": "Apprise"
+}
+},
+{
+"url": "mailtos://%20@domain.com?user=admin@mail-domain.com",
+"ok": true,
+"user": "admin@mail-domain.com",
+"password": " ",
+"host": "domain.com",
+"smtp_host": "domain.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "admin@domain.com",
+"targets": [
+[
+null,
+"admin@domain.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"admin@domain.com": "Apprise"
+}
+},
+{
+"url": "mailtos://%20@domain.com?user=admin@mail-domain.com&pgp=yes",
+"ok": false
+},
+{
+"url": "mailtos://%20@domain.com?user=admin@mail-domain.com&pgp=encrypt",
+"ok": true,
+"user": "admin@mail-domain.com",
+"password": " ",
+"host": "domain.com",
+"smtp_host": "domain.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "admin@domain.com",
+"targets": [
+[
+null,
+"admin@domain.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"admin@domain.com": "Apprise"
+}
+},
+{
+"url": "mailtos://%20@domain.com?user=admin@mail-domain.com&pgp=e",
+"ok": true,
+"user": "admin@mail-domain.com",
+"password": " ",
+"host": "domain.com",
+"smtp_host": "domain.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "admin@domain.com",
+"targets": [
+[
+null,
+"admin@domain.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"admin@domain.com": "Apprise"
+}
+},
+{
+"url": "mailtos://%20@domain.com?user=admin@mail-domain.com&pgp=sign",
+"ok": true,
+"user": "admin@mail-domain.com",
+"password": " ",
+"host": "domain.com",
+"smtp_host": "domain.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "admin@domain.com",
+"targets": [
+[
+null,
+"admin@domain.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "sign",
+"inline": false,
+"headers": {},
+"names": {
+"admin@domain.com": "Apprise"
+}
+},
+{
+"url": "mailtos://%20@domain.com?user=admin@mail-domain.com&pgp=s",
+"ok": true,
+"user": "admin@mail-domain.com",
+"password": " ",
+"host": "domain.com",
+"smtp_host": "domain.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "admin@domain.com",
+"targets": [
+[
+null,
+"admin@domain.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "sign",
+"inline": false,
+"headers": {},
+"names": {
+"admin@domain.com": "Apprise"
+}
+},
+{
+"url": "mailtos://%20@domain.com?user=admin@mail-domain.com&wkd=yes",
+"ok": true,
+"user": "admin@mail-domain.com",
+"password": " ",
+"host": "domain.com",
+"smtp_host": "domain.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "admin@domain.com",
+"targets": [
+[
+null,
+"admin@domain.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"admin@domain.com": "Apprise"
+}
+},
+{
+"url": "mailtos://%20@domain.com?user=admin@mail-domain.com&pgp=encrypt&pgppub=%2Fpath%2Fto%2Fpub.asc",
+"ok": true,
+"user": "admin@mail-domain.com",
+"password": " ",
+"host": "domain.com",
+"smtp_host": "domain.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "admin@domain.com",
+"targets": [
+[
+null,
+"admin@domain.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"admin@domain.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@nuxref.com:567/l2g@nuxref.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 567,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"l2g@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com:2525?user=l2g@example.com&pass=l2g@apprise!is!Awesome",
+"ok": true,
+"user": "l2g@example.com",
+"password": "l2g@apprise!is!Awesome",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 2525,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "l2g@example.com",
+"targets": [
+[
+null,
+"l2g@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"l2g@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com:2525?user=l2g@example.com&pass=l2g@apprise!is!Awesome&format=text",
+"ok": true,
+"user": "l2g@example.com",
+"password": "l2g@apprise!is!Awesome",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 2525,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "l2g@example.com",
+"targets": [
+[
+null,
+"l2g@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"l2g@example.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?smtp=smtp.example.com&name=l2g&cc=noreply@example.com,test@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "smtp.example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "l2g",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [
+"noreply@example.com",
+"test@example.com"
+],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"noreply@example.com": null,
+"test@example.com": null,
+"user@example.com": "l2g"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?smtp=smtp.example.com&name=l2g&bcc=noreply@example.com,test@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "smtp.example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "l2g",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [
+"noreply@example.com",
+"test@example.com"
+],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"noreply@example.com": null,
+"test@example.com": null,
+"user@example.com": "l2g"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?smtp=smtp.example.com&name=l2g&cc=noreply@example.com,@",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "smtp.example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "l2g",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [
+"noreply@example.com"
+],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"noreply@example.com": null,
+"user@example.com": "l2g"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?smtp=smtp.example.com&name=l2g&bcc=noreply@example.com,@",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "smtp.example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "l2g",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [
+"noreply@example.com"
+],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"noreply@example.com": null,
+"user@example.com": "l2g"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?smtp=smtp.example.com&name=l2g&reply=test@example.com,test2@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "smtp.example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "l2g",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"test2@example.com",
+"test@example.com"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"test2@example.com": null,
+"test@example.com": null,
+"user@example.com": "l2g"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?smtp=smtp.example.com&name=l2g&reply=test@example.com,@",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "smtp.example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "l2g",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"test@example.com"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"test@example.com": null,
+"user@example.com": "l2g"
+}
+},
+{
+"url": "mailto://user:pass@localhost.localdomain?+X-Customer-Campaign-ID=Apprise",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "localhost.localdomain",
+"smtp_host": "localhost.localdomain",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@localhost.localdomain",
+"targets": [
+[
+null,
+"user@localhost.localdomain"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {
+"X-Customer-Campaign-ID": "Apprise"
+},
+"names": {
+"user@localhost.localdomain": "Apprise"
+}
+},
+{
+"url": "mailtos://user:@nuxref.com",
+"ok": true,
+"user": "user",
+"password": "",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@nuxref.com?from=@",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "@",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "@"
+}
+},
+{
+"url": "mailtos://nuxref.com?user=&pass=.",
+"ok": false
+},
+{
+"url": "mailtos://user:pass@nuxref.com?to=@",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailtos://nuxref.com?user=%20\"&pass=.",
+"ok": false
+},
+{
+"url": "mailtos://nuxref.com?to=test",
+"ok": false
+},
+{
+"url": "mailtos://user:pass@example.com?mode=notamode",
+"ok": false
+},
+{
+"url": "mailtos://user:pass@gmail.com?mode=starttls",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"user@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@gmail.com?mode=ssl",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"user@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://nuxref.com?user=l2g&pass=.",
+"ok": true,
+"user": "l2g",
+"password": ".",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "l2g@nuxref.com",
+"targets": [
+[
+null,
+"l2g@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"l2g@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@localhost:2525",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "localhost",
+"smtp_host": "localhost",
+"port": 2525,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@localhost",
+"targets": [
+[
+null,
+"user@localhost"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@localhost": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@nuxref.com?from=jack@gmail.com&name=Jason<jason@gmail.com>",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Jason",
+"from_addr": "jason@gmail.com",
+"targets": [
+[
+null,
+"jason@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"jason@gmail.com": "Jason"
+}
+},
+{
+"url": "mailto://localhost?from=test@example.com&to=test@example.com",
+"ok": true,
+"user": null,
+"password": null,
+"host": "localhost",
+"smtp_host": "localhost",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": null,
+"from_addr": "test@example.com",
+"targets": [
+[
+null,
+"test@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"test@example.com": null
+}
+},
+{
+"url": "mailto://user:pass@localhost/test@example.com/test2@/$@!/",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "localhost",
+"smtp_host": "localhost",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@localhost",
+"targets": [
+[
+null,
+"test@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@localhost": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@localhost/?bcc=test2@,$@!/",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "localhost",
+"smtp_host": "localhost",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@localhost",
+"targets": [
+[
+null,
+"user@localhost"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@localhost": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@localhost/?cc=test2@,$@!/",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "localhost",
+"smtp_host": "localhost",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@localhost",
+"targets": [
+[
+null,
+"user@localhost"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@localhost": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@localhost/?reply=test2@,$@!/",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "localhost",
+"smtp_host": "localhost",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@localhost",
+"targets": [
+[
+null,
+"user@localhost"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@localhost": "Apprise"
+}
+},
+{
+"url": "mailto://10.0.0.195:25/?to=alerts@example.com&from=sender@example.com",
+"ok": true,
+"user": null,
+"password": null,
+"host": "10.0.0.195",
+"smtp_host": "10.0.0.195",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": null,
+"from_addr": "sender@example.com",
+"targets": [
+[
+null,
+"alerts@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"sender@example.com": null
+}
+},
+{
+"url": "mailto://chris:pass@nuxref.com?pgp=encrypt",
+"ok": true,
+"user": "chris",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "chris@nuxref.com",
+"targets": [
+[
+null,
+"chris@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"chris@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://chris:pass@nuxref.com?pgp=encrypt&wkd=yes",
+"ok": true,
+"user": "chris",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "chris@nuxref.com",
+"targets": [
+[
+null,
+"chris@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"chris@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://chris:pass@nuxref.com/user@example.com?pgp=encrypt",
+"ok": true,
+"user": "chris",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "chris@nuxref.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"chris@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://example.com?smtp=smtp.example.com",
+"ok": false
+},
+{
+"url": "mailto://fastmail.com/?to=hello@concordium-explorer.nl",
+"ok": false
+},
+{
+"url": "mailto://fastmail.com?user=username@customdomain.com",
+"ok": true,
+"user": "username@customdomain.com",
+"password": null,
+"host": "customdomain.com",
+"smtp_host": "smtp.fastmail.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "username@customdomain.com",
+"targets": [
+[
+null,
+"username@customdomain.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"username@customdomain.com": "Apprise"
+}
+},
+{
+"url": "mailto://fastmail.com?user=username@customdomain.com&pass=password123",
+"ok": true,
+"user": "username@customdomain.com",
+"password": "password123",
+"host": "customdomain.com",
+"smtp_host": "smtp.fastmail.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "username@customdomain.com",
+"targets": [
+[
+null,
+"username@customdomain.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"username@customdomain.com": "Apprise"
+}
+},
+{
+"url": "mailto://localhost",
+"ok": true,
+"user": null,
+"password": null,
+"host": "localhost",
+"smtp_host": "localhost",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": null,
+"from_addr": "root@localhost",
+"targets": [
+[
+null,
+"root@localhost"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"root@localhost": null
+}
+},
+{
+"url": "mailto://other:pass@gmail.com?format=text",
+"ok": true,
+"user": "other@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "other@gmail.com",
+"targets": [
+[
+null,
+"other@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"other@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailto://_:pass@l2g.com?user=user@test.com",
+"ok": true,
+"user": "user@test.com",
+"password": "pass",
+"host": "l2g.com",
+"smtp_host": "l2g.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@l2g.com",
+"targets": [
+[
+null,
+"user@l2g.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@l2g.com": "Apprise"
+}
+},
+{
+"url": "mailto://pgp:pass@nuxref.com?pgp=encrypt",
+"ok": true,
+"user": "pgp",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "pgp@nuxref.com",
+"targets": [
+[
+null,
+"pgp@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"pgp@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://pgp:pass@nuxref.com?pgp=encrypt&",
+"ok": true,
+"user": "pgp",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "pgp@nuxref.com",
+"targets": [
+[
+null,
+"pgp@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"pgp@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://pgp:pass@nuxref.com?pgp=encrypt&pgppub=invalid",
+"ok": true,
+"user": "pgp",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "pgp@nuxref.com",
+"targets": [
+[
+null,
+"pgp@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"pgp@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://pgpX:pass@nuxref.com?pgp=encrypt",
+"ok": true,
+"user": "pgpX",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "pgpX@nuxref.com",
+"targets": [
+[
+null,
+"pgpX@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"pgpX@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailtos://abc:password@xyz.cn?",
+"ok": false
+},
+{
+"url": "mailtos://abc:password@xyz.cn:465?smtp=smtp.exmail.qq.com&mode=ssl",
+"ok": true,
+"user": "abc",
+"password": "password",
+"host": "xyz.cn",
+"smtp_host": "smtp.exmail.qq.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "abc@xyz.cn",
+"targets": [
+[
+null,
+"abc@xyz.cn"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"abc@xyz.cn": "Apprise"
+}
+},
+{
+"url": "mailtos://John Doe<john%40yahoo.ca>?smtp=mobile.charter.net",
+"ok": false
+},
+{
+"url": "mailtos://mydomain.com?smtp=mail.local.mydomain.com",
+"ok": false
+},
+{
+"url": "mailtos://outlook.com?smtp=smtp.outlook.com",
+"ok": false
+},
+{
+"url": "mailtos://PASSWORD@domain.subdomain.com:587?",
+"ok": false
+},
+{
+"url": "mailtos://?smtp=mobile.charter.net",
+"ok": false
+},
+{
+"url": "mailtos://smtp-relay.gmail.com?",
+"ok": false
+},
+{
+"url": "mailtos://spectrum.net?smtp=mobile.charter.net",
+"ok": false
+},
+{
+"url": "mailtos://user:app.pw@outlook.com",
+"ok": true,
+"user": "user@outlook.com",
+"password": "app.pw",
+"host": "outlook.com",
+"smtp_host": "smtp.outlook.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@outlook.com",
+"targets": [
+[
+null,
+"user@outlook.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@outlook.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user@localhost.localdomain",
+"ok": true,
+"user": "user",
+"password": null,
+"host": "localhost.localdomain",
+"smtp_host": "localhost.localdomain",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@localhost.localdomain",
+"targets": [
+[
+null,
+"user@localhost.localdomain"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@localhost.localdomain": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass123@gmail.com",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass123",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"user@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass123@gmail.com/test+notification@gmail.com",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass123",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"test+notification@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass123@gmail.com?to=test+notification@gmail.com",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass123",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"test+notification@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass123@hotmail.com",
+"ok": true,
+"user": "user@hotmail.com",
+"password": "pass123",
+"host": "hotmail.com",
+"smtp_host": "smtp-mail.outlook.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@hotmail.com",
+"targets": [
+[
+null,
+"user@hotmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@hotmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass123@hotmail.com:1235",
+"ok": true,
+"user": "user@hotmail.com",
+"password": "pass123",
+"host": "hotmail.com",
+"smtp_host": "smtp-mail.outlook.com",
+"port": 1235,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@hotmail.com",
+"targets": [
+[
+null,
+"user@hotmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@hotmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass123@hotmail.com:444",
+"ok": true,
+"user": "user@hotmail.com",
+"password": "pass123",
+"host": "hotmail.com",
+"smtp_host": "smtp-mail.outlook.com",
+"port": 444,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@hotmail.com",
+"targets": [
+[
+null,
+"user@hotmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@hotmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass123@hotmail.com:444/user2%40yahoo.com",
+"ok": true,
+"user": "user@hotmail.com",
+"password": "pass123",
+"host": "hotmail.com",
+"smtp_host": "smtp-mail.outlook.com",
+"port": 444,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@hotmail.com",
+"targets": [
+[
+null,
+"user2@yahoo.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@hotmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass123@hotmail.com?smtp=override.com",
+"ok": true,
+"user": "user",
+"password": "pass123",
+"host": "hotmail.com",
+"smtp_host": "override.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@hotmail.com",
+"targets": [
+[
+null,
+"user@hotmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@hotmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass123@hotmail.com/user2%40yahoo.com",
+"ok": true,
+"user": "user@hotmail.com",
+"password": "pass123",
+"host": "hotmail.com",
+"smtp_host": "smtp-mail.outlook.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@hotmail.com",
+"targets": [
+[
+null,
+"user2@yahoo.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@hotmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass123@live.com",
+"ok": true,
+"user": "user@live.com",
+"password": "pass123",
+"host": "live.com",
+"smtp_host": "smtp-mail.outlook.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@live.com",
+"targets": [
+[
+null,
+"user@live.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@live.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass123@outlook.com",
+"ok": true,
+"user": "user@outlook.com",
+"password": "pass123",
+"host": "outlook.com",
+"smtp_host": "smtp.outlook.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@outlook.com",
+"targets": [
+[
+null,
+"user@outlook.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@outlook.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass123@outlook.com.au",
+"ok": true,
+"user": "user@outlook.com.au",
+"password": "pass123",
+"host": "outlook.com.au",
+"smtp_host": "smtp.outlook.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@outlook.com.au",
+"targets": [
+[
+null,
+"user@outlook.com.au"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@outlook.com.au": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?mode=ssl",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?mode=ssl&verify=no",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?mode=starttls",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?mode=starttls&verify=no",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?reply=Chris<noreply@example.ca>",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"noreply@example.ca"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"noreply@example.ca": "Chris",
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?reply=noreply@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"noreply@example.com"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"noreply@example.com": null,
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?smtp=smtp.example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "smtp.example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@gmail.com",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"user@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@gmail.com/a@example.com",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"a@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@gmail.com/a@example.com/b@example.com",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"a@example.com"
+],
+[
+null,
+"b@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@gmail.com?from=user@other.com",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": null,
+"from_addr": "user@other.com",
+"targets": [
+[
+null,
+"user@other.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@other.com": null
+}
+},
+{
+"url": "mailtos://user:pass@nuxref.com?",
+"ok": false
+},
+{
+"url": "mailto://user2:pass@nuxref.com?pgp=encrypt",
+"ok": true,
+"user": "user2",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user2@nuxref.com",
+"targets": [
+[
+null,
+"user2@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"user2@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@comcast.net",
+"ok": true,
+"user": "user@comcast.net",
+"password": "pass",
+"host": "comcast.net",
+"smtp_host": "smtp.comcast.net",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@comcast.net",
+"targets": [
+[
+null,
+"user@comcast.net"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@comcast.net": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com:2525?user=l2g@example.com",
+"ok": true,
+"user": "l2g@example.com",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 2525,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "l2g@example.com",
+"targets": [
+[
+null,
+"l2g@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"l2g@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@gmail.com?",
+"ok": false
+},
+{
+"url": "mailto://user:pass@gmail.com?format=text",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"user@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@gmail.com?inline=no",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"user@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@gmail.com?inline=yes",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"user@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": true,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@gmail.com?inline=yes&format=text",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"user@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": true,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@l2g.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "l2g.com",
+"smtp_host": "l2g.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@l2g.com",
+"targets": [
+[
+null,
+"user@l2g.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@l2g.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@localhost.localdomain",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "localhost.localdomain",
+"smtp_host": "localhost.localdomain",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@localhost.localdomain",
+"targets": [
+[
+null,
+"user@localhost.localdomain"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@localhost.localdomain": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@mail.example.org?",
+"ok": false
+},
+{
+"url": "mailto://user:pass@nuxref.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com/friend@example.org",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"friend@example.org"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com/other@example.org?pgp=encrypt",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"other@example.org"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?pgp=e",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?pgp=encrpyt",
+"ok": false
+},
+{
+"url": "mailto://user:pass@nuxref.com?pgp=encrypt",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?pgp=encrypt&pgppub=/path/to/my-pub.asc",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?pgp=n",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?pgp=no",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?pgp=none",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?pgp=no&wkd=yes",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?pgp=s",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "sign",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?pgp=sign",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "sign",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?pgp=sign&wkd=yes",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "sign",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?pgpkey=/old/public-key.asc",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com/recipient@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"recipient@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?wkd=no",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@nuxref.com?wkd=yes",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "nuxref.com",
+"smtp_host": "nuxref.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@nuxref.com",
+"targets": [
+[
+null,
+"user@nuxref.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"user@nuxref.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@hotmail.com.au",
+"ok": true,
+"user": "user@hotmail.com.au",
+"password": "pass",
+"host": "hotmail.com.au",
+"smtp_host": "smtp-mail.outlook.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@hotmail.com.au",
+"targets": [
+[
+null,
+"user@hotmail.com.au"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@hotmail.com.au": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@smtp.outlook.com",
+"ok": true,
+"user": "user@smtp.outlook.com",
+"password": "pass",
+"host": "smtp.outlook.com",
+"smtp_host": "smtp.outlook.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@smtp.outlook.com",
+"targets": [
+[
+null,
+"user@smtp.outlook.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@smtp.outlook.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@office365.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "office365.com",
+"smtp_host": "smtp.office365.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@office365.com",
+"targets": [
+[
+null,
+"user@office365.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@office365.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@smtp.office365.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "smtp.office365.com",
+"smtp_host": "smtp.office365.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@smtp.office365.com",
+"targets": [
+[
+null,
+"user@smtp.office365.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@smtp.office365.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@fastmail.fm",
+"ok": true,
+"user": "user@fastmail.fm",
+"password": "pass",
+"host": "fastmail.fm",
+"smtp_host": "smtp.fastmail.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@fastmail.fm",
+"targets": [
+[
+null,
+"user@fastmail.fm"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@fastmail.fm": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@fastmail.co.uk",
+"ok": true,
+"user": "user@fastmail.co.uk",
+"password": "pass",
+"host": "fastmail.co.uk",
+"smtp_host": "smtp.fastmail.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@fastmail.co.uk",
+"targets": [
+[
+null,
+"user@fastmail.co.uk"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@fastmail.co.uk": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@sent.com",
+"ok": true,
+"user": "user@sent.com",
+"password": "pass",
+"host": "sent.com",
+"smtp_host": "smtp.fastmail.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@sent.com",
+"targets": [
+[
+null,
+"user@sent.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@sent.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@zohomail.com",
+"ok": true,
+"user": "user@zohomail.com",
+"password": "pass",
+"host": "zohomail.com",
+"smtp_host": "smtp.zoho.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@zohomail.com",
+"targets": [
+[
+null,
+"user@zohomail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@zohomail.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@zoho.com",
+"ok": true,
+"user": "user@zoho.com",
+"password": "pass",
+"host": "zoho.com",
+"smtp_host": "smtp.zoho.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@zoho.com",
+"targets": [
+[
+null,
+"user@zoho.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@zoho.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@sendgrid.net",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "sendgrid.net",
+"smtp_host": "smtp.sendgrid.net",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@sendgrid.net",
+"targets": [
+[
+null,
+"user@sendgrid.net"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@sendgrid.net": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@163.com",
+"ok": true,
+"user": "user@163.com",
+"password": "pass",
+"host": "163.com",
+"smtp_host": "smtp.163.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@163.com",
+"targets": [
+[
+null,
+"user@163.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@163.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@qq.com",
+"ok": true,
+"user": "user@qq.com",
+"password": "pass",
+"host": "qq.com",
+"smtp_host": "smtp.qq.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@qq.com",
+"targets": [
+[
+null,
+"user@qq.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@qq.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@foxmail.com",
+"ok": true,
+"user": "user@foxmail.com",
+"password": "pass",
+"host": "foxmail.com",
+"smtp_host": "smtp.qq.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@foxmail.com",
+"targets": [
+[
+null,
+"user@foxmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@foxmail.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@gmx.at",
+"ok": true,
+"user": "user@gmx.at",
+"password": "pass",
+"host": "gmx.at",
+"smtp_host": "mail.gmx.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmx.at",
+"targets": [
+[
+null,
+"user@gmx.at"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmx.at": "Apprise"
+}
+},
+{
+"url": "mailto://label+user:pass@gmail.com",
+"ok": true,
+"user": "label+user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "label+user@gmail.com",
+"targets": [
+[
+null,
+"label+user@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"label+user@gmail.com": "Apprise"
+}
+},
+{
+"url": "mailto://user@yandex.com?user=me@other.com",
+"ok": true,
+"user": "me",
+"password": "user",
+"host": "yandex.com",
+"smtp_host": "smtp.yandex.ru",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "me@yandex.com",
+"targets": [
+[
+null,
+"me@yandex.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"me@yandex.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?reply=reply@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"reply@example.com"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"reply@example.com": null,
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?reply=%22reply@example.com%22",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"reply@example.com"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"reply@example.com": null,
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?reply=Ops:reply@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"reply@example.com"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"reply@example.com": "Ops",
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?reply=Ops%20Team:reply@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"reply@example.com"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"reply@example.com": "Ops Team",
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?reply=Ops%20Team%20%3Creply@example.com%3E",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"reply@example.com"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"reply@example.com": "Ops Team",
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?reply=%22Ops,%20Team%22%20%3Creply@example.com%3E",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"reply@example.com"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"reply@example.com": "Ops, Team",
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?reply=M%C3%BCnchen%20%3Creply@example.com%3E",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"reply@example.com"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"reply@example.com": "München",
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?reply=Ops%20Team:user@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"user@example.com"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?reply=Name:Name:reply@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?reply=not-an-email",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?reply=a@example.com,b@example.com;c@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [
+"a@example.com",
+"b@example.com"
+],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"a@example.com": null,
+"b@example.com": null,
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com/a@example.com/b@example.com?cc=a@example.com,c@example.com&bcc=b@example.com,d@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"a@example.com"
+],
+[
+null,
+"b@example.com"
+]
+],
+"cc": [
+"a@example.com",
+"c@example.com"
+],
+"bcc": [
+"b@example.com",
+"d@example.com"
+],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"a@example.com": null,
+"b@example.com": null,
+"c@example.com": null,
+"d@example.com": null,
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?name=J%C3%B6rg&cc=Bob%20%3Cbob@example.com%3E&bcc=Al:al@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Jörg",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [
+"bob@example.com"
+],
+"bcc": [
+"al@example.com"
+],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"al@example.com": "Al",
+"bob@example.com": "Bob",
+"user@example.com": "Jörg"
+}
+},
+{
+"url": "mailto://user:pass@example.com?from=Jane%20Doe%20%3Cjane@example.org%3E&name=Override",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Override <Jane Doe <jane@example.org>>",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Override <Jane Doe <jane@example.org>>"
+}
+},
+{
+"url": "mailto://user:pass@example.com?from=jane@example.org&name=Jane",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Jane",
+"from_addr": "jane@example.org",
+"targets": [
+[
+null,
+"jane@example.org"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"jane@example.org": "Jane"
+}
+},
+{
+"url": "mailto://user:pass@example.com?+X-Custom=Value&+Reply-To=foo@bar.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {
+"X-Custom": "Value",
+"Reply-To": "foo@bar.com"
+},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?pgp=none&wkd=yes",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?pgp=n",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?pgp=no&wkd=yes",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?wkd=no",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?wkd=yes&pgp=sign",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "sign",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?pgp=sign&pgppub=/tmp/pub.asc&pgpprv=/tmp/prv.asc",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "sign",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?pgp=en",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?pgp=ENCRYPT",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "encrypt",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?pgp=true",
+"ok": false
+},
+{
+"url": "mailto://user:pass@example.com?inline=garbage",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?mode=SSL",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 465,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?mode=insecure",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailtos://user:pass@example.com?mode=insecure",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@[::1]:2525",
+"ok": false
+},
+{
+"url": "mailto://user:pass@127.0.0.1:2525/to@example.com",
+"ok": false
+},
+{
+"url": "mailto://user:pass@localhost",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "localhost",
+"smtp_host": "localhost",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@localhost",
+"targets": [
+[
+null,
+"user@localhost"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@localhost": "Apprise"
+}
+},
+{
+"url": "mailto://localhost.localdomain",
+"ok": true,
+"user": null,
+"password": null,
+"host": "localhost.localdomain",
+"smtp_host": "localhost.localdomain",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": null,
+"from_addr": "root@localhost.localdomain",
+"targets": [
+[
+null,
+"root@localhost.localdomain"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"root@localhost.localdomain": null
+}
+},
+{
+"url": "mailto://user%40example.com",
+"ok": false
+},
+{
+"url": "mailto://user%40example.com?smtp=smtp.example.com",
+"ok": false
+},
+{
+"url": "mailto://john@example.com?pass=secret",
+"ok": true,
+"user": "john",
+"password": "secret",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "john@example.com",
+"targets": [
+[
+null,
+"john@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"john@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com/%22Chris%22%20%3Cchris@example.com%3E",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+"Chris",
+"chris@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com/Chris:chris@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+"Chris",
+"chris@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com/invalid",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com/a@b",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?to=a@example.com,b@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"a@example.com"
+],
+[
+null,
+"b@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com/?to=c@example.com",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"c@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://us%20er:pass@example.com",
+"ok": true,
+"user": "us er",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "us@example.com",
+"targets": [
+[
+null,
+"us@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"us@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@exam_ple.com",
+"ok": false
+},
+{
+"url": "mailto://user:pass@example.com?smtp=",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@example.com?port=2525&mode=ssl",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "example.com",
+"smtp_host": "example.com",
+"port": 2525,
+"secure_mode": "ssl",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@example.com",
+"targets": [
+[
+null,
+"user@example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@example.com": "Apprise"
+}
+},
+{
+"url": "mailto://user:pass@gmail.com:25",
+"ok": true,
+"user": "user@gmail.com",
+"password": "pass",
+"host": "gmail.com",
+"smtp_host": "smtp.gmail.com",
+"port": 25,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@gmail.com",
+"targets": [
+[
+null,
+"user@gmail.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@gmail.com": "Apprise"
+}
+},
+{
+"url": "deltachat://",
+"ok": false
+},
+{
+"url": "deltachats://user:pass@smtp.example.com:2525/friend@example.org",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "smtp.example.com",
+"smtp_host": "smtp.example.com",
+"port": 2525,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@smtp.example.com",
+"targets": [
+[
+null,
+"friend@example.org"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@smtp.example.com": "Apprise"
+}
+},
+{
+"url": "deltachats://user:pass@smtp.example.com/friend@example.org",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "smtp.example.com",
+"smtp_host": "smtp.example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@smtp.example.com",
+"targets": [
+[
+null,
+"friend@example.org"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@smtp.example.com": "Apprise"
+}
+},
+{
+"url": "deltachats://user:****@smtp.example.com/friend%40example.org",
+"ok": true,
+"user": "user",
+"password": "****",
+"host": "smtp.example.com",
+"smtp_host": "smtp.example.com",
+"port": 587,
+"secure_mode": "starttls",
+"secure": true,
+"from_name": "Apprise",
+"from_addr": "user@smtp.example.com",
+"targets": [
+[
+null,
+"friend@example.org"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@smtp.example.com": "Apprise"
+}
+},
+{
+"url": "deltachat://user:pass@smtp.example.com/",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "smtp.example.com",
+"smtp_host": "smtp.example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@smtp.example.com",
+"targets": [
+[
+null,
+"user@smtp.example.com"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@smtp.example.com": "Apprise"
+}
+},
+{
+"url": "deltachat://user:pass@smtp.example.com/friend1@example.org",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "smtp.example.com",
+"smtp_host": "smtp.example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@smtp.example.com",
+"targets": [
+[
+null,
+"friend1@example.org"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@smtp.example.com": "Apprise"
+}
+},
+{
+"url": "deltachat://user:pass@smtp.example.com/friend@example.org",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "smtp.example.com",
+"smtp_host": "smtp.example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@smtp.example.com",
+"targets": [
+[
+null,
+"friend@example.org"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@smtp.example.com": "Apprise"
+}
+},
+{
+"url": "deltachat://user:pass@smtp.example.com/friend@example.org?pgp=sign",
+"ok": true,
+"user": "user",
+"password": "pass",
+"host": "smtp.example.com",
+"smtp_host": "smtp.example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@smtp.example.com",
+"targets": [
+[
+null,
+"friend@example.org"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "sign",
+"inline": false,
+"headers": {},
+"names": {
+"user@smtp.example.com": "Apprise"
+}
+},
+{
+"url": "deltachat://user:****@smtp.example.com/friend%40example.org",
+"ok": true,
+"user": "user",
+"password": "****",
+"host": "smtp.example.com",
+"smtp_host": "smtp.example.com",
+"port": 25,
+"secure_mode": "insecure",
+"secure": false,
+"from_name": "Apprise",
+"from_addr": "user@smtp.example.com",
+"targets": [
+[
+null,
+"friend@example.org"
+]
+],
+"cc": [],
+"bcc": [],
+"reply_to": [],
+"pgp_mode": "no",
+"inline": false,
+"headers": {},
+"names": {
+"user@smtp.example.com": "Apprise"
+}
+}
+]
