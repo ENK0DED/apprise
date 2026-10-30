@@ -579,6 +579,8 @@ mod tests {
     assert_eq!(load_config(&top, &opts(2)).await.unwrap().items.len(), 5);
   }
 
+  #[cfg(feature = "yaml")]
+
   #[tokio::test]
   async fn test_format_selection() {
     let dir = tempfile::tempdir().unwrap();
@@ -626,6 +628,8 @@ mod tests {
     assert_eq!(load_config(&url, &insecure).await.unwrap().items.len(), 3);
   }
 
+  #[cfg(feature = "yaml")]
+
   #[tokio::test]
   async fn test_text_handed_in_directly() {
     let loaded = load_config_text("urls:\n  - json://localhost\n", None, &opts(1)).await.unwrap();
@@ -648,6 +652,7 @@ mod tests {
 
   /// Replays configurations run through upstream `config_parse()`
   /// (testdata/gen_config_parity.py): same services, same tags.
+  #[cfg(feature = "yaml")]
   #[test]
   fn test_config_parse_parity() {
     let cases: serde_json::Value = serde_json::from_str(include_str!("testdata/config_parity.json")).unwrap();

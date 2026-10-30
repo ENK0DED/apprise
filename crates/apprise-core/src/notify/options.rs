@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 
 use crate::error::NotifyError;
-use crate::notify::{Notify, NotifyContext, OverflowMode, ServiceDetails};
+use crate::notify::{Notify, NotifyContext, OverflowMode, ServiceDetails, ThrottleClock};
 use crate::types::NotifyFormat;
 use crate::utils::parse::{ParsedUrl, parse_bool};
 
@@ -122,17 +122,53 @@ fn parse_timeout(value: Option<&str>, name: &str) -> Option<f64> {
 pub struct ConfiguredService {
   inner: Box<dyn Notify>,
   options: ServiceOptions,
+  url: Option<String>,
+  clock: ThrottleClock,
 }
 
 impl ConfiguredService {
   pub fn new(inner: Box<dyn Notify>, options: ServiceOptions) -> Self {
-    Self { inner, options }
+    Self { inner, options, url: None, clock: ThrottleClock::default() }
+  }
+
+  /// Remember the URL the service was loaded from (for masked display and
+  /// its storage namespace).
+  pub fn with_url(mut self, url: &str) -> Self {
+    self.url = Some(url.to_string());
+    self
   }
 
   /// The wrapped plugin.
   pub fn plugin(&self) -> &dyn Notify {
     self.inner.as_ref()
   }
+}
+
+/// The persistent storage namespace of a service (upstream `url_id()`): a
+/// SHA-256 over `salt` and the plugin's [`Notify::url_identifier`], or over
+/// the URL's schema, credentials, host, port and path, cut to `idlen`
+/// characters (`0` keeps all 64). `None` when the service has no URL.
+pub fn url_id(svc: &dyn Notify, salt: &[u8], idlen: usize) -> Option<String> {
+  use sha2::{Digest, Sha256};
+  let mut engine = Sha256::new();
+  engine.update(salt);
+  if let Some(parts) = svc.url_identifier() {
+    for part in parts {
+      engine.update(part.as_bytes());
+    }
+  } else {
+    let url = ParsedUrl::parse(svc.source_url()?)?;
+    let field = |v: &Option<String>| v.as_deref().filter(|s| !s.is_empty()).map(|s| s.as_bytes().to_vec()).unwrap_or_else(|| b"\0".to_vec());
+    engine.update(url.schema.as_bytes());
+    engine.update(url.password.as_deref().map(|p| p.as_bytes().to_vec()).unwrap_or_else(|| b"\0".to_vec()));
+    engine.update(url.user.as_deref().map(|u| u.as_bytes().to_vec()).unwrap_or_else(|| b"\0".to_vec()));
+    engine.update(field(&url.host));
+    engine.update(url.port.map(|p| p.to_string().into_bytes()).unwrap_or_else(|| b"\0".to_vec()));
+    engine.update(format!("/{}", url.path).trim_end_matches('/').as_bytes());
+    engine.update(if url.is_secure() { b"s" } else { b"i" });
+  }
+  let id = hex::encode(engine.finalize());
+  Some(if idlen > 0 && idlen < id.len() { id[..idlen].to_string() } else { id })
 }
 
 #[async_trait]
@@ -150,7 +186,8 @@ impl Notify for ConfiguredService {
     self.inner.send(ctx).await
   }
   fn attachment_support(&self) -> bool {
-    self.inner.attachment_support()
+    // Many plugins only declare support in their details.
+    self.inner.attachment_support() || self.inner.details().attachment_support
   }
   fn tags(&self) -> Vec<String> {
     self.inner.tags()
@@ -178,6 +215,15 @@ impl Notify for ConfiguredService {
   }
   fn service_options(&self) -> Option<&ServiceOptions> {
     Some(&self.options)
+  }
+  fn source_url(&self) -> Option<&str> {
+    self.url.as_deref().or_else(|| self.inner.source_url())
+  }
+  fn url_identifier(&self) -> Option<Vec<String>> {
+    self.inner.url_identifier()
+  }
+  fn throttle_clock(&self) -> Option<ThrottleClock> {
+    Some(self.inner.throttle_clock().unwrap_or_else(|| self.clock.clone()))
   }
 }
 
@@ -231,6 +277,30 @@ mod tests {
   fn test_invalid_values_fall_back_to_default() {
     let o = opts("json://localhost/?retry=abc&wait=abc&format=bogus&overflow=bogus&cto=0&rto=-1").unwrap();
     assert_eq!(o, ServiceOptions::default());
+  }
+
+  #[test]
+  fn test_attachment_support_follows_details() {
+    // Custom JSON declares attachment support only in its details.
+    let svc = crate::notify::registry::from_url("json://localhost").unwrap();
+    assert!(svc.attachment_support());
+    let svc = crate::notify::registry::from_url("gotify://localhost/abcdefghijklmno").unwrap();
+    assert_eq!(svc.attachment_support(), svc.details().attachment_support);
+  }
+
+  #[test]
+  fn test_url_id() {
+    let svc = crate::notify::registry::from_url("json://user:pass@localhost/path/").unwrap();
+    assert_eq!(svc.source_url(), Some("json://user:pass@localhost/path/"));
+    let id = url_id(svc.as_ref(), b"", 8).unwrap();
+    assert_eq!(id.len(), 8);
+    assert_eq!(url_id(svc.as_ref(), b"", 0).unwrap().len(), 64);
+    // Query options do not change the namespace; credentials and salt do.
+    let same = crate::notify::registry::from_url("json://user:pass@localhost/path?retry=2").unwrap();
+    assert_eq!(url_id(same.as_ref(), b"", 8).unwrap(), id);
+    let other = crate::notify::registry::from_url("json://user:other@localhost/path/").unwrap();
+    assert_ne!(url_id(other.as_ref(), b"", 8).unwrap(), id);
+    assert_ne!(url_id(svc.as_ref(), b"salt", 8).unwrap(), id);
   }
 
   #[test]

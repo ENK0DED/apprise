@@ -422,7 +422,7 @@ pub fn from_parsed(parsed: &ParsedUrl) -> Option<Box<dyn Notify>> {
     tracing::error!("Could not load {} URL: {}", service_name(&parsed.schema), cwe312_url(&parsed.raw));
     return None;
   };
-  Some(Box::new(ConfiguredService::new(plugin, options)))
+  Some(Box::new(ConfiguredService::new(plugin, options).with_url(&parsed.raw)))
 }
 
 /// Whether a schema belongs to a registered plugin.

@@ -175,6 +175,9 @@ impl Notify for Blink1 {
     self.tags.clone()
   }
   // A light has no use for a title
+  fn request_rate_per_sec(&self) -> f64 {
+    0.0
+  }
   fn title_maxlen(&self) -> usize {
     0
   }

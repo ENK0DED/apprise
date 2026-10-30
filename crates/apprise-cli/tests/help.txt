@@ -1,0 +1,88 @@
+Usage:
+   apprise [OPTIONS] [APPRISE_URL [APPRISE_URL2 [APPRISE_URL3]]]
+   apprise storage [OPTIONS] [ACTION] [UID1 [UID2 [UID3]]]
+
+Send a notification to the services identified by their URLs
+the content provided within the title, body and notification-type.
+
+For a list of all of the supported services and information on how to use
+them, check out https://github.com/caronc/apprise
+
+Options:
+  -b, --body TEXT                 Specify the message body. If no body is
+                                  specified then content is read from <stdin>.
+  -t, --title TEXT                Specify the message title. This field is
+                                  completely optional.
+  -P, --plugin-path PATH          Specify one or more plugin paths to scan.
+  -S, --storage-path PATH         Specify the path to the persistent storage
+                                  location
+                                  (default=~/.local/share/apprise/cache).
+  -SPD, --storage-prune-days INTEGER
+                                  Define the number of days the storage prune
+                                  should run using. Setting this to zero (0)
+                                  will eliminate all accumulated content. By
+                                  default this value is 30 days.
+  -SUL, --storage-uid-length INTEGER
+                                  Define the number of unique characters to
+                                  store persistent cache in. By default this
+                                  value is 8 characters.
+  -SM, --storage-mode MODE        Specify the persistent storage operational
+                                  mode (default=auto). Possible values are:
+                                  "auto", "flush", "memory".
+  -c, --config CONFIG_URL         Specify one or more configuration locations.
+  -a, --attach ATTACHMENT_URL     Specify one or more attachments.
+  -n, --notification-type TYPE    Specify the message type (default=info).
+                                  Possible values are: "info", "success",
+                                  "warning", "failure".
+  -i, --input-format FORMAT       Specify the message input format
+                                  (default=text). Possible values are: "text",
+                                  "markdown", "html".
+  -T, --theme THEME               Specify the default theme.
+  -tv, --template-var NAME=VALUE  Supply a value used by a YAML configuration
+                                  written with ${NAME}. Use multiple
+                                  --template-var (-tv) entries for more than
+                                  one. A value not given here is looked for in
+                                  the configuration's own default and then in
+                                  APPRISE_TEMPLATE_<NAME>.
+  -g, --tag TAG                   Specify one or more tags to filter which
+                                  services to notify. Use multiple --tag (-g)
+                                  entries to match ANY tag. Use comma
+                                  separators to require ALL tags (strict
+                                  match). Omit to notify untagged services
+                                  only, or use "all" to notify everything.
+  -L, --limit SECONDS             Give up on the whole run if it's taking too
+                                  long, in seconds (whole number or decimal,
+                                  e.g. 2.5). By default (0) there is no limit
+                                  -- see --service-limit to cap each service
+                                  on its own instead.
+  -SL, --service-limit SECONDS    Give up on any single service if it's taking
+                                  too long, in seconds (whole number or
+                                  decimal, e.g. 2.5), or 0 to turn this off
+                                  entirely. Leave unset to use Apprise's own
+                                  default of 60 seconds.
+  -Da, --disable-async            Send all notifications sequentially
+  -d, --dry-run                   Perform a trial run but only prints the
+                                  notification services to-be triggered to
+                                  stdout. Notifications are never sent using
+                                  this mode.
+  -l, --details                   Prints details about the current services
+                                  supported by Apprise.
+  -R, --recursion-depth INTEGER   The number of recursive import entries that
+                                  can be loaded from within Apprise
+                                  configuration. By default this is set to 1.
+  -v, --verbose                   Makes the operation more talkative. Use
+                                  multiple v to increase the verbosity. I.e.:
+                                  -vvvv
+  -e, --interpret-escapes         Enable interpretation of backslash escapes
+  -j, --interpret-emojis          Enable interpretation of :emoji: definitions
+  -D, --debug                     Debug mode
+  -V, --version                   Display the apprise version and exit.
+  -h, --help                      Show this message and exit.
+
+Actions:
+  storage             Access the persistent storage disk administration
+    list              List all URL IDs associated with detected URL(s). This
+                      is also the default action run if nothing is provided
+    prune             Eliminates stale entries found based on --storage-prune-
+                      days (-SPD)
+    clean             Removes any persistent data created by Apprise

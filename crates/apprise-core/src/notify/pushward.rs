@@ -192,6 +192,8 @@ mod tests {
   use wiremock::matchers::{body_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
+  /// What upstream sends with the default asset (its GitHub-hosted theme).
+  const ICON_URL: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/default/apprise-info-128x128.png";
   const KEY: &str = "hlk_apikey1234567890";
 
   fn parse(url: &str) -> PushWard {
@@ -262,7 +264,7 @@ mod tests {
       .and(header("Authorization", format!("Bearer {}", KEY).as_str()))
       .and(header("Content-Type", "application/json; charset=utf-8"))
       .and(header("User-Agent", APP_ID))
-      .and(body_json(json!({"title": "title", "body": "body", "level": "critical", "volume": 0.5})))
+      .and(body_json(json!({"title": "title", "body": "body", "level": "critical", "icon_url": ICON_URL, "volume": 0.5})))
       .respond_with(ResponseTemplate::new(201))
       .expect(1)
       .mount(&server)
@@ -298,7 +300,7 @@ mod tests {
   async fn test_send_title_falls_back_to_app_id() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-      .and(body_json(json!({"title": "Apprise", "body": "body only", "level": "active"})))
+      .and(body_json(json!({"title": "Apprise", "body": "body only", "level": "active", "icon_url": ICON_URL})))
       .respond_with(ResponseTemplate::new(200))
       .expect(1)
       .mount(&server)

@@ -21,6 +21,8 @@ tracing.workspace = true
 thiserror.workspace = true
 base64.workspace = true
 dirs.workspace = true
+flate2.workspace = true
+mime_guess.workspace = true
 rand.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
@@ -43,13 +45,15 @@ fe2o3-amqp = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
 
 [features]
-default = ["mqtt", "amqp", "email", "yaml"]
+default = ["mqtt", "amqp", "email", "yaml", "images"]
 mqtt = []
 amqp = ["dep:fe2o3-amqp"]
 email = ["dep:lettre"]
 yaml = ["dep:serde_yaml"]
 desktop = ["dep:png", "dep:zbus", "dep:windows-sys"]
 blink1 = ["dep:hidapi"]
+# Bundle the default theme's PNG icons for AppriseAsset::image_raw() (~280 KB).
+images = []
 
 [target.'cfg(unix)'.dependencies]
 # p2p lets the tests talk to a fake notification service
@@ -59,6 +63,7 @@ zbus = { workspace = true, optional = true, features = ["p2p"] }
 windows-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 tokio-test.workspace = true
 tempfile.workspace = true

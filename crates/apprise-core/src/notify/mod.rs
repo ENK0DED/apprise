@@ -253,6 +253,30 @@ impl Default for NotifyContext {
   }
 }
 
+impl NotifyContext {
+  /// The icon URL for this notification's type at `image_size` (upstream
+  /// `NotifyBase.image_url()` with the plugin's `image_size`).
+  pub fn image_url(&self, image_size: crate::asset::NotifyImageSize) -> Option<String> {
+    self.asset.image_url(&self.notify_type, Some(image_size), false, None)
+  }
+
+  /// The logo URL (upstream `image_url(logo=True)`).
+  pub fn logo_url(&self) -> Option<String> {
+    self.asset.image_url(&self.notify_type, None, true, None)
+  }
+
+  /// The icon file for this notification's type, if one exists on disk
+  /// (upstream `NotifyBase.image_path()`).
+  pub fn image_path(&self, image_size: crate::asset::NotifyImageSize) -> Option<std::path::PathBuf> {
+    self.asset.image_path(&self.notify_type, image_size, true, None)
+  }
+
+  /// The icon's PNG bytes (upstream `NotifyBase.image_raw()`).
+  pub fn image_raw(&self, image_size: crate::asset::NotifyImageSize) -> Option<std::borrow::Cow<'static, [u8]>> {
+    self.asset.image_raw(&self.notify_type, image_size, None)
+  }
+}
+
 /// Information about a notification service for --details / --schema output
 #[derive(Debug, Clone)]
 pub struct ServiceDetails {
@@ -328,11 +352,15 @@ pub trait Notify: Send + Sync {
     250
   }
 
-  /// Request rate limit in requests per second (default: 1.0).
-  /// The orchestrator sleeps between sends to respect this.
-  /// Python default is 5.5 but we only throttle in sequential mode.
+  /// Minimum number of SECONDS between two consecutive requests from this
+  /// service instance (upstream's misnamed `request_rate_per_sec`; default
+  /// 5.5 as in upstream `NotifyBase`, `0` disables throttling).
+  ///
+  /// Plugins enforce it by calling [`throttle`] before each request. The
+  /// last-request time lives with the configured service, so it carries over
+  /// between pieces, retries and notifications.
   fn request_rate_per_sec(&self) -> f64 {
-    0.0
+    DEFAULT_REQUEST_INTERVAL
   }
 
   /// How to handle messages that exceed body_maxlen (default: Upstream).
@@ -359,14 +387,201 @@ pub trait Notify: Send + Sync {
   fn service_options(&self) -> Option<&ServiceOptions> {
     None
   }
+
+  /// The URL this service was loaded from, exactly as given. It may hold
+  /// secrets: mask it (`utils::cwe312::cwe312_loggable`) before showing it.
+  /// Only `ConfiguredService` returns `Some`.
+  fn source_url(&self) -> Option<&str> {
+    None
+  }
+
+  /// When this instance last made a request, for [`throttle`]. Only
+  /// `ConfiguredService` returns `Some`.
+  fn throttle_clock(&self) -> Option<ThrottleClock> {
+    None
+  }
+
+  /// The values that make this service distinct from a similar one, for
+  /// its persistent storage namespace (upstream `url_identifier`). Leave
+  /// targets out. `None` uses the URL's schema, credentials, host, port and
+  /// path.
+  fn url_identifier(&self) -> Option<Vec<String>> {
+    None
+  }
+}
+
+// ── Helper: throttle requests ────────────────────────────────────────────────
+
+/// Default seconds between requests of one service (upstream
+/// `NotifyBase.request_rate_per_sec`).
+pub const DEFAULT_REQUEST_INTERVAL: f64 = 5.5;
+
+/// When a service instance last made (or reserved) a request (upstream
+/// `URLBase._last_io_datetime`). Clones share the same clock.
+#[derive(Debug, Clone, Default)]
+pub struct ThrottleClock(std::sync::Arc<std::sync::Mutex<Option<tokio::time::Instant>>>);
+
+#[derive(Debug, Clone)]
+struct Throttle {
+  interval: f64,
+  clock: ThrottleClock,
+}
+
+tokio::task_local! {
+  static THROTTLE: Throttle;
+}
+
+#[cfg(test)]
+tokio::task_local! {
+  static THROTTLE_IN_TESTS: ();
+}
+
+/// Run `fut` with [`throttle`] using `interval` and `clock`. The
+/// orchestrator does this around every `send()`.
+pub(crate) async fn with_throttle<F: std::future::Future>(interval: f64, clock: ThrottleClock, fut: F) -> F::Output {
+  THROTTLE.scope(Throttle { interval, clock }, fut).await
+}
+
+/// Let [`throttle`] sleep inside `fut`. Unit tests skip throttling unless
+/// they opt in with this, as upstream's test fixtures zero the rate.
+#[cfg(test)]
+pub(crate) async fn with_throttling_in_tests<F: std::future::Future>(fut: F) -> F::Output {
+  THROTTLE_IN_TESTS.scope((), fut).await
+}
+
+/// Wait until this service may make its next request (upstream
+/// `URLBase.throttle()`). Call it before every request a plugin makes.
+///
+/// The first request of a service instance never waits. Later ones wait
+/// until [`Notify::request_rate_per_sec`] seconds have passed since the
+/// previous one. Outside a dispatch (a plugin called directly) this does
+/// nothing.
+pub async fn throttle() {
+  throttle_for(None).await
+}
+
+/// [`throttle`], but sleep exactly `wait` instead of the computed interval
+/// when one is given (upstream `throttle(wait=...)`, used to honour a
+/// service's rate-limit reset time). The first request still never waits.
+pub async fn throttle_for(wait: Option<std::time::Duration>) {
+  #[cfg(test)]
+  if THROTTLE_IN_TESTS.try_with(|_| ()).is_err() {
+    return;
+  }
+  let Ok(state) = THROTTLE.try_with(Throttle::clone) else { return };
+  let sleep = {
+    let mut last = state.clock.0.lock().unwrap_or_else(|e| e.into_inner());
+    let now = tokio::time::Instant::now();
+    let Some(previous) = *last else {
+      *last = Some(now);
+      return;
+    };
+    let interval = if state.interval.is_finite() && state.interval > 0.0 { state.interval } else { 0.0 };
+    if interval <= 0.0 && wait.is_none_or(|w| w.is_zero()) {
+      return;
+    }
+    let sleep = match wait {
+      Some(wait) => wait,
+      None => (previous + std::time::Duration::from_secs_f64(interval)).saturating_duration_since(now),
+    };
+    // Reserve the slot so a concurrent send of the same service queues
+    // behind this one.
+    *last = Some(now + sleep);
+    sleep
+  };
+  if !sleep.is_zero() {
+    tracing::debug!("Throttling for {:.3}s...", sleep.as_secs_f64());
+    tokio::time::sleep(sleep).await;
+  }
 }
 
 // ── Helper: build a reqwest client ───────────────────────────────────────────
 
+/// Socket connect timeout used when a URL sets no `?cto=`, in seconds
+/// (upstream `URLBase.socket_connect_timeout`).
+pub const DEFAULT_CONNECT_TIMEOUT: f64 = 4.0;
+
+/// Socket read timeout used when a URL sets no `?rto=`, in seconds
+/// (upstream `URLBase.socket_read_timeout`).
+pub const DEFAULT_READ_TIMEOUT: f64 = 4.0;
+
+/// Redirects followed before giving up (the `requests` default).
+const MAX_REDIRECTS: usize = 30;
+
+/// The HTTP settings of the service currently being sent, taken from its
+/// URL (`?cto=`, `?rto=`, `?redirect=`, `?verify=`) and the asset. The
+/// orchestrator sets them around every `send()`, so [`build_client`] picks
+/// them up without the plugin passing them along.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HttpOptions {
+  /// Connect timeout in seconds; `None` uses the plugin or global default.
+  pub connect_timeout: Option<f64>,
+  /// Read timeout in seconds; `None` uses the plugin or global default.
+  pub read_timeout: Option<f64>,
+  /// Follow 3xx redirects; `None` follows them.
+  pub redirect: Option<bool>,
+  /// Verify TLS certificates; `None` leaves it to the plugin.
+  pub verify: Option<bool>,
+}
+
+tokio::task_local! {
+  static HTTP_OPTIONS: HttpOptions;
+}
+
+/// Run `fut` with [`build_client`] honouring `options`.
+pub async fn with_http_options<F: std::future::Future>(options: HttpOptions, fut: F) -> F::Output {
+  HTTP_OPTIONS.scope(options, fut).await
+}
+
+/// The HTTP settings of the service being sent, if the orchestrator set any.
+pub fn current_http_options() -> HttpOptions {
+  HTTP_OPTIONS.try_with(|o| o.clone()).unwrap_or_default()
+}
+
+/// Defaults a plugin can give [`build_client_with`] when upstream's class
+/// uses other timeouts than the global ones (for example Apprise API reads
+/// for 30 s). A URL's `?cto=` and `?rto=` still win.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClientDefaults {
+  pub connect_timeout: f64,
+  pub read_timeout: f64,
+}
+
+impl Default for ClientDefaults {
+  fn default() -> Self {
+    Self { connect_timeout: DEFAULT_CONNECT_TIMEOUT, read_timeout: DEFAULT_READ_TIMEOUT }
+  }
+}
+
+/// Build an HTTP client for the service being sent.
+///
+/// Timeouts, redirect handling and certificate checks follow the service's
+/// URL options (`?cto=`, `?rto=`, `?redirect=`, `?verify=`), defaulting to
+/// upstream's 4 s connect and 4 s read timeouts. `verify_cert` is the
+/// plugin's own choice; either it or `?verify=no` turns verification off.
 pub fn build_client(verify_cert: bool) -> Result<reqwest::Client, NotifyError> {
+  build_client_with(verify_cert, ClientDefaults::default())
+}
+
+/// [`build_client`] with plugin-specific default timeouts.
+pub fn build_client_with(verify_cert: bool, defaults: ClientDefaults) -> Result<reqwest::Client, NotifyError> {
+  client_builder(verify_cert, defaults).build().map_err(NotifyError::Http)
+}
+
+/// The builder behind [`build_client_with`], for plugins that need to add
+/// settings of their own before building.
+pub fn client_builder(verify_cert: bool, defaults: ClientDefaults) -> reqwest::ClientBuilder {
   crate::ensure_crypto_provider();
-  let builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).danger_accept_invalid_certs(!verify_cert);
-  builder.build().map_err(NotifyError::Http)
+  let options = current_http_options();
+  let connect = options.connect_timeout.filter(|t| t.is_finite() && *t > 0.0).unwrap_or(defaults.connect_timeout);
+  let read = options.read_timeout.filter(|t| t.is_finite() && *t > 0.0).unwrap_or(defaults.read_timeout);
+  let verify = verify_cert && options.verify.unwrap_or(true);
+  let redirect = if options.redirect.unwrap_or(true) { reqwest::redirect::Policy::limited(MAX_REDIRECTS) } else { reqwest::redirect::Policy::none() };
+  reqwest::Client::builder()
+    .connect_timeout(std::time::Duration::from_secs_f64(connect))
+    .read_timeout(std::time::Duration::from_secs_f64(read))
+    .redirect(redirect)
+    .danger_accept_invalid_certs(!verify)
 }
 
 pub const APP_ID: &str = concat!("Apprise/", env!("CARGO_PKG_VERSION"));

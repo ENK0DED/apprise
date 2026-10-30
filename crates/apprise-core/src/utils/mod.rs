@@ -6,6 +6,7 @@ pub mod email;
 pub mod emoji;
 pub mod escape;
 pub mod format;
+pub mod http;
 pub mod locale;
 pub mod parse;
 pub mod pem;

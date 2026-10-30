@@ -126,6 +126,9 @@ impl Notify for Kodi {
     self.tags.clone()
   }
   // Anything past the first two lines is too much to display
+  fn request_rate_per_sec(&self) -> f64 {
+    0.0
+  }
   fn body_max_line_count(&self) -> usize {
     2
   }

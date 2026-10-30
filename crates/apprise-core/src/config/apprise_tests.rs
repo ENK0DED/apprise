@@ -1,8 +1,11 @@
 //! Tests of the `Apprise` methods that load URLs and configuration.
 
+#[cfg(feature = "yaml")]
 use std::collections::HashMap;
 
 use crate::Apprise;
+
+#[cfg(feature = "email")]
 
 #[test]
 fn test_add_splits_url_lists() {
@@ -46,6 +49,8 @@ async fn test_add_config_group_alias() {
   assert_eq!(a.filtered_len(), 1);
 }
 
+#[cfg(feature = "yaml")]
+
 #[tokio::test]
 async fn test_add_config_yaml_groups() {
   let mut a = Apprise::new();
@@ -65,6 +70,8 @@ async fn test_add_config_malformed_yaml_fails_closed() {
   assert!(a.add_config(&cfg.to_string_lossy(), 1).await.is_err());
   assert!(a.is_empty());
 }
+
+#[cfg(feature = "yaml")]
 
 #[tokio::test]
 async fn test_templates_wait_for_values() {

@@ -428,7 +428,7 @@ mod tests {
     .unwrap();
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx(NotifyFormat::Text))).await.unwrap());
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
     assert_eq!(reqs.len(), 2);
     let first = form(&reqs[0].body);
     assert_eq!(

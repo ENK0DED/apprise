@@ -39,6 +39,12 @@ base64 = "0.22"
 # System paths
 dirs = "6"
 
+# Compression (persistent storage files, pure Rust backend)
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+# MIME type detection from file names (already used by reqwest multipart)
+mime_guess = "2"
+
 # Random
 rand = "0.10"
 
