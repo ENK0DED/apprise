@@ -33,7 +33,7 @@ pub use html::{
   BLOCKQUOTE_DEPTH_MAX, HtmlTagReducer, LIST_DEPTH_MAX, MAX_FRAME_DEPTH, TagReducer, html_to_markdown, html_to_text, reduce_with, reducer_end,
   reducer_handle_starttag, reducer_line, reducer_start, reducer_text,
 };
-pub use markdown::{MarkdownExtension, markdown_to_html, markdown_to_html_with};
+pub use markdown::{DEFAULT_EXTENSIONS, MarkdownExtension, markdown_to_html, markdown_to_html_with};
 pub use pyhtml::Attrs;
 
 use crate::types::NotifyFormat;
