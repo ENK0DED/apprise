@@ -74,6 +74,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(kumulos::Kumulos::static_details());
   collect!(lametric::LaMetric::static_details());
   collect!(lark::Lark::static_details());
+  collect!(lauther::Lauther::static_details());
   collect!(line::Line::static_details());
   collect!(mailgun::Mailgun::static_details());
   collect!(mastodon::Mastodon::static_details());
@@ -223,6 +224,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(kumulos::Kumulos::from_url, "kumulos");
   reg!(lametric::LaMetric::from_url, "lametric", "lametrics");
   reg!(lark::Lark::from_url, "lark");
+  reg!(lauther::Lauther::from_url, "lauther");
   reg!(line::Line::from_url, "line");
   reg!(mailgun::Mailgun::from_url, "mailgun");
   reg!(mastodon::Mastodon::from_url, "mastodon", "toot", "mastodons", "toots");

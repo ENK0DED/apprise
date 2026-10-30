@@ -61,6 +61,7 @@ pub mod kavenegar;
 pub mod kumulos;
 pub mod lametric;
 pub mod lark;
+pub mod lauther;
 pub mod line;
 pub mod mailgun;
 pub mod mastodon;
