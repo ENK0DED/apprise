@@ -291,11 +291,15 @@ pub trait Notify: Send + Sync {
     250
   }
 
-  /// Request rate limit in requests per second (default: 1.0).
-  /// The orchestrator sleeps between sends to respect this.
-  /// Python default is 5.5 but we only throttle in sequential mode.
+  /// Minimum number of SECONDS between two consecutive requests from this
+  /// service instance (upstream's misnamed `request_rate_per_sec`; default
+  /// 5.5 as in upstream `NotifyBase`, `0` disables throttling).
+  ///
+  /// Plugins enforce it by calling [`throttle`] before each request. The
+  /// last-request time lives with the configured service, so it carries over
+  /// between pieces, retries and notifications.
   fn request_rate_per_sec(&self) -> f64 {
-    0.0
+    DEFAULT_REQUEST_INTERVAL
   }
 
   /// How to handle messages that exceed body_maxlen (default: Upstream).
@@ -330,12 +334,103 @@ pub trait Notify: Send + Sync {
     None
   }
 
+  /// When this instance last made a request, for [`throttle`]. Only
+  /// `ConfiguredService` returns `Some`.
+  fn throttle_clock(&self) -> Option<ThrottleClock> {
+    None
+  }
+
   /// The values that make this service distinct from a similar one, for
   /// its persistent storage namespace (upstream `url_identifier`). Leave
   /// targets out. `None` uses the URL's schema, credentials, host, port and
   /// path.
   fn url_identifier(&self) -> Option<Vec<String>> {
     None
+  }
+}
+
+// ── Helper: throttle requests ────────────────────────────────────────────────
+
+/// Default seconds between requests of one service (upstream
+/// `NotifyBase.request_rate_per_sec`).
+pub const DEFAULT_REQUEST_INTERVAL: f64 = 5.5;
+
+/// When a service instance last made (or reserved) a request (upstream
+/// `URLBase._last_io_datetime`). Clones share the same clock.
+#[derive(Debug, Clone, Default)]
+pub struct ThrottleClock(std::sync::Arc<std::sync::Mutex<Option<tokio::time::Instant>>>);
+
+#[derive(Debug, Clone)]
+struct Throttle {
+  interval: f64,
+  clock: ThrottleClock,
+}
+
+tokio::task_local! {
+  static THROTTLE: Throttle;
+}
+
+#[cfg(test)]
+tokio::task_local! {
+  static THROTTLE_IN_TESTS: ();
+}
+
+/// Run `fut` with [`throttle`] using `interval` and `clock`. The
+/// orchestrator does this around every `send()`.
+pub(crate) async fn with_throttle<F: std::future::Future>(interval: f64, clock: ThrottleClock, fut: F) -> F::Output {
+  THROTTLE.scope(Throttle { interval, clock }, fut).await
+}
+
+/// Let [`throttle`] sleep inside `fut`. Unit tests skip throttling unless
+/// they opt in with this, as upstream's test fixtures zero the rate.
+#[cfg(test)]
+pub(crate) async fn with_throttling_in_tests<F: std::future::Future>(fut: F) -> F::Output {
+  THROTTLE_IN_TESTS.scope((), fut).await
+}
+
+/// Wait until this service may make its next request (upstream
+/// `URLBase.throttle()`). Call it before every request a plugin makes.
+///
+/// The first request of a service instance never waits. Later ones wait
+/// until [`Notify::request_rate_per_sec`] seconds have passed since the
+/// previous one. Outside a dispatch (a plugin called directly) this does
+/// nothing.
+pub async fn throttle() {
+  throttle_for(None).await
+}
+
+/// [`throttle`], but sleep exactly `wait` instead of the computed interval
+/// when one is given (upstream `throttle(wait=...)`, used to honour a
+/// service's rate-limit reset time). The first request still never waits.
+pub async fn throttle_for(wait: Option<std::time::Duration>) {
+  #[cfg(test)]
+  if THROTTLE_IN_TESTS.try_with(|_| ()).is_err() {
+    return;
+  }
+  let Ok(state) = THROTTLE.try_with(Throttle::clone) else { return };
+  let sleep = {
+    let mut last = state.clock.0.lock().unwrap_or_else(|e| e.into_inner());
+    let now = tokio::time::Instant::now();
+    let Some(previous) = *last else {
+      *last = Some(now);
+      return;
+    };
+    let interval = if state.interval.is_finite() && state.interval > 0.0 { state.interval } else { 0.0 };
+    if interval <= 0.0 && wait.is_none_or(|w| w.is_zero()) {
+      return;
+    }
+    let sleep = match wait {
+      Some(wait) => wait,
+      None => (previous + std::time::Duration::from_secs_f64(interval)).saturating_duration_since(now),
+    };
+    // Reserve the slot so a concurrent send of the same service queues
+    // behind this one.
+    *last = Some(now + sleep);
+    sleep
+  };
+  if !sleep.is_zero() {
+    tracing::debug!("Throttling for {:.3}s...", sleep.as_secs_f64());
+    tokio::time::sleep(sleep).await;
   }
 }
 

@@ -26,7 +26,7 @@ use tokio::time::Instant;
 use crate::asset::AppriseAsset;
 use crate::error::NotifyError;
 use crate::notify::options::{MAX_SERVICE_RETRY, MAX_SERVICE_WAIT};
-use crate::notify::{HttpOptions, Notify, NotifyContext, with_http_options};
+use crate::notify::{HttpOptions, Notify, NotifyContext, with_http_options, with_throttle};
 use crate::prepare::prepare_contexts;
 use crate::result::{NotifyAttempt, ResultStatus, SendResult, ServiceResult, aggregate_status};
 use crate::tag::{AppriseTag, TagFilter, parse_service_tags};
@@ -312,15 +312,14 @@ async fn run_service(call: &Call<'_>, ctx: &NotifyContext, opts: &DispatchOption
   let total = retry + 1;
   let http = http_options(call, opts);
   let pieces = prepare_contexts(call.svc, ctx);
-  let rate = call.svc.request_rate_per_sec();
-  let min_interval = (rate.is_finite() && rate > 0.0).then(|| Duration::from_secs_f64(1.0 / rate));
+  let interval = call.svc.request_rate_per_sec();
+  let clock = call.svc.throttle_clock().unwrap_or_default();
 
   let run = async {
     let started = Instant::now();
     let mut attempts = Vec::with_capacity(total as usize);
     // Pieces already accepted are not sent again by a retry.
     let mut accepted = vec![false; pieces.len()];
-    let mut last_send: Option<Instant> = None;
     for attempt in 0..total {
       if deadline.is_some_and(|d| Instant::now() >= d) {
         tracing::trace!("Deadline already passed for '{}'; skipping attempt {}/{}.", name, attempt + 1, total);
@@ -336,12 +335,8 @@ async fn run_service(call: &Call<'_>, ctx: &NotifyContext, opts: &DispatchOption
           tracing::debug!("{} already accepted this message piece; skipping.", name);
           continue;
         }
-        if let (Some(interval), Some(last)) = (min_interval, last_send) {
-          tokio::time::sleep_until(last + interval).await;
-        }
-        last_send = Some(Instant::now());
         set_piece(index);
-        match with_http_options(http.clone(), call.svc.send(piece)).await {
+        match with_throttle(interval, clock.clone(), with_http_options(http.clone(), call.svc.send(piece))).await {
           Ok(true) => accepted[index] = true,
           Ok(false) => {
             tracing::warn!("Failed to send {} notification.", name);
@@ -1006,5 +1001,94 @@ mod tests {
     // store=no keeps the second service in memory only.
     let other = a.url_id(a.services[1].as_ref()).unwrap();
     assert!(!tmp.path().join(other).exists());
+  }
+
+  /// A plugin making `requests` requests per send, throttled.
+  struct Throttled {
+    interval: f64,
+    requests: usize,
+    wait: Option<Duration>,
+  }
+
+  #[async_trait]
+  impl Notify for Throttled {
+    fn schemas(&self) -> &[&str] {
+      &["throttled"]
+    }
+    fn service_name(&self) -> &str {
+      "Throttled"
+    }
+    fn details(&self) -> ServiceDetails {
+      ServiceDetails { service_name: "Throttled", service_url: None, setup_url: None, protocols: vec!["throttled"], description: "", attachment_support: false }
+    }
+    fn request_rate_per_sec(&self) -> f64 {
+      self.interval
+    }
+    async fn send(&self, _ctx: &NotifyContext) -> Result<bool, NotifyError> {
+      for _ in 0..self.requests {
+        crate::notify::throttle_for(self.wait).await;
+      }
+      Ok(true)
+    }
+  }
+
+  fn throttled(interval: f64, requests: usize, wait: Option<Duration>) -> Apprise {
+    let options = ServiceOptions::from_url(&ParsedUrl::parse("throttled://x").unwrap()).unwrap();
+    apprise(vec![Box::new(ConfiguredService::new(Box::new(Throttled { interval, requests, wait }), options))])
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn test_throttle_spaces_requests_per_instance() {
+    let a = throttled(2.0, 3, None);
+    crate::notify::with_throttling_in_tests(async {
+      // The first request never waits; the next two wait two seconds each.
+      let started = Instant::now();
+      assert!(a.notify(&ctx()).await.is_success());
+      assert_eq!(started.elapsed(), Duration::from_secs(4));
+      // The clock carries over to the next notification.
+      let started = Instant::now();
+      assert!(a.notify(&ctx()).await.is_success());
+      assert_eq!(started.elapsed(), Duration::from_secs(6));
+      // After a long pause there is nothing left to wait for.
+      tokio::time::sleep(Duration::from_secs(10)).await;
+      let started = Instant::now();
+      a.notify(&ctx()).await;
+      assert_eq!(started.elapsed(), Duration::from_secs(4));
+    })
+    .await;
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn test_throttle_forced_wait_and_disabled_interval() {
+    let a = throttled(0.0, 3, None);
+    crate::notify::with_throttling_in_tests(async {
+      let started = Instant::now();
+      a.notify(&ctx()).await;
+      assert_eq!(started.elapsed(), Duration::ZERO);
+    })
+    .await;
+    // A forced wait applies even with throttling disabled, after the first
+    // request.
+    let a = throttled(0.0, 3, Some(Duration::from_secs(3)));
+    crate::notify::with_throttling_in_tests(async {
+      let started = Instant::now();
+      a.notify(&ctx()).await;
+      assert_eq!(started.elapsed(), Duration::from_secs(6));
+    })
+    .await;
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn test_throttle_is_a_no_op_in_tests_and_outside_dispatch() {
+    let a = throttled(5.5, 3, None);
+    let started = Instant::now();
+    a.notify(&ctx()).await;
+    assert_eq!(started.elapsed(), Duration::ZERO);
+    crate::notify::with_throttling_in_tests(async {
+      let started = Instant::now();
+      Throttled { interval: 5.5, requests: 3, wait: None }.send(&ctx()).await.unwrap();
+      assert_eq!(started.elapsed(), Duration::ZERO);
+    })
+    .await;
   }
 }

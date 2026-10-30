@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 
 use crate::error::NotifyError;
-use crate::notify::{Notify, NotifyContext, OverflowMode, ServiceDetails};
+use crate::notify::{Notify, NotifyContext, OverflowMode, ServiceDetails, ThrottleClock};
 use crate::types::NotifyFormat;
 use crate::utils::parse::{ParsedUrl, parse_bool};
 
@@ -123,11 +123,12 @@ pub struct ConfiguredService {
   inner: Box<dyn Notify>,
   options: ServiceOptions,
   url: Option<String>,
+  clock: ThrottleClock,
 }
 
 impl ConfiguredService {
   pub fn new(inner: Box<dyn Notify>, options: ServiceOptions) -> Self {
-    Self { inner, options, url: None }
+    Self { inner, options, url: None, clock: ThrottleClock::default() }
   }
 
   /// Remember the URL the service was loaded from (for masked display and
@@ -219,6 +220,9 @@ impl Notify for ConfiguredService {
   }
   fn url_identifier(&self) -> Option<Vec<String>> {
     self.inner.url_identifier()
+  }
+  fn throttle_clock(&self) -> Option<ThrottleClock> {
+    Some(self.inner.throttle_clock().unwrap_or_else(|| self.clock.clone()))
   }
 }
 
