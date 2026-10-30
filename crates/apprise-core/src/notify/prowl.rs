@@ -1,7 +1,6 @@
 use crate::error::NotifyError;
 use crate::notify::{Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{split_path, unquote};
 use async_trait::async_trait;
 
 /// Upstream `PROWL_PRIORITY_MAP`, checked in order against the start of the
@@ -23,14 +22,14 @@ fn is_prowl_key(key: &str) -> bool {
 
 impl Prowl {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let apikey = unquote(url.host.as_deref()?).trim().to_string();
+    let apikey = url.host.as_deref()?.trim().to_string();
     if !is_prowl_key(&apikey) {
       tracing::warn!("An invalid Prowl API Key was specified.");
       return None;
     }
 
     // Only the first path entry is the provider key
-    let providerkey = split_path(url).into_iter().next().map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+    let providerkey = url.path_parts.first().map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
     if let Some(key) = &providerkey
       && !is_prowl_key(key)
     {
@@ -83,6 +82,10 @@ impl Notify for Prowl {
   fn title_maxlen(&self) -> usize {
     1024
   }
+  /// Upstream does not throttle Prowl
+  fn request_rate_per_sec(&self) -> f64 {
+    0.0
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let priority = self.priority.to_string();
@@ -98,6 +101,7 @@ impl Notify for Prowl {
     }
 
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client
       .post(format!("{}/publicapi/add", service_base("https://api.prowlapp.com")))
       .header("User-Agent", crate::notify::APP_ID)
@@ -207,6 +211,7 @@ mod tests {
     let svc = from_url(&format!("prowl://{}", "a".repeat(40))).unwrap();
     assert_eq!(svc.body_maxlen(), 10000);
     assert_eq!(svc.title_maxlen(), 1024);
+    assert_eq!(svc.request_rate_per_sec(), 0.0);
   }
 
   #[tokio::test]
@@ -250,7 +255,7 @@ mod tests {
   async fn test_send_failure() {
     for status in [406, 500, 999] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/publicapi/add")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("prowl://{}", "a".repeat(40))).unwrap();
       let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.is_err(), "status {}", status);

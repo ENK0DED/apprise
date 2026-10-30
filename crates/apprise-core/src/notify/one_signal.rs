@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::base64::decode_b64_dict;
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{email_address, parse_list, prefixed_args, qsd_bool, split_path, unquote};
+use crate::utils::email::{is_email, parse_list};
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 
@@ -37,18 +37,20 @@ pub struct OneSignal {
 
 impl OneSignal {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(str::to_string);
+    // Upstream unquotes these query values once more
+    let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(unquote);
+    let qsd_bool = |k: &str, default: bool| url.get(k).map(parse_bool).unwrap_or(default);
     // validate_regex(): the first non-whitespace run
     let token = |v: &str| v.split_whitespace().next().map(str::to_string);
 
     // {template}:{app}@{apikey} or {app}@{apikey}
     let (app, template) = match url.password.as_deref().filter(|p| !p.is_empty()) {
-      Some(password) => (unquote(password), url.user.as_deref().map(unquote)),
-      None => (url.user.as_deref().map(unquote).unwrap_or_default(), None),
+      Some(password) => (password.to_string(), url.user.clone()),
+      None => (url.user.clone().unwrap_or_default(), None),
     };
     let app = qsd("app").unwrap_or(app);
     let template_id = qsd("template").or(template).filter(|t| !t.is_empty());
-    let apikey = qsd("apikey").unwrap_or_else(|| url.host.as_deref().map(unquote).unwrap_or_default());
+    let apikey = qsd("apikey").unwrap_or_else(|| url.host.clone().unwrap_or_default());
 
     let Some(apikey) = token(&apikey) else {
       tracing::warn!("An invalid OneSignal API key was specified.");
@@ -72,12 +74,13 @@ impl OneSignal {
       None => "en".to_string(),
     };
 
-    let mut entries = split_path(url);
-    if let Some(to) = qsd("to") {
-      entries.push(to);
+    let mut entries = url.path_parts.clone();
+    if let Some(to) = url.get("to").filter(|v| !v.is_empty()) {
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      entries.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
     let mut targets: HashMap<&'static str, Vec<String>> = CATEGORIES.iter().map(|c| (*c, Vec::new())).collect();
-    for target in parse_list(entries, true, true) {
+    for target in parse_list(&entries) {
       let target = target.trim();
       if target.chars().count() < 2 {
         tracing::debug!("Ignoring OneSignal Entry: {}", target);
@@ -87,7 +90,7 @@ impl OneSignal {
         (USER, target.to_string())
       } else if target.starts_with('#') {
         (SEGMENT, target.to_string())
-      } else if let Some(email) = email_address(target) {
+      } else if let Some(email) = is_email(target).map(|e| e.full_email) {
         (EMAIL, email)
       } else {
         (PLAYER, target.to_string())
@@ -95,10 +98,10 @@ impl OneSignal {
       targets.get_mut(category).unwrap().push(value);
     }
 
-    let decode = qsd_bool(url, "decode", false);
-    let custom: HashMap<String, Value> = prefixed_args(url, ':').into_iter().map(|(k, v)| (k, Value::String(v))).collect();
+    let decode = qsd_bool("decode", false);
+    let custom: HashMap<String, Value> = url.qsd_colon.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
     let custom = if decode { decode_b64_dict(&custom) } else { custom };
-    let postback_data: Map<String, Value> = prefixed_args(url, '+').into_iter().map(|(k, v)| (k, Value::String(v))).collect();
+    let postback_data: Map<String, Value> = url.qsd_add.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
 
     Some(Self {
       apikey,
@@ -106,9 +109,9 @@ impl OneSignal {
       template_id,
       subtitle: qsd("subtitle"),
       language,
-      include_image: qsd_bool(url, "image", true),
-      use_contents: qsd_bool(url, "contents", true),
-      batch_size: if qsd_bool(url, "batch", false) { DEFAULT_BATCH_SIZE } else { 1 },
+      include_image: qsd_bool("image", true),
+      use_contents: qsd_bool("contents", true),
+      batch_size: if qsd_bool("batch", false) { DEFAULT_BATCH_SIZE } else { 1 },
       targets,
       custom_data: custom.into_iter().collect(),
       postback_data,
@@ -187,7 +190,13 @@ impl Notify for OneSignal {
     let mut sent_count = 0;
 
     for category in CATEGORIES {
-      for batch in self.targets[category].chunks(self.batch_size) {
+      for (index, batch) in self.targets[category].chunks(self.batch_size).enumerate() {
+        // A retry skips batches that already went out, still counting them
+        let key = format!("{}:{}", category, index);
+        if crate::delivery::is_delivered(&key, false) {
+          sent_count += batch.len();
+          continue;
+        }
         // Users and segments are sent without their prefix
         let batch: Vec<&str> = batch.iter().map(|t| if matches!(category, USER | SEGMENT) { &t[1..] } else { t.as_str() }).collect();
         let mut data = payload.clone();
@@ -195,6 +204,7 @@ impl Notify for OneSignal {
         sent_count += batch.len();
 
         tracing::debug!("OneSignal POST URL: {} (cert_verify={})", url, self.verify_certificate);
+        crate::notify::throttle().await;
         let result = client
           .post(&url)
           .header("User-Agent", APP_ID)
@@ -204,7 +214,10 @@ impl Notify for OneSignal {
           .send()
           .await;
         match result {
-          Ok(resp) if matches!(resp.status().as_u16(), 200 | 204) => tracing::info!("Sent OneSignal notification."),
+          Ok(resp) if matches!(resp.status().as_u16(), 200 | 204) => {
+            tracing::info!("Sent OneSignal notification.");
+            crate::delivery::mark_delivered(&key, false);
+          }
           Ok(resp) => {
             let reason = resp.status().canonical_reason().unwrap_or("");
             tracing::warn!("Failed to send OneSignal notification: {}{}error={}.", reason, if reason.is_empty() { "" } else { ", " }, resp.status().as_u16());
@@ -212,7 +225,7 @@ impl Notify for OneSignal {
           }
           Err(e) => {
             tracing::warn!("A Connection error occurred sending OneSignal notification.");
-            tracing::debug!("Socket Exception: {}", e);
+            tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
             has_error = true;
           }
         }
@@ -232,7 +245,7 @@ mod tests {
   use super::*;
   use crate::notify::registry::from_url;
   use crate::types::NotifyType;
-  use wiremock::matchers::{header, method, path};
+  use wiremock::matchers::{body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn onesignal(url: &str) -> OneSignal {
@@ -328,7 +341,7 @@ mod tests {
       "small_icon": "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/default/apprise-success-32x32.png",
     });
     let expected = [(PLAYER, "p2"), (PLAYER, "player"), (EMAIL, "user@email.com"), (USER, "user"), (SEGMENT, "seg")];
-    let requests = server.received_requests().await.unwrap();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/notifications").await;
     for (request, (category, target)) in requests.iter().zip(expected) {
       let mut want = base.clone();
       want[category] = json!([target]);
@@ -339,11 +352,11 @@ mod tests {
   #[tokio::test]
   async fn test_send_batches_and_contents() {
     let server = MockServer::builder().start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(204)).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path("/notifications")).respond_with(ResponseTemplate::new(204)).expect(2).mount(&server).await;
     let svc = from_url("onesignal://appid@apikey/pid1/pid2/@u1/@u2?batch=yes&image=no").unwrap();
     let ctx = NotifyContext { body: "B".into(), ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
-    let requests = server.received_requests().await.unwrap();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/notifications").await;
     assert_eq!(
       serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
       json!({"app_id": "appid", "contents": {"en": "B"}, "content_available": true, "include_player_ids": ["pid1", "pid2"]})
@@ -358,7 +371,7 @@ mod tests {
     assert!(!from_url("onesignal://appid@apikey/").unwrap().send(&ctx).await.unwrap());
     for status in [500, 999, 201] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
+      Mock::given(method("POST")).and(path("/notifications")).respond_with(ResponseTemplate::new(status)).expect(2).mount(&server).await;
       let svc = from_url("onesignal://appid@apikey/p1/p2").unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "status {}", status);
     }
@@ -370,5 +383,32 @@ mod tests {
     assert_eq!(details.service_name, "OneSignal");
     assert!(details.protocols.contains(&"onesignal"));
     assert_eq!(details.service_url, Some("https://onesignal.com"));
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second batch fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/notifications"))
+      .and(body_partial_json(json!({"include_external_user_ids": ["u1"]})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/notifications")).respond_with(ResponseTemplate::new(204)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("onesignal://appid@apikey/pid1/@u1?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { body: "B".into(), ..Default::default() })).await.is_success());
+    let sent: Vec<Value> = crate::notify::custom_json::requests_to(&server, "POST", "/notifications")
+      .await
+      .iter()
+      .map(|r| {
+        let b: Value = serde_json::from_slice(&r.body).unwrap();
+        b.get(PLAYER).or_else(|| b.get(USER)).cloned().unwrap()
+      })
+      .collect();
+    assert_eq!(sent, vec![json!(["pid1"]), json!(["u1"]), json!(["u1"])]);
   }
 }

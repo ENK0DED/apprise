@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{is_uuid4, unquote};
+use crate::utils::plugin_args::is_uuid4;
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -14,7 +14,7 @@ pub struct TechulusPush {
 impl TechulusPush {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // API keys are UUID4 strings
-    let apikey = url.host.as_deref().map(unquote).unwrap_or_default().trim().to_string();
+    let apikey = url.host.clone().unwrap_or_default().trim().to_string();
     if !is_uuid4(&apikey) {
       tracing::warn!("An invalid Techulus Push API key was specified.");
       return None;
@@ -56,6 +56,7 @@ impl Notify for TechulusPush {
     let payload = json!({ "title": ctx.title, "body": ctx.body });
     let url = format!("{}/api/v1/notify", service_base("https://push.techulus.com"));
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client
       .post(&url)
       .header("User-Agent", APP_ID)
@@ -116,7 +117,7 @@ mod tests {
   async fn test_send_failure() {
     for status in [500, 999] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/api/v1/notify")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), from_url(&format!("push://{}", UUID4)).unwrap().send(&ctx)).await.is_err());
     }

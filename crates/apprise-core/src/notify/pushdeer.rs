@@ -1,7 +1,6 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{split_path, unquote};
 use async_trait::async_trait;
 
 /// The public PushDeer server, used when the URL names no host.
@@ -20,10 +19,9 @@ impl PushDeer {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // pushdeer://{pushkey} or pushdeer://{host}[:{port}]/{pushkey}; the
     // last path entry is the key
-    let mut paths = split_path(url);
-    let (push_key, host) = match paths.pop() {
-      Some(key) => (key, url.host.clone().filter(|h| !h.is_empty())),
-      None => (url.host.as_deref().map(unquote).unwrap_or_default(), None),
+    let (push_key, host) = match url.path_parts.last() {
+      Some(key) => (key.clone(), url.host.clone()),
+      None => (url.host.clone().unwrap_or_default(), None),
     };
     let push_key = push_key.trim().to_string();
     if push_key.is_empty() || !push_key.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -80,6 +78,7 @@ impl Notify for PushDeer {
     let form =
       [("text", if has_title { ctx.title.as_str() } else { ctx.body.as_str() }), ("type", "text"), ("desp", if has_title { ctx.body.as_str() } else { "" })];
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client.post(&url).header("User-Agent", APP_ID).form(&form).send().await?;
     let status = resp.status();
     if status.as_u16() == 200 {
@@ -155,7 +154,7 @@ mod tests {
   async fn test_send_failure() {
     for status in [500, 999] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/message/push")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), from_url("pushdeer://abc123").unwrap().send(&ctx)).await.is_err());
     }

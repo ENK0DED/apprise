@@ -5,12 +5,12 @@
 //! browser issued (RFC 8030), with a VAPID ES256 JWT addressed to that
 //! endpoint's origin (RFC 8292).
 //!
-//! Upstream keeps the private key and `subscriptions.json` in the plugin's
-//! persistent storage directory (and can generate them there) when no
-//! `?keyfile=` / `?subfile=` is given. This port has no per-plugin storage
-//! yet, so both files must be given on the URL. Endpoints that expired in a
-//! subscription file that cannot be rewritten are remembered in memory for
-//! the lifetime of the service object, as upstream does in memory-only mode.
+//! Without `?keyfile=` / `?subfile=` the private key and `subscriptions.json`
+//! live in the plugin's persistent storage directory, as upstream keeps
+//! them: a missing key pair is generated there and a starter subscription
+//! file written for the user to fill in. Endpoints that expired in a
+//! subscription file that cannot be rewritten are remembered in the
+//! persistent store for 30 days (in memory when there is no store).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -26,9 +26,19 @@ use tokio::sync::Mutex;
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
+use crate::utils::email::{is_email, parse_list};
 use crate::utils::keyfile::{pem_blocks, read_source};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{email_address, parse_list, split_path, unquote};
+use crate::utils::parse::{ParsedUrl, unquote};
+use crate::utils::pem::{find_private_keyfile, find_public_keyfile};
+
+/// Store key of the endpoints retired from a read-only subscription file.
+const RETIRED_KEY: &str = "retired";
+
+/// How long retired endpoints are remembered without updates (30 days).
+const RETIRED_EXPIRY: std::time::Duration = std::time::Duration::from_secs(60 * 60 * 24 * 30);
+
+/// The subscription file kept in the storage directory.
+const DEFAULT_SUBFILE: &str = "subscriptions.json";
 
 /// Upstream `VAPID_PUSH_MODES`; the first entry is the default.
 const VAPID_PUSH_MODES: &[&str] = &["chrome", "firefox", "edge", "opera", "apple"];
@@ -457,12 +467,93 @@ fn atomic_write(path: &Path, content: &[u8]) -> bool {
   true
 }
 
+// ── Persistent storage ───────────────────────────────────────────────────────
+
+/// The plugin's storage directory, when its store lives on disk.
+fn store_dir() -> Option<PathBuf> {
+  crate::storage::with_service_store(|s| s.path().map(Path::to_path_buf)).flatten()
+}
+
+/// `der` as a PEM block, wrapped at 64 characters as Python's
+/// `cryptography` writes it.
+fn pem_encode(label: &str, der: &[u8]) -> String {
+  let encoded = base64::engine::general_purpose::STANDARD.encode(der);
+  let mut out = format!("-----BEGIN {}-----\n", label);
+  for line in encoded.as_bytes().chunks(64) {
+    out.push_str(&String::from_utf8_lossy(line));
+    out.push('\n');
+  }
+  out.push_str(&format!("-----END {}-----\n", label));
+  out
+}
+
+/// The private key kept in `dir` (upstream `ApprisePEMController` with
+/// `pem_autogen`): a missing key pair is generated and written there as
+/// `private_key.pem` (PKCS#8) and `public_key.pem`. Nothing is generated
+/// when a public key is already there on its own.
+fn store_private_key(dir: &Path) -> Option<EcdsaKeyPair> {
+  let dir_str = dir.to_str()?;
+  if let Some(path) = find_private_keyfile(dir_str, None) {
+    return std::fs::read(path).ok().and_then(|data| load_private_key(&data));
+  }
+  if find_public_keyfile(dir_str, None).is_some() {
+    return None;
+  }
+  let rng = SystemRandom::new();
+  let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).ok()?;
+  let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng).ok()?;
+  let point = [&[0u8][..], key.public_key().as_ref()].concat();
+  let spki = der_tlv(0x30, &[P256_ALGORITHM_ID, &der_tlv(0x03, &point)].concat());
+  let (public_path, private_path) = (dir.join("public_key.pem"), dir.join("private_key.pem"));
+  if let Err(e) = std::fs::write(&public_path, pem_encode("PUBLIC KEY", &spki)) {
+    tracing::warn!("Error writing Public PEM file {}", public_path.display());
+    tracing::debug!("I/O Exception: {}", e);
+    let _ = std::fs::remove_file(&public_path);
+    return None;
+  }
+  if let Err(e) = std::fs::write(&private_path, pem_encode("PRIVATE KEY", pkcs8.as_ref())) {
+    tracing::warn!("Error writing Private PEM file {}", private_path.display());
+    tracing::debug!("I/O Exception: {}", e);
+    let _ = std::fs::remove_file(&public_path);
+    let _ = std::fs::remove_file(&private_path);
+    return None;
+  }
+  Some(key)
+}
+
+/// Write a starter subscription file into `dir` for the user to fill in,
+/// unless one is already there (upstream `WebPushSubscriptionManager.autogen`).
+fn autogen_subscriptions(dir: &Path) {
+  let path = dir.join(DEFAULT_SUBFILE);
+  if path.exists() {
+    return;
+  }
+  let template = serde_json::json!({
+    "user@example.com": {
+      "endpoint": "https://fcm.googleapis.com/fcm/send/abc123...",
+      "keys": { "p256dh": "<place public key in base64 here>", "auth": "<place auth in base64 here>" },
+    }
+  });
+  let content = serde_json::to_string_pretty(&template).unwrap_or_default();
+  if atomic_write(&path, content.as_bytes()) {
+    tracing::info!("Vapid auto-generated {}", DEFAULT_SUBFILE);
+  }
+}
+
+/// The endpoints retired in the persistent store.
+fn stored_retired() -> BTreeSet<String> {
+  crate::storage::with_service_store(|s| s.get(RETIRED_KEY))
+    .flatten()
+    .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|e| e.as_str().map(String::from)).collect()))
+    .unwrap_or_default()
+}
+
 // ── Plugin ───────────────────────────────────────────────────────────────────
 
 impl Vapid {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.as_deref().filter(|h| !h.is_empty()).map(unquote);
-    let user = url.user.as_deref().map(unquote);
+    let host = url.host.clone();
+    let user = url.user.clone();
 
     let mut targets: Vec<String> = Vec::new();
     let subscriber = match url.get("from").filter(|f| !f.is_empty()) {
@@ -473,21 +564,23 @@ impl Vapid {
           (None, Some(host)) => targets.push(host.clone()),
           _ => {}
         }
-        from.to_string()
+        // Upstream unquotes ?from= once more
+        unquote(from)
       }
       None => format!("{}@{}", user.unwrap_or_default(), host.unwrap_or_default()),
     };
 
-    let Some(subscriber) = email_address(&subscriber) else {
+    let Some(subscriber) = is_email(&subscriber).map(|e| e.full_email) else {
       tracing::warn!("An invalid Vapid Subscriber was specified.");
       return None;
     };
 
-    targets.extend(split_path(url));
+    targets.extend(url.path_parts.iter().cloned());
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
-      targets.extend(parse_list([to], true, true));
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      targets.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
-    let mut targets = parse_list(targets, true, true);
+    let mut targets = parse_list(&targets);
     if targets.is_empty() {
       targets.push(subscriber.clone());
     }
@@ -508,7 +601,7 @@ impl Vapid {
     let ttl = match url.get("ttl").filter(|t| !t.is_empty()) {
       None => 0,
       Some(ttl) => {
-        let ttl = ttl.trim().parse::<i64>().unwrap_or(0);
+        let ttl = unquote(ttl).trim().parse::<i64>().unwrap_or(0);
         if !(0..=VAPID_TTL_MAX).contains(&ttl) {
           tracing::warn!("The Vapid TTL specified ({}) is out of range.", ttl);
           return None;
@@ -517,8 +610,8 @@ impl Vapid {
       }
     };
 
-    let keyfile = url.get("keyfile").filter(|k| !k.is_empty()).map(str::to_string);
-    let subfile = url.get("subfile").filter(|s| !s.is_empty()).map(str::to_string);
+    let keyfile = url.get("keyfile").filter(|k| !k.is_empty()).map(unquote);
+    let subfile = url.get("subfile").filter(|s| !s.is_empty()).map(unquote);
 
     Some(Self {
       subscriber,
@@ -579,16 +672,28 @@ impl Notify for Vapid {
   fn title_maxlen(&self) -> usize {
     0
   }
-
+  fn url_identifier(&self) -> Option<Vec<String>> {
+    Some(vec!["vapid".into(), self.mode.clone(), self.subscriber.clone()])
+  }
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let mut state = self.state.lock().await;
+
+    // Without a key or subscription file the storage directory holds them
+    let dir = if self.keyfile.is_none() || self.subfile.is_none() { store_dir() } else { None };
 
     if !state.key_attempted {
       // The key is only loaded on the first notification
       state.key_attempted = true;
-      if let Some(keyfile) = &self.keyfile {
-        state.key = read_source(keyfile, MAX_KEYFILE_SIZE).await.and_then(|(data, _)| load_private_key(&data));
+      if self.subfile.is_none()
+        && let Some(dir) = &dir
+      {
+        autogen_subscriptions(dir);
       }
+      state.key = match (&self.keyfile, &dir) {
+        (Some(keyfile), _) => read_source(keyfile, MAX_KEYFILE_SIZE).await.and_then(|(data, _)| load_private_key(&data)),
+        (None, Some(dir)) => store_private_key(dir),
+        (None, None) => None,
+      };
       if state.key.is_none() {
         tracing::warn!("Provided Vapid/WebPush (PEM) Private Key file could not be loaded.");
         return Ok(false);
@@ -600,7 +705,8 @@ impl Notify for Vapid {
       return Ok(false);
     }
 
-    if let Some(subfile) = &self.subfile
+    let subfile = self.subfile.clone().or_else(|| dir.as_ref().map(|d| d.join(DEFAULT_SUBFILE).to_string_lossy().into_owned()));
+    if let Some(subfile) = &subfile
       && !state.subs_attempted
     {
       // A failed load is not attempted again on the next notification
@@ -635,8 +741,14 @@ impl Notify for Vapid {
     let mut expired: Vec<String> = Vec::new();
     let mut dropped: Vec<String> = Vec::new();
     let (mut skipped, mut attempted, mut delivered) = (0usize, 0usize, 0usize);
+    let retired = stored_retired();
 
     for target in state.targets.clone() {
+      // A target reached on an earlier attempt still counts as delivered
+      if crate::delivery::is_delivered(&target, false) {
+        delivered += 1;
+        continue;
+      }
       let Some(entry) = state.subscription(&target).cloned() else {
         tracing::warn!("Dropped Vapid user ({}) specified - not found in subscriptions.json.", target);
         dropped.push(target);
@@ -644,7 +756,7 @@ impl Notify for Vapid {
         continue;
       };
 
-      if state.retired.contains(&entry.endpoint) {
+      if retired.contains(&entry.endpoint) || state.retired.contains(&entry.endpoint) {
         tracing::debug!("Skipping retired Vapid subscription: {}", target);
         skipped += 1;
         continue;
@@ -665,6 +777,7 @@ impl Notify for Vapid {
       tracing::debug!("Vapid {} POST {} -> {} (cert_verify={})", self.mode, target, entry.origin, self.verify_certificate);
       tracing::debug!("Vapid {} Encrypted Payload: {} byte(s)", self.mode, ctx.body.len());
 
+      crate::notify::throttle().await;
       attempted += 1;
       let result = client
         .post(Self::delivery_url(&entry))
@@ -688,6 +801,7 @@ impl Notify for Vapid {
           200 | 201 | 202 | 204 => {
             tracing::info!("Sent {} Vapid notification.", self.mode);
             delivered += 1;
+            crate::delivery::mark_delivered(&target, false);
           }
           status => {
             let reason = resp.status().canonical_reason().unwrap_or("");
@@ -697,7 +811,7 @@ impl Notify for Vapid {
         },
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Vapid notification.");
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -714,7 +828,9 @@ impl Notify for Vapid {
       // Remove only the expired entries from a writable local file
       let pruned = state.local_file.as_deref().is_some_and(|path| is_writable(path) && prune_file(path, &expired));
       if !pruned {
-        tracing::info!("Tracking {} retired Vapid endpoint(s); the subscription file was not updated", endpoints.len());
+        tracing::info!("Tracking {} retired Vapid endpoint(s) in persistent storage; the subscription file was not updated", endpoints.len());
+        let all: BTreeSet<String> = retired.into_iter().chain(endpoints.iter().cloned()).collect();
+        crate::storage::with_service_store(|s| s.set(RETIRED_KEY, serde_json::json!(all), Some(RETIRED_EXPIRY), true));
         state.retired.extend(endpoints);
       }
     }
@@ -1044,7 +1160,7 @@ Oc4My77ylXst/I1fVk62i06E2YwM//ZmgQ==
     let subfile = write(&dir, "subscriptions.json", &subscription_json("https://push.example.com/x", &b).to_string());
     let ctx = NotifyContext { body: "hello".into(), ..Default::default() };
 
-    // No key file (this port has no persistent storage to look in)
+    // No key file, and no persistent storage to look in
     let svc = from_url(&format!("vapid://user@example.com?subfile={}", subfile)).unwrap();
     assert!(!svc.send(&ctx).await.unwrap());
     // An unreadable key file
@@ -1087,7 +1203,7 @@ Oc4My77ylXst/I1fVk62i06E2YwM//ZmgQ==
       let b = browser();
       let subfile = write(&dir, "subscriptions.json", &serde_json::json!({ "user1": subscription_json("https://push.example.com/a", &b) }).to_string());
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/a")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("vapid://user@example.com/user1?keyfile={}&subfile={}", keyfile, subfile)).unwrap();
       let ctx = NotifyContext { body: "hello".into(), ..Default::default() };
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap(), "status {}", status);
@@ -1151,5 +1267,59 @@ Oc4My77ylXst/I1fVk62i06E2YwM//ZmgQ==
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
     assert_eq!(std::fs::read_to_string(&subfile).unwrap(), content.to_string());
     assert!(svc.state.lock().await.retired.contains("https://push.example.com/gone"));
+  }
+
+  #[tokio::test]
+  async fn test_storage_holds_keys_and_subscriptions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let asset = crate::AppriseAsset { storage_path: Some(tmp.path().to_path_buf()), ..Default::default() };
+    let mut a = crate::Apprise::with_asset(asset);
+    assert!(a.add("vapid://user@example.com"));
+    let ctx = NotifyContext { body: "hello".into(), ..Default::default() };
+    // The first run generates a key pair and a starter subscription file,
+    // which holds no usable subscription yet
+    assert!(!a.notify(&ctx).await.is_success());
+    let id = a.url_id(a.services().next().unwrap()).unwrap();
+    let dir = tmp.path().join(&id);
+    let private = std::fs::read(dir.join("private_key.pem")).unwrap();
+    assert!(String::from_utf8_lossy(&private).starts_with("-----BEGIN PRIVATE KEY-----\n"));
+    assert!(load_private_key(&private).is_some());
+    let public = std::fs::read_to_string(dir.join("public_key.pem")).unwrap();
+    assert!(public.starts_with("-----BEGIN PUBLIC KEY-----\n"));
+    let template: Value = serde_json::from_str(&std::fs::read_to_string(dir.join(DEFAULT_SUBFILE)).unwrap()).unwrap();
+    assert!(template.get("user@example.com").is_some());
+
+    // Once the user fills it in, the stored key signs the message
+    let server = MockServer::builder().start().await;
+    Mock::given(method("POST")).and(path("/fcm/send/abc123")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    let b = browser();
+    let endpoint = "https://fcm.googleapis.com/fcm/send/abc123";
+    std::fs::write(dir.join(DEFAULT_SUBFILE), serde_json::json!({ "user@example.com": subscription_json(endpoint, &b) }).to_string()).unwrap();
+    a.clear();
+    assert!(a.add("vapid://user@example.com"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    // The key was not replaced
+    assert_eq!(std::fs::read(dir.join("private_key.pem")).unwrap(), private);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    let keyfile = write(&dir, "private_key.pem", SEC1_KEY);
+    let (b1, b2) = (browser(), browser());
+    let content = serde_json::json!({
+      "one": subscription_json("https://push.example.com/one", &b1),
+      "two": subscription_json("https://push.example.com/two", &b2),
+    });
+    let subfile = write(&dir, "subscriptions.json", &content.to_string());
+    let server = MockServer::builder().start().await;
+    Mock::given(method("POST")).and(path("/one")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    // The second subscription fails once; the retry only sends to it again.
+    Mock::given(method("POST")).and(path("/two")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).with_priority(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/two")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("vapid://user@example.com/one/two?keyfile={}&subfile={}&retry=1&wait=0", keyfile, subfile)));
+    let ctx = NotifyContext { body: "hello".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
   }
 }

@@ -1,7 +1,6 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::unquote;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 
 /// API calls (`STRMLABS_CALLS`); alerts are the default.
@@ -28,10 +27,11 @@ pub struct Streamlabs {
 
 impl Streamlabs {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(str::to_string);
+    // Upstream unquotes the query values once more
+    let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(unquote);
 
     // Access tokens are 40 alphanumeric characters
-    let access_token = url.host.as_deref().map(unquote).unwrap_or_default().trim().to_string();
+    let access_token = url.host.clone().unwrap_or_default().trim().to_string();
     if access_token.len() != 40 || !access_token.chars().all(|c| c.is_ascii_alphanumeric()) {
       tracing::warn!("An invalid Streamslabs access token was specified.");
       return None;
@@ -148,11 +148,12 @@ impl Notify for Streamlabs {
     let kind = if self.call == "ALERTS" { "alert" } else { "donation" };
     let url = format!("{}/api/v1.0/{}", service_base("https://streamlabs.com"), self.call.to_lowercase());
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = match client.post(&url).header("User-Agent", APP_ID).form(&form).send().await {
       Ok(resp) => resp,
       Err(e) => {
         tracing::warn!("A Connection error occurred sending Streamlabs {}.", kind);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return Ok(false);
       }
     };
@@ -279,7 +280,7 @@ mod tests {
   async fn test_send_failures() {
     for (call, status) in [("alerts", 500), ("donations", 500), ("alerts", 999), ("donations", 201)] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path(format!("/api/v1.0/{}", call))).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("strmlabs://{}/?call={}", TOKEN, call)).unwrap();
       let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());

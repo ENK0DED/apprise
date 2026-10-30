@@ -1,8 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::{NotifyFormat, NotifyType};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{qsd_bool, unquote};
+use crate::utils::parse::{ParsedUrl, parse_bool, unquote};
 use async_trait::async_trait;
 
 pub struct PushMe {
@@ -25,13 +24,14 @@ fn ascii(notify_type: &NotifyType) -> &'static str {
 impl PushMe {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // ?token= (or its push_key= alias) wins over the host
-    let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(str::to_string);
-    let token = qsd("token").or_else(|| qsd("push_key")).or_else(|| url.host.as_deref().map(unquote)).unwrap_or_default();
+    // Upstream unquotes the query values once more
+    let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(unquote);
+    let token = qsd("token").or_else(|| qsd("push_key")).or_else(|| url.host.clone()).unwrap_or_default();
     let Some(token) = token.split_whitespace().next().map(str::to_string) else {
       tracing::warn!("An invalid PushMe Token was specified.");
       return None;
     };
-    Some(Self { token, status: qsd_bool(url, "status", true), verify_certificate: url.verify_certificate(), tags: url.tags() })
+    Some(Self { token, status: url.get("status").map(parse_bool).unwrap_or(true), verify_certificate: url.verify_certificate(), tags: url.tags() })
   }
 
   pub fn static_details() -> ServiceDetails {
@@ -73,6 +73,7 @@ impl Notify for PushMe {
     // Everything travels in the query string of an empty POST
     let url = format!("{}/", service_base("https://push.i-i.me"));
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client.post(&url).header("User-Agent", APP_ID).query(&params).send().await?;
     let status = resp.status();
     if status.as_u16() == 200 {
@@ -130,13 +131,14 @@ mod tests {
       .await;
     let ctx = NotifyContext { title: "T".into(), body: "B".into(), notify_type: NotifyType::Warning, ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), from_url("pushme://tok123").unwrap().send(&ctx)).await.unwrap());
-    assert!(server.received_requests().await.unwrap()[0].body.is_empty());
+    assert!(crate::notify::custom_json::requests_to(&server, "POST", "/").await[0].body.is_empty());
   }
 
   #[tokio::test]
   async fn test_send_markdown_without_status() {
     let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
+      .and(path("/"))
       .and(query_param("title", ""))
       .and(query_param("type", "markdown"))
       .respond_with(ResponseTemplate::new(200))
@@ -151,7 +153,7 @@ mod tests {
   async fn test_send_failure() {
     for status in [500, 999] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let ctx = NotifyContext { body: "B".into(), ..Default::default() };
       assert!(crate::notify::with_test_base(server.uri(), from_url("pushme://tok").unwrap().send(&ctx)).await.is_err());
     }

@@ -1,11 +1,8 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 use serde_json::json;
-
-/// Native webhook URL prefix (upstream `parse_native_url`).
-const NATIVE_PREFIX: &str = "https://push.spug.dev/send/";
 
 /// SpugPush: `spugpush://{token}`.
 pub struct SpugPush {
@@ -20,18 +17,11 @@ fn is_token_char(c: char) -> bool {
 
 impl SpugPush {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let token = if url.schema == "https" || url.schema == "http" {
-      // https://push.spug.dev/send/{token}, nothing after
-      let prefix = url.raw.get(..NATIVE_PREFIX.len())?;
-      if !prefix.eq_ignore_ascii_case(NATIVE_PREFIX) {
-        return None;
-      }
-      url.raw[NATIVE_PREFIX.len()..].to_string()
-    } else {
-      match url.get("token").filter(|t| !t.is_empty()) {
-        Some(t) => t.to_string(),
-        None => urlencoding::decode(url.host.as_deref().unwrap_or_default()).ok()?.into_owned(),
-      }
+    // The registry turns https://push.spug.dev/send/{token} into
+    // spugpush://{token}; upstream unquotes ?token= once more
+    let token = match url.get("token").filter(|t| !t.is_empty()) {
+      Some(t) => unquote(t),
+      None => url.host.clone().unwrap_or_default(),
     };
     if !(32..=64).contains(&token.len()) || !token.chars().all(is_token_char) {
       tracing::warn!("The SpugPush token is invalid.");
@@ -71,6 +61,7 @@ impl Notify for SpugPush {
     let payload = json!({ "title": title, "content": ctx.body });
     let url = format!("{}/send/{}", service_base("https://push.spug.dev"), self.token);
     let client = build_client(self.verify_certificate)?;
+    crate::notify::throttle().await;
     let resp = client.post(&url).header("User-Agent", APP_ID).json(&payload).send().await?;
     let status = resp.status();
     if status == reqwest::StatusCode::OK {
@@ -126,7 +117,9 @@ mod tests {
   fn test_from_url_fields() {
     let sp = SpugPush::from_url(&ParsedUrl::parse(&format!("spugpush://{}", TOKEN)).unwrap()).unwrap();
     assert_eq!(sp.token, TOKEN);
-    let sp = SpugPush::from_url(&ParsedUrl::parse(&format!("https://push.spug.dev/send/{}", TOKEN)).unwrap()).unwrap();
+    // The registry converts the native URL
+    let native = crate::notify::registry::NATIVE_URLS.iter().find_map(|n| (n.convert)(&format!("https://push.spug.dev/send/{}", TOKEN))).unwrap();
+    let sp = SpugPush::from_url(&ParsedUrl::parse(&native).unwrap()).unwrap();
     assert_eq!(sp.token, TOKEN);
   }
 
@@ -163,7 +156,7 @@ mod tests {
   async fn test_send_failure() {
     for code in [500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path(format!("/send/{}", TOKEN))).respond_with(ResponseTemplate::new(code)).expect(1).mount(&server).await;
       let svc = from_url(&format!("spugpush://{}", TOKEN)).unwrap();
       assert!(crate::notify::with_test_base(server.uri(), svc.send(&NotifyContext::default())).await.is_err());
     }

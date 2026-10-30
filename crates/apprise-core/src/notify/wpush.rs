@@ -3,7 +3,8 @@ use serde_json::{Value, json};
 
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, service_base};
-use crate::utils::parse::ParsedUrl;
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
 
 /// Delivery channels WPUSH accepts; one request may use several.
 const CHANNELS: [&str; 10] = ["wechat", "app", "sms", "mail", "webhook", "dingtalk", "feishu", "wechat_work", "clawbot", "qqbot"];
@@ -28,15 +29,14 @@ pub struct WPush {
 
 impl WPush {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // https://api.wpush.cn/api/v1/send?apikey={apikey}
-    if url.schema == "http" || url.schema == "https" {
-      return Self::from_url(&ParsedUrl::parse(&native_url(&url.raw)?)?);
-    }
-
+    // The registry turns https://api.wpush.cn/api/v1/send?apikey={apikey}
+    // into wpush://{apikey}/?... Upstream unquotes the query values once
+    // more.
+    let qsd = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote);
     // ?apikey= wins over the host
-    let apikey = match url.get("apikey").filter(|v| !v.is_empty()) {
-      Some(k) => k.to_string(),
-      None => url.host.as_deref().map(unquote).unwrap_or_default(),
+    let apikey = match qsd("apikey") {
+      Some(k) => k,
+      None => url.host.clone().unwrap_or_default(),
     };
     let apikey = apikey.trim().to_string();
     if !is_apikey(&apikey) {
@@ -45,9 +45,9 @@ impl WPush {
     }
 
     let mut channels: Vec<String> = Vec::new();
-    match url.get("channel").filter(|v| !v.is_empty()) {
+    match qsd("channel") {
       Some(value) => {
-        for entry in parse_list(&[value.to_string()]) {
+        for entry in parse_list(&[value]) {
           let entry = entry.to_lowercase();
           if !CHANNELS.contains(&entry.as_str()) {
             tracing::warn!("The WPUSH channel ({}) is not valid.", entry);
@@ -63,16 +63,17 @@ impl WPush {
     }
 
     // Topics come from the path, ?to=, ?topic_code= and ?topic=
-    let mut entries = split_path(&url.path);
+    let mut entries = url.path_parts.clone();
     for key in ["to", "topic_code", "topic"] {
+      // Upstream's URLBase.parse_list() also unquotes each entry
       if let Some(v) = url.get(key).filter(|v| !v.is_empty()) {
-        entries.push(v.to_string());
+        entries.extend(parse_list(&[v]).iter().map(|t| unquote(t)));
       }
     }
     let topics = parse_list(&entries);
 
     // ?group= wins over ?option=
-    let group = url.get("group").filter(|v| !v.is_empty()).or_else(|| url.get("option").filter(|v| !v.is_empty())).filter(|v| !v.trim().is_empty());
+    let group = qsd("group").or_else(|| qsd("option")).filter(|v| !v.trim().is_empty());
     if group.is_some() && !topics.is_empty() {
       tracing::warn!("The WPUSH option/group cannot be combined with topic targets.");
       return None;
@@ -82,8 +83,8 @@ impl WPush {
       apikey,
       channels,
       topics,
-      group: group.map(str::to_string),
-      click_url: url.get("url").filter(|v| !v.trim().is_empty()).map(str::to_string),
+      group,
+      click_url: qsd("url").filter(|v| !v.trim().is_empty()),
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
     })
@@ -124,44 +125,6 @@ impl WPush {
 /// `WPUSH` followed by 27 alphanumerics (either case).
 fn is_apikey(s: &str) -> bool {
   s.len() == 32 && s.as_bytes()[..5].eq_ignore_ascii_case(b"WPUSH") && s.bytes().all(|c| c.is_ascii_alphanumeric())
-}
-
-/// Upstream `parse_native_url`: `https://api.wpush.cn/api/v1/send?apikey=...`
-/// becomes `wpush://{apikey}/?{params}`.
-fn native_url(raw: &str) -> Option<String> {
-  let rest = strip_prefix_ci(raw, "https://").or_else(|| strip_prefix_ci(raw, "http://"))?;
-  let params = strip_prefix_ci(rest, "api.wpush.cn/api/v1/send?")?;
-  if params.is_empty() || params.contains('#') {
-    return None;
-  }
-  let apikey = params.split('&').find_map(|pair| strip_prefix_ci(pair, "apikey=")).filter(|k| !k.is_empty())?;
-  Some(format!("wpush://{}/?{}", unquote(apikey), params))
-}
-
-fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-  if s.len() >= prefix.len() && s.is_char_boundary(prefix.len()) && s[..prefix.len()].eq_ignore_ascii_case(prefix) { Some(&s[prefix.len()..]) } else { None }
-}
-
-fn unquote(s: &str) -> String {
-  urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
-/// Upstream `URLBase.split_path`: split on whitespace, commas and slashes,
-/// then unquote each entry.
-fn split_path(path: &str) -> Vec<String> {
-  path.split([' ', '\t', '\r', '\n', ',', '\\', '/']).filter(|s| !s.is_empty()).map(unquote).collect()
-}
-
-/// Upstream `parse_list`: split on whitespace, commas, semicolons and
-/// brackets, then sort and drop duplicates.
-fn parse_list(items: &[String]) -> Vec<String> {
-  let mut out: Vec<String> = items
-    .iter()
-    .flat_map(|s| s.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '[' | ']')).filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>())
-    .collect();
-  out.sort();
-  out.dedup();
-  out
 }
 
 /// A random (version 4) UUID for the `X-Idempotency-Key` header.
@@ -205,10 +168,7 @@ impl Notify for WPush {
     // The API key travels in a header and in the body, so a redirect must
     // never replay the request to another host (apprise-go hardening;
     // upstream follows redirects).
-    crate::ensure_crypto_provider();
-    let client = reqwest::Client::builder()
-      .timeout(std::time::Duration::from_secs(15))
-      .danger_accept_invalid_certs(!self.verify_certificate)
+    let client = crate::notify::client_builder(self.verify_certificate, Default::default())
       .redirect(reqwest::redirect::Policy::none())
       .build()
       .map_err(NotifyError::Http)?;
@@ -217,9 +177,15 @@ impl Notify for WPush {
     let topics: Vec<Option<&str>> = if self.topics.is_empty() { vec![None] } else { self.topics.iter().map(|t| Some(t.as_str())).collect() };
     let mut has_error = false;
     for topic in topics {
+      // A retry skips topics that already accepted the message
+      let key = topic.unwrap_or_default();
+      if crate::delivery::is_delivered(key, false) {
+        continue;
+      }
       let label = topic.map(|t| format!(" to topic {}", t)).unwrap_or_default();
       // serde_json keeps non-ASCII text (Chinese) as UTF-8, like ensure_ascii=False
       let body = serde_json::to_vec(&self.payload(ctx, topic))?;
+      crate::notify::throttle().await;
       let resp = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -233,7 +199,7 @@ impl Notify for WPush {
       let resp = match resp {
         Ok(r) => r,
         Err(e) => {
-          tracing::warn!("A Connection error occurred sending WPUSH notification{}: {}", label, e.without_url());
+          tracing::warn!("A Connection error occurred sending WPUSH notification{}: {}", label, crate::error::loggable_http_error(&e));
           has_error = true;
           continue;
         }
@@ -256,6 +222,7 @@ impl Notify for WPush {
         continue;
       }
       tracing::info!("Sent WPUSH notification{}.", label);
+      crate::delivery::mark_delivered(key, false);
     }
     Ok(!has_error)
   }
@@ -265,21 +232,23 @@ impl Notify for WPush {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{header, method, path};
+  use wiremock::matchers::{body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   /// The POSTs this test sent; other processes probing localhost ports can
   /// reach a mock server too, so anything else is ignored.
   async fn received(server: &MockServer) -> Vec<wiremock::Request> {
-    server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST").collect()
+    crate::notify::custom_json::requests_to(server, "POST", "/api/v1/send").await
   }
 
   const KEY: &str = "WPUSHaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const GOOD_RESPONSE: &str = r#"{"code": 0, "message": "success", "data": "1126950958891274240"}"#;
   const BAD_RESPONSE: &str = r#"{"code": 401, "message": "API Key error"}"#;
 
+  /// Parse `url`, converting a native URL the way the registry does.
   fn parse(url: &str) -> Option<WPush> {
-    WPush::from_url(&ParsedUrl::parse(url)?)
+    let native = crate::notify::registry::NATIVE_URLS.iter().find_map(|n| (n.convert)(url));
+    WPush::from_url(&ParsedUrl::parse(native.as_deref().unwrap_or(url))?)
   }
 
   fn bodies(requests: &[wiremock::Request]) -> Vec<Value> {
@@ -288,7 +257,7 @@ mod tests {
 
   async fn send_with(url: &str, ctx: &NotifyContext, status: u16, response: &str) -> (bool, Vec<wiremock::Request>) {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(response)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api/v1/send")).respond_with(ResponseTemplate::new(status).set_body_string(response)).mount(&server).await;
     let svc = from_url(url).unwrap();
     let ok = crate::notify::with_test_base(server.uri(), svc.send(ctx)).await.unwrap();
     (ok, received(&server).await)
@@ -502,9 +471,10 @@ mod tests {
   async fn test_send_redirects_not_followed() {
     for status in [301u16, 302, 303, 307, 308] {
       let target = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string(GOOD_RESPONSE)).mount(&target).await;
+      Mock::given(method("POST")).and(path("/api/v1/send")).respond_with(ResponseTemplate::new(200).set_body_string(GOOD_RESPONSE)).mount(&target).await;
       let server = MockServer::start().await;
       Mock::given(method("POST"))
+        .and(path("/api/v1/send"))
         .respond_with(ResponseTemplate::new(status).insert_header("Location", format!("{}/api/v1/send", target.uri()).as_str()))
         .expect(1)
         .mount(&server)
@@ -520,11 +490,40 @@ mod tests {
   #[tokio::test]
   async fn test_send_partial_failure() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string(BAD_RESPONSE)).up_to_n_times(1).mount(&server).await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string(GOOD_RESPONSE)).mount(&server).await;
+    Mock::given(method("POST"))
+      .and(path("/api/v1/send"))
+      .respond_with(ResponseTemplate::new(200).set_body_string(BAD_RESPONSE))
+      .up_to_n_times(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/api/v1/send")).respond_with(ResponseTemplate::new(200).set_body_string(GOOD_RESPONSE)).mount(&server).await;
     let svc = from_url(&format!("wpush://{}/one/two", KEY)).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("t", "b"))).await.unwrap());
     // The second topic is still tried
     assert_eq!(received(&server).await.len(), 2);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second topic fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/api/v1/send"))
+      .and(body_partial_json(json!({"topic_code": "two"})))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/api/v1/send")).respond_with(ResponseTemplate::new(200).set_body_string(GOOD_RESPONSE)).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add(&format!("wpush://{}/one/two?retry=1&wait=0", KEY)));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("t", "b"))).await.is_success());
+    let sent: Vec<Value> = crate::notify::custom_json::requests_to(&server, "POST", "/api/v1/send")
+      .await
+      .iter()
+      .map(|r| r.body_json::<Value>().unwrap()["topic_code"].clone())
+      .collect();
+    assert_eq!(sent, vec![json!("one"), json!("two"), json!("two")]);
   }
 }

@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{parse_list, split_path, unquote};
+use crate::utils::email::parse_list;
+use crate::utils::parse::{ParsedUrl, unquote};
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::Value;
@@ -155,16 +155,17 @@ impl Pushsafer {
       }
     };
 
-    let Some(privatekey) = url.host.as_deref().map(unquote).and_then(|k| k.split_whitespace().next().map(str::to_string)) else {
+    let Some(privatekey) = url.host.as_deref().and_then(|k| k.split_whitespace().next().map(str::to_string)) else {
       tracing::warn!("An invalid PushSafer Private Key was specified.");
       return None;
     };
 
-    let mut targets = split_path(url);
+    let mut targets = url.path_parts.clone();
     if let Some(to) = qsd("to") {
-      targets.push(to.to_string());
+      // Upstream's URLBase.parse_list() also unquotes each entry
+      targets.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
-    let mut targets = parse_list(targets, true, true);
+    let mut targets = parse_list(&targets);
     if targets.is_empty() {
       targets.push(PUSHSAFER_SEND_TO_ALL.to_string());
     }
@@ -196,11 +197,12 @@ impl Pushsafer {
   async fn post(&self, client: &reqwest::Client, mut form: Vec<(&str, String)>) -> bool {
     let url = format!("{}/api", service_base(if self.secure { "https://www.pushsafer.com" } else { "http://www.pushsafer.com" }));
     form.push(("k", self.privatekey.clone()));
+    crate::notify::throttle().await;
     let resp = match client.post(&url).header("User-Agent", APP_ID).form(&form).send().await {
       Ok(resp) => resp,
       Err(e) => {
         tracing::warn!("A Connection error occurred communicating with PushSafer.");
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return false;
       }
     };
@@ -263,6 +265,10 @@ impl Notify for Pushsafer {
     let client = build_client(self.verify_certificate)?;
     let mut has_error = false;
     for recipient in &self.targets {
+      // A retry skips what a recipient already accepted
+      if crate::delivery::is_delivered(recipient, false) {
+        continue;
+      }
       let base = |title: &str, body: &str| {
         let mut form: Vec<(&str, String)> = vec![
           ("t", title.to_string()),
@@ -283,6 +289,7 @@ impl Notify for Pushsafer {
       if pictures.is_empty() {
         if self.post(&client, base(&ctx.title, &ctx.body)).await {
           tracing::info!("Sent PushSafer notification to \"{}\".", recipient);
+          crate::delivery::mark_delivered(recipient, false);
         } else {
           has_error = true;
         }
@@ -290,14 +297,24 @@ impl Notify for Pushsafer {
       }
 
       // Three pictures per request; requests after the first carry no text
+      let mut attachments_ok = true;
       for (index, chunk) in pictures.chunks(PICTURE_PARAMETER.len()).enumerate() {
+        let attachment_key = format!("attachment:{}:{}", recipient, index);
+        if crate::delivery::is_delivered(&attachment_key, false) {
+          continue;
+        }
         let mut form = if index == 0 { base(&ctx.title, &ctx.body) } else { base("", "...") };
         form.extend(PICTURE_PARAMETER.iter().zip(chunk).map(|(field, picture)| (*field, picture.clone())));
         if self.post(&client, form).await {
           tracing::info!("Sent PushSafer attachment to \"{}\".", recipient);
+          crate::delivery::mark_delivered(&attachment_key, false);
         } else {
           has_error = true;
+          attachments_ok = false;
         }
+      }
+      if attachments_ok {
+        crate::delivery::mark_delivered(recipient, false);
       }
     }
     Ok(!has_error)
@@ -310,7 +327,7 @@ mod tests {
   use crate::notify::Attachment;
   use crate::notify::registry::from_url;
   use crate::types::NotifyType;
-  use wiremock::matchers::{body_string, method, path};
+  use wiremock::matchers::{body_string, body_string_contains, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn psafer(url: &str) -> Pushsafer {
@@ -383,7 +400,7 @@ mod tests {
   async fn test_send_pictures() {
     // Matches pycapture.py for one image; four images take two requests
     let server = MockServer::builder().start().await;
-    Mock::given(method("POST")).respond_with(good()).expect(2).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api")).respond_with(good()).expect(2).mount(&server).await;
     let svc = from_url("psafer://pkey/dev1").unwrap();
     let image = |n: &str| Attachment { name: n.into(), data: b"jpeg-bytes".to_vec(), mime_type: "image/jpeg".into() };
     let text = Attachment { name: "a.txt".into(), data: b"x".to_vec(), mime_type: "text/plain".into() };
@@ -392,7 +409,7 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
     let picture = "data%3Aimage%2Fjpeg%3Bbase64%2CanBlZy1ieXRlcw%3D%3D";
-    let requests = server.received_requests().await.unwrap();
+    let requests = crate::notify::custom_json::requests_to(&server, "POST", "/api").await;
     assert_eq!(String::from_utf8_lossy(&requests[0].body), format!("t=T&m=B&i=25&c=%233AA3E3&d=dev1&p={0}&p2={0}&p3={0}&k=pkey", picture));
     assert_eq!(String::from_utf8_lossy(&requests[1].body), format!("t=&m=...&i=25&c=%233AA3E3&d=dev1&p={0}&k=pkey", picture));
   }
@@ -407,7 +424,7 @@ mod tests {
       ResponseTemplate::new(999),
     ] {
       let server = MockServer::builder().start().await;
-      Mock::given(method("POST")).respond_with(response).expect(2).mount(&server).await;
+      Mock::given(method("POST")).and(path("/api")).respond_with(response).expect(2).mount(&server).await;
       assert!(!crate::notify::with_test_base(server.uri(), from_url("psafer://pkey/d1/d2").unwrap().send(&ctx)).await.unwrap());
     }
   }
@@ -418,5 +435,31 @@ mod tests {
     assert_eq!(details.service_name, "Pushsafer");
     assert!(details.attachment_support);
     assert_eq!(from_url("psafer://pkey").unwrap().body_maxlen(), 5000);
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_delivered_targets() {
+    let server = MockServer::start().await;
+    // The second device fails once; the retry only sends to it again.
+    Mock::given(method("POST"))
+      .and(path("/api"))
+      .and(body_string_contains("d=dev2"))
+      .respond_with(ResponseTemplate::new(500))
+      .up_to_n_times(1)
+      .with_priority(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/api")).respond_with(good()).mount(&server).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("psafer://privatekey/dev1/dev2?retry=1&wait=0"));
+    assert!(
+      crate::notify::with_test_base(server.uri(), a.notify(&NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() })).await.is_success()
+    );
+    let sent: Vec<String> = crate::notify::custom_json::requests_to(&server, "POST", "/api")
+      .await
+      .iter()
+      .map(|r| url::form_urlencoded::parse(&r.body).find(|(k, _)| k == "d").unwrap().1.into_owned())
+      .collect();
+    assert_eq!(sent, vec!["dev1", "dev2", "dev2"]);
   }
 }
