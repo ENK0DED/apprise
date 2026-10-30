@@ -68,8 +68,11 @@ pub fn ensure_crypto_provider() {
 /// Collects notification services from URLs and config files, then dispatches
 /// notifications to all matching services with format conversion, overflow
 /// handling, and tag filtering.
+///
+/// Cloning is cheap: services are shared, as are the persistent stores.
+#[derive(Clone)]
 pub struct Apprise {
-  services: Vec<Box<dyn Notify>>,
+  services: Vec<std::sync::Arc<dyn Notify>>,
   asset: AppriseAsset,
   tag_filter: TagFilter,
   timeout: Option<std::time::Duration>,
@@ -79,7 +82,7 @@ pub struct Apprise {
 }
 
 /// Configuration and template settings of an [`Apprise`] instance.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ConfigState {
   /// YAML entries still waiting for template values.
   pending: Vec<config::PendingService>,
@@ -146,7 +149,7 @@ impl Apprise {
         registry::from_parsed(&parsed)
       });
       match service {
-        Some(svc) => self.services.push(svc),
+        Some(svc) => self.services.push(svc.into()),
         None => all = false,
       }
     }
@@ -256,7 +259,7 @@ impl Apprise {
     let before = self.services.len();
     for item in loaded.items {
       match item {
-        config::ConfigItem::Service(svc) => self.services.push(svc),
+        config::ConfigItem::Service(svc) => self.services.push(svc.into()),
         config::ConfigItem::Pending(entry) => self.resolve_pending(*entry),
       }
     }
@@ -266,7 +269,7 @@ impl Apprise {
   /// Build a pending entry now if its values are available, else keep it.
   fn resolve_pending(&mut self, entry: config::PendingService) {
     match entry.resolve(&self.config.template_values, &config::template::process_env) {
-      Some(svc) => self.services.push(svc),
+      Some(svc) => self.services.push(svc.into()),
       None => self.config.pending.push(entry),
     }
   }
@@ -328,6 +331,16 @@ impl Apprise {
   /// Clear all loaded services.
   pub fn clear(&mut self) {
     self.services.clear();
+  }
+
+  /// Move the services and pending template entries `other` loaded into
+  /// this instance, and take its asset (which a configuration may have
+  /// set). For loading configuration without holding this instance: start
+  /// `other` from a clone of this asset, load into it, then absorb it.
+  pub fn absorb(&mut self, other: Apprise) {
+    self.services.extend(other.services);
+    self.config.pending.extend(other.config.pending);
+    self.asset = other.asset;
   }
 
   /// Get details of all loaded services.

@@ -105,7 +105,7 @@ pub(crate) fn validate_timeout(seconds: f64) -> Result<Option<Duration>, String>
 }
 
 /// Send `ctx` to the services selected by `filter`.
-pub(crate) async fn notify(services: &[Box<dyn Notify>], filter: &TagFilter, ctx: &NotifyContext, opts: &DispatchOptions) -> SendResult {
+pub(crate) async fn notify(services: &[std::sync::Arc<dyn Notify>], filter: &TagFilter, ctx: &NotifyContext, opts: &DispatchOptions) -> SendResult {
   let start = Instant::now();
   let call_deadline = opts.call_timeout.map(|t| start + t);
   let finish = |status, results| SendResult::new(status, results, start.elapsed());
@@ -651,7 +651,7 @@ mod tests {
   fn apprise(services: Vec<Box<dyn Notify>>) -> Apprise {
     let mut a = Apprise::new();
     for svc in services {
-      a.services.push(svc);
+      a.services.push(svc.into());
     }
     a
   }

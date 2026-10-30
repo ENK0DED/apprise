@@ -103,3 +103,29 @@ test('notify rejects an unknown notification type', async () => {
   a.add('json://localhost');
   await expect(a.notify('hello', { notificationType: 'bogus' })).rejects.toThrow();
 });
+
+test('sync methods do not wait for a notification in progress', async () => {
+  const { Apprise } = await import('../index.js');
+  const server = Bun.serve({
+    port: 0,
+    async fetch() {
+      await Bun.sleep(1500);
+      return new Response('ok');
+    },
+  });
+  try {
+    const a = new Apprise();
+    a.add(`json://127.0.0.1:${server.port}/slow`);
+    const pending = a.notify('hello');
+    await Bun.sleep(100);
+    const started = performance.now();
+    expect(a.add('json://localhost/other')).toBe(true);
+    expect(a.len()).toBe(2);
+    expect(performance.now() - started).toBeLessThan(500);
+    const result = await pending;
+    // The notification already under way kept the services it started with
+    expect(result.total).toBe(1);
+  } finally {
+    server.stop(true);
+  }
+});

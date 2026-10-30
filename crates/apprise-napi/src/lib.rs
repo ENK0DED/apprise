@@ -1,10 +1,9 @@
 #![deny(clippy::all)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use apprise_core::{Apprise, NotifyContext, NotifyFormat, NotifyType, ServiceDetails, TagFilter};
 use napi_derive::napi;
-use tokio::sync::RwLock;
 
 // ── Data types for JS interop ────────────────────────────────────────────────
 
@@ -193,13 +192,21 @@ pub fn list_services() -> Vec<ServiceInfo> {
 /// ```
 #[napi(js_name = "Apprise")]
 pub struct JsApprise {
-  // Async methods only get `&self`; the lock lets them load configuration.
-  inner: Arc<RwLock<Apprise>>,
+  // A notification works on a snapshot of the services and holds no lock
+  // while it sends, so the synchronous methods never wait for one (a
+  // change made meanwhile copies the shared, cheaply cloned instance).
+  inner: Arc<Mutex<Arc<Apprise>>>,
 }
 
 impl Default for JsApprise {
   fn default() -> Self {
-    Self { inner: Arc::new(RwLock::new(Apprise::new())) }
+    Self { inner: Arc::new(Mutex::new(Arc::new(Apprise::new()))) }
+  }
+}
+
+impl JsApprise {
+  fn current(&self) -> MutexGuard<'_, Arc<Apprise>> {
+    self.inner.lock().unwrap_or_else(|e| e.into_inner())
   }
 }
 
@@ -215,27 +222,30 @@ impl JsApprise {
   /// and added.
   #[napi]
   pub fn add(&self, url: String) -> bool {
-    self.inner.blocking_write().add(&url)
+    Arc::make_mut(&mut self.current()).add(&url)
   }
 
   /// Load services from a configuration file or URL. Resolves to the number
   /// of services loaded.
   #[napi]
   pub async fn add_config(&self, path: String) -> napi::Result<i32> {
-    let count = self.inner.write().await.add_config(&path, 1).await.map_err(|e| napi::Error::from_reason(format!("Config error: {}", e)))?;
+    // Load without holding the instance, then move the result in.
+    let mut loaded = Apprise::with_asset(self.current().asset().clone());
+    let count = loaded.add_config(&path, 1).await.map_err(|e| napi::Error::from_reason(format!("Config error: {}", e)))?;
+    Arc::make_mut(&mut self.current()).absorb(loaded);
     Ok(count as i32)
   }
 
   /// Get the number of loaded services.
   #[napi]
   pub fn len(&self) -> i32 {
-    self.inner.blocking_read().len() as i32
+    self.current().len() as i32
   }
 
   /// Check if no services are loaded.
   #[napi]
   pub fn is_empty(&self) -> bool {
-    self.inner.blocking_read().is_empty()
+    self.current().is_empty()
   }
 
   /// Send a notification to the loaded services the tag filter selects
@@ -253,19 +263,19 @@ impl JsApprise {
       interpret_emojis: None,
     });
     let msg = message(body, o.title, o.notification_type, o.body_format, o.tag, o.tags, o.attach, o.interpret_escapes, o.interpret_emojis)?;
-    let apprise = self.inner.read().await;
-    Ok(to_js(apprise.notify_tagged(&msg.ctx, &msg.filter, &msg.attach).await))
+    let snapshot = self.current().clone();
+    Ok(to_js(snapshot.notify_tagged(&msg.ctx, &msg.filter, &msg.attach).await))
   }
 
   /// Get details of all loaded services.
   #[napi]
   pub fn details(&self) -> Vec<ServiceInfo> {
-    self.inner.blocking_read().details().into_iter().map(service_info).collect()
+    self.current().details().into_iter().map(service_info).collect()
   }
 
   /// Clear all loaded services.
   #[napi]
   pub fn clear(&self) {
-    self.inner.blocking_write().clear();
+    Arc::make_mut(&mut self.current()).clear();
   }
 }
