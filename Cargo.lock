@@ -93,6 +93,7 @@ dependencies = [
  "dirs",
  "hex",
  "hmac",
+ "indexmap",
  "lettre",
  "notify-rust",
  "rand",

@@ -248,6 +248,12 @@
    "loose": {
     "fullpath": null,
     "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -265,6 +271,12 @@
    "loose": {
     "fullpath": null,
     "host": "5t4m59hl-34343.euw.devtunnels.ms",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -282,6 +294,12 @@
    "loose": {
     "fullpath": "/",
     "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -299,6 +317,12 @@
    "loose": {
     "fullpath": null,
     "host": "hostname:",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -316,6 +340,12 @@
    "loose": {
     "fullpath": null,
     "host": "hostname:invalid",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -333,6 +363,12 @@
    "loose": {
     "fullpath": null,
     "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 0,
     "qsd": {},
@@ -350,6 +386,12 @@
    "loose": {
     "fullpath": null,
     "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": -92,
     "qsd": {},
@@ -367,6 +409,12 @@
    "loose": {
     "fullpath": null,
     "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 65535,
     "qsd": {},
@@ -384,6 +432,12 @@
    "loose": {
     "fullpath": null,
     "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 1,
     "qsd": {},
@@ -401,6 +455,12 @@
    "loose": {
     "fullpath": null,
     "host": "hostname:4.2",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -418,6 +478,12 @@
    "loose": {
     "fullpath": null,
     "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 123,
     "qsd": {},
@@ -435,6 +501,12 @@
    "loose": {
     "fullpath": null,
     "host": "[2001:db8:002a:3256:adfe:05c0:0003:0006]",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 8080,
     "qsd": {},
@@ -452,6 +524,12 @@
    "loose": {
     "fullpath": "/",
     "host": "[::1]",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 80,
     "qsd": {},
@@ -469,6 +547,12 @@
    "loose": {
     "fullpath": null,
     "host": "[2001:DB8::1]:80",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -486,6 +570,12 @@
    "loose": {
     "fullpath": null,
     "host": "[2001:db8::1]",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -503,6 +593,12 @@
    "loose": {
     "fullpath": null,
     "host": "[fe80::1%25eth0]:80",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -526,6 +622,12 @@
    "loose": {
     "fullpath": "/",
     "host": "[v1.fe]",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -573,6 +675,16 @@
    "loose": {
     "fullpath": "/",
     "host": "hostname",
+    "order": {
+     "qsd": [
+      "-key"
+     ],
+     "qsd+": [],
+     "qsd-": [
+      "KeY"
+     ],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -594,6 +706,16 @@
    "loose": {
     "fullpath": "/",
     "host": "hostname",
+    "order": {
+     "qsd": [
+      "+key"
+     ],
+     "qsd+": [
+      "KeY"
+     ],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -615,6 +737,16 @@
    "loose": {
     "fullpath": "/",
     "host": "hostname",
+    "order": {
+     "qsd": [
+      ":key"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": [
+      "kEy"
+     ]
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -636,6 +768,23 @@
    "loose": {
     "fullpath": "/",
     "host": "hostname",
+    "order": {
+     "qsd": [
+      "+key",
+      "-key",
+      "key",
+      ":colon"
+     ],
+     "qsd+": [
+      "KeY"
+     ],
+     "qsd-": [
+      "kEy"
+     ],
+     "qsd:": [
+      "colon"
+     ]
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -664,6 +813,12 @@
    "loose": {
     "fullpath": "/",
     "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -681,6 +836,12 @@
    "loose": {
     "fullpath": "/",
     "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 40,
     "qsd": {},
@@ -698,6 +859,12 @@
    "loose": {
     "fullpath": "/test.php",
     "host": "HoStNaMe",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 40,
     "qsd": {},
@@ -715,6 +882,12 @@
    "loose": {
     "fullpath": "/test.py",
     "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -732,6 +905,12 @@
    "loose": {
     "fullpath": "/test.py",
     "host": "hostname",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -749,6 +928,12 @@
    "loose": {
     "fullpath": "/full/path/name/",
     "host": "otherHost",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "password",
     "port": null,
     "qsd": {},
@@ -766,6 +951,14 @@
    "loose": {
     "fullpath": "/a/path/ending/with/slash/",
     "host": "hostname",
+    "order": {
+     "qsd": [
+      "key"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -785,6 +978,16 @@
    "loose": {
     "fullpath": "/lead2gold@gmail.com",
     "host": "otherHost",
+    "order": {
+     "qsd": [
+      "from",
+      "name",
+      "format"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "password",
     "port": null,
     "qsd": {
@@ -806,6 +1009,14 @@
    "loose": {
     "fullpath": null,
     "host": "user:pass.with.",
+    "order": {
+     "qsd": [
+      "question@host"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -825,6 +1036,12 @@
    "loose": {
     "fullpath": null,
     "host": "",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -842,6 +1059,12 @@
    "loose": {
     "fullpath": "/",
     "host": "",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "",
     "port": null,
     "qsd": {},
@@ -859,6 +1082,12 @@
    "loose": {
     "fullpath": "/_/@%5E&/jack.json",
     "host": "",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "",
     "port": null,
     "qsd": {},
@@ -876,6 +1105,12 @@
    "loose": {
     "fullpath": null,
     "host": "localhost",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -893,6 +1128,12 @@
    "loose": {
     "fullpath": "/",
     "host": "localhost",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -910,6 +1151,12 @@
    "loose": {
     "fullpath": "/a/b/",
     "host": "localhost",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -927,6 +1174,16 @@
    "loose": {
     "fullpath": "/a%2Fb/c%20d/~x",
     "host": "h",
+    "order": {
+     "qsd": [
+      "a",
+      "b",
+      "c"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "p",
     "port": 80,
     "qsd": {
@@ -948,6 +1205,12 @@
    "loose": {
     "fullpath": "/lead/",
     "host": "123:abc",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -965,6 +1228,12 @@
    "loose": {
     "fullpath": "/lead2gold/",
     "host": "123456789:abcdefg_hijklmnop",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -982,6 +1251,12 @@
    "loose": {
     "fullpath": "/%23chan/",
     "host": "123456789:AAF0abc-def",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -999,6 +1274,12 @@
    "loose": {
     "fullpath": "/x",
     "host": "b",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1016,6 +1297,12 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "pa",
     "port": null,
     "qsd": {},
@@ -1033,6 +1320,12 @@
    "loose": {
     "fullpath": null,
     "host": "",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1050,6 +1343,12 @@
    "loose": {
     "fullpath": null,
     "host": "h:abc",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1067,6 +1366,12 @@
    "loose": {
     "fullpath": "/path/%23chan",
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1084,6 +1389,12 @@
    "loose": {
     "fullpath": "/path/%23chan",
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1101,6 +1412,12 @@
    "loose": {
     "fullpath": "/a%2Cb%3Bc/@x!$&()*+=",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1118,6 +1435,12 @@
    "loose": {
     "fullpath": "/a%3Bb/c",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1135,6 +1458,12 @@
    "loose": {
     "fullpath": "/a/b",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1152,6 +1481,12 @@
    "loose": {
     "fullpath": "/a",
     "host": "h;x",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1169,6 +1504,16 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "x",
+      "y",
+      "z"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1190,6 +1535,12 @@
    "loose": {
     "fullpath": "/~user/",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1207,6 +1558,12 @@
    "loose": {
     "fullpath": "/~user",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1224,6 +1581,12 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 70000,
     "qsd": {},
@@ -1247,6 +1610,12 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1264,6 +1633,14 @@
    "loose": {
     "fullpath": "/",
     "host": "",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1283,6 +1660,12 @@
    "loose": {
     "fullpath": null,
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1300,6 +1683,12 @@
    "loose": {
     "fullpath": null,
     "host": "host\\path",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1317,6 +1706,12 @@
    "loose": {
     "fullpath": "/a%5Cb%5Cc/",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1334,6 +1729,14 @@
    "loose": {
     "fullpath": "/a/",
     "host": "h",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1353,6 +1756,14 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1372,6 +1783,12 @@
    "loose": {
     "fullpath": "/%25zz/A%2F",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1389,6 +1806,14 @@
    "loose": {
     "fullpath": "/caf%C3%A9/%C3%BC",
     "host": "h",
+    "order": {
+     "qsd": [
+      "n"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1408,6 +1833,12 @@
    "loose": {
     "fullpath": "/%E2%82%AC/%EF%BF%BD",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1425,6 +1856,15 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "a",
+      "b"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1445,6 +1885,16 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "",
+      "a",
+      "b"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1466,6 +1916,14 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "a"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1485,6 +1943,17 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "a b",
+      "+c d"
+     ],
+     "qsd+": [
+      "c d"
+     ],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1507,6 +1976,19 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "sp",
+      "- m"
+     ],
+     "qsd+": [
+      "sp"
+     ],
+     "qsd-": [
+      " m"
+     ],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1531,6 +2013,14 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "k"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1550,6 +2040,14 @@
    "loose": {
     "fullpath": "/path",
     "host": "h",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1569,6 +2067,12 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1586,6 +2090,12 @@
    "loose": {
     "fullpath": "/path",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1603,6 +2113,14 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1628,6 +2146,14 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1647,6 +2173,12 @@
    "loose": {
     "fullpath": "/",
     "host": ":80",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1664,6 +2196,12 @@
    "loose": {
     "fullpath": "/",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1681,6 +2219,12 @@
    "loose": {
     "fullpath": "/",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "",
     "port": null,
     "qsd": {},
@@ -1698,6 +2242,12 @@
    "loose": {
     "fullpath": "/",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "",
     "port": null,
     "qsd": {},
@@ -1715,6 +2265,12 @@
    "loose": {
     "fullpath": "/",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "p",
     "port": null,
     "qsd": {},
@@ -1732,6 +2288,14 @@
    "loose": {
     "fullpath": null,
     "host": "hostname",
+    "order": {
+     "qsd": [
+      "user"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "PASSWORD",
     "port": null,
     "qsd": {
@@ -1751,6 +2315,14 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "user"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "p",
     "port": null,
     "qsd": {
@@ -1770,6 +2342,14 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "pass"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "secret",
     "port": null,
     "qsd": {
@@ -1789,6 +2369,14 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "password"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "new",
     "port": null,
     "qsd": {
@@ -1808,6 +2396,14 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "port"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": "8080",
     "qsd": {
@@ -1827,6 +2423,14 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "port"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": "abc",
     "qsd": {
@@ -1846,6 +2450,14 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "port"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": "",
     "qsd": {
@@ -1865,6 +2477,14 @@
    "loose": {
     "fullpath": "/path",
     "host": "localhost",
+    "order": {
+     "qsd": [
+      "format"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 8080,
     "qsd": {
@@ -1884,6 +2504,12 @@
    "loose": {
     "fullpath": "/b/c@d/e",
     "host": "a",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1901,6 +2527,14 @@
    "loose": {
     "fullpath": null,
     "host": "host",
+    "order": {
+     "qsd": [
+      "url"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -1920,6 +2554,12 @@
    "loose": {
     "fullpath": "/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/%23general",
     "host": "T1JJ3T3L2",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1937,6 +2577,12 @@
    "loose": {
     "fullpath": "/%23chan",
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1954,6 +2600,12 @@
    "loose": {
     "fullpath": "/chan",
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1971,6 +2623,12 @@
    "loose": {
     "fullpath": "/a%2Cb/c%3Bd/a@b",
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -1988,6 +2646,12 @@
    "loose": {
     "fullpath": "/a'b(c)*d+e=f&g$h!i:j",
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -2005,6 +2669,12 @@
    "loose": {
     "fullpath": "/%5B%5D/%7Bx%7D/a%7Cb/a%5Eb/a%60b",
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -2022,6 +2692,12 @@
    "loose": {
     "fullpath": "/a%22b%3Cc%3Ed",
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -2039,6 +2715,12 @@
    "loose": {
     "fullpath": "/",
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -2056,6 +2738,22 @@
    "loose": {
     "fullpath": "/path/to/xml.php",
     "host": "host",
+    "order": {
+     "qsd": [
+      ":key",
+      "+header",
+      "-remove"
+     ],
+     "qsd+": [
+      "Header"
+     ],
+     "qsd-": [
+      "Remove"
+     ],
+     "qsd:": [
+      "key"
+     ]
+    },
     "password": "pass",
     "port": 8000,
     "qsd": {
@@ -2083,6 +2781,12 @@
    "loose": {
     "fullpath": null,
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": "pass",
     "port": 8080,
     "qsd": {},
@@ -2100,6 +2804,15 @@
    "loose": {
     "fullpath": "/",
     "host": "t",
+    "order": {
+     "qsd": [
+      "priority",
+      "tags"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -2120,6 +2833,15 @@
    "loose": {
     "fullpath": "/topic",
     "host": "localhost",
+    "order": {
+     "qsd": [
+      "tag",
+      "tags"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -2140,6 +2862,12 @@
    "loose": {
     "fullpath": "/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z",
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -2169,6 +2897,14 @@
    "loose": {
     "fullpath": "/",
     "host": "h",
+    "order": {
+     "qsd": [
+      "x"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -2188,6 +2924,12 @@
    "loose": {
     "fullpath": "/a%3Fb",
     "host": "h",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -2205,6 +2947,12 @@
    "loose": {
     "fullpath": "/",
     "host": "h:80:90",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -2222,6 +2970,12 @@
    "loose": {
     "fullpath": "/",
     "host": "[::1]:80:90",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -2239,6 +2993,12 @@
    "loose": {
     "fullpath": null,
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 80,
     "qsd": {},
@@ -2256,6 +3016,12 @@
    "loose": {
     "fullpath": null,
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 80,
     "qsd": {},
@@ -2273,6 +3039,12 @@
    "loose": {
     "fullpath": null,
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 80,
     "qsd": {},
@@ -2290,6 +3062,12 @@
    "loose": {
     "fullpath": null,
     "host": "host",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": 80,
     "qsd": {},
@@ -2307,6 +3085,12 @@
    "loose": {
     "fullpath": null,
     "host": "host:80a",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -2324,6 +3108,12 @@
    "loose": {
     "fullpath": "/",
     "host": "hö st",
+    "order": {
+     "qsd": [],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {},
@@ -2341,6 +3131,14 @@
    "loose": {
     "fullpath": null,
     "host": "h",
+    "order": {
+     "qsd": [
+      "k"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -2360,6 +3158,14 @@
    "loose": {
     "fullpath": null,
     "host": "H",
+    "order": {
+     "qsd": [
+      "k"
+     ],
+     "qsd+": [],
+     "qsd-": [],
+     "qsd:": []
+    },
     "password": null,
     "port": null,
     "qsd": {
@@ -2374,6 +3180,67 @@
    "strict_host": "H",
    "strict_ok": true,
    "url": "json://H?K=V"
+  },
+  {
+   "loose": {
+    "fullpath": "/",
+    "host": "id",
+    "order": {
+     "qsd": [
+      ":2",
+      ":1",
+      "z",
+      "a",
+      "m",
+      "+b",
+      "+a",
+      "-y",
+      "-x"
+     ],
+     "qsd+": [
+      "B",
+      "a"
+     ],
+     "qsd-": [
+      "y",
+      "x"
+     ],
+     "qsd:": [
+      "2",
+      "1"
+     ]
+    },
+    "password": null,
+    "port": null,
+    "qsd": {
+     "+a": "2",
+     "+b": "1",
+     "-x": "",
+     "-y": "",
+     ":1": "first",
+     ":2": "second",
+     "a": "2",
+     "m": "4",
+     "z": "3"
+    },
+    "qsd+": {
+     "B": "1",
+     "a": "2"
+    },
+    "qsd-": {
+     "x": "",
+     "y": ""
+    },
+    "qsd:": {
+     "1": "first",
+     "2": "second"
+    },
+    "schema": "whatsapp",
+    "user": "t"
+   },
+   "strict_host": "id",
+   "strict_ok": true,
+   "url": "whatsapp://t@id/?:2=second&:1=first&z=1&a=2&Z=3;m=4&+B=1&+a=2&-y&-x"
   }
  ],
  "parse_urls": [

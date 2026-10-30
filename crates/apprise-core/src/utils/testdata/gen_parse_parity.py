@@ -45,6 +45,7 @@ URLS = [
     "json://h/?x=%3Fy%3D1", "json://h/a%3Fb", "json://h:80:90/", "json://[::1]:80:90/",
     "json://host:080", "json://host:+80", "json://host:8_0", "json://host: 80", "json://host:80a",
     "json://hö st/", "json://h?k=v&k=w", "json://H?K=V",
+    "whatsapp://t@id/?:2=second&:1=first&z=1&a=2&Z=3;m=4&+B=1&+a=2&-y&-x",
 ]
 
 def norm(r):
@@ -54,6 +55,8 @@ def norm(r):
         "schema": r["schema"], "user": r["user"], "password": r["password"],
         "host": r["host"], "port": r["port"], "fullpath": r["fullpath"],
         "qsd": r["qsd"], "qsd+": r["qsd+"], "qsd-": r["qsd-"], "qsd:": r["qsd:"],
+        # JSON objects lose their order in serde_json; keep it explicitly
+        "order": {k: list(r[k]) for k in ("qsd", "qsd+", "qsd-", "qsd:")},
     }
 
 out = {"parse_url": []}

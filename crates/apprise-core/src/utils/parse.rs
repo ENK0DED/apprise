@@ -10,6 +10,8 @@
 //! captured from upstream.
 
 use std::collections::HashMap;
+
+use indexmap::IndexMap;
 use url::Url;
 
 use crate::utils::validate::verify_hostname;
@@ -51,15 +53,21 @@ pub struct ParsedUrl {
   /// Query string arguments. Values are decoded and trimmed. Keys are
   /// decoded and trimmed but keep their case; keys that differ only in
   /// case collapse to the last one, as upstream's lowercased `qsd` does.
-  /// Use [`ParsedUrl::get`] for case-insensitive lookups.
+  /// Use [`ParsedUrl::get`] for case-insensitive lookups and
+  /// [`ParsedUrl::qsd_ordered`] for URL order; change it through
+  /// [`ParsedUrl::set_arg`] so the order stays known.
   pub qsd: HashMap<String, String>,
-  /// Arguments written as `?+name=value` with the `+` removed and the case
-  /// kept (upstream `qsd+`, typically extra HTTP headers).
-  pub qsd_add: HashMap<String, String>,
+  /// The keys of `qsd` in the order the URL wrote them (upstream's `qsd`
+  /// is an insertion-ordered dict). A repeated key keeps its first place.
+  pub qsd_order: Vec<String>,
+  /// Arguments written as `?+name=value`, in URL order, with the `+`
+  /// removed and the case kept (upstream `qsd+`, typically extra HTTP
+  /// headers).
+  pub qsd_add: IndexMap<String, String>,
   /// Arguments written as `?-name=value` (upstream `qsd-`).
-  pub qsd_del: HashMap<String, String>,
+  pub qsd_del: IndexMap<String, String>,
   /// Arguments written as `?:name=value` (upstream `qsd:`).
-  pub qsd_colon: HashMap<String, String>,
+  pub qsd_colon: IndexMap<String, String>,
   /// Tags assigned by whatever loaded this URL (`tag=URL` text config
   /// lines, YAML `tag:`/`tags:`, [`crate::Apprise::add_with_tags`]).
   /// Raw strings, `priority:tag` form kept intact.
@@ -99,23 +107,33 @@ struct RawParts {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Qsd {
   pub qsd: HashMap<String, String>,
-  pub add: HashMap<String, String>,
-  pub del: HashMap<String, String>,
-  pub colon: HashMap<String, String>,
+  /// Keys of `qsd` in URL order.
+  pub order: Vec<String>,
+  pub add: IndexMap<String, String>,
+  pub del: IndexMap<String, String>,
+  pub colon: IndexMap<String, String>,
 }
 
 impl Qsd {
   /// Insert into the main map, replacing any key that differs only in case.
   fn insert(&mut self, key: String, value: String) {
-    insert_ci(&mut self.qsd, key, value);
+    insert_ci(&mut self.qsd, &mut self.order, key, value);
   }
 }
 
-/// Insert `key`, removing existing keys that match it case-insensitively.
-pub(crate) fn insert_ci(map: &mut HashMap<String, String>, key: String, value: String) {
+/// Insert `key`, replacing an existing key that matches it
+/// case-insensitively. The replaced key keeps its place in `order`.
+fn insert_ci(map: &mut HashMap<String, String>, order: &mut Vec<String>, key: String, value: String) {
   if !map.contains_key(&key) {
     let lower = key.to_lowercase();
-    map.retain(|k, _| k.to_lowercase() != lower);
+    if let Some(old) = map.keys().find(|k| k.to_lowercase() == lower).cloned() {
+      map.remove(&old);
+      if let Some(slot) = order.iter_mut().find(|k| **k == old) {
+        *slot = key.clone();
+      }
+    } else {
+      order.push(key.clone());
+    }
   }
   map.insert(key, value);
 }
@@ -186,6 +204,7 @@ impl ParsedUrl {
       path: fullpath.strip_prefix('/').unwrap_or(&fullpath).to_string(),
       path_parts: split_path(&fullpath),
       qsd: qsd.qsd,
+      qsd_order: qsd.order,
       qsd_add: qsd.add,
       qsd_del: qsd.del,
       qsd_colon: qsd.colon,
@@ -216,6 +235,40 @@ impl ParsedUrl {
   /// Get query string value by key (case-insensitive)
   pub fn get(&self, key: &str) -> Option<&str> {
     qsd_get_ci(&self.qsd, key)
+  }
+
+  /// The query arguments in URL order. Keys added to `qsd` directly,
+  /// without [`ParsedUrl::set_arg`], come last in sorted order.
+  pub fn qsd_ordered(&self) -> Vec<(&str, &str)> {
+    let mut out: Vec<(&str, &str)> = self.qsd_order.iter().filter_map(|k| self.qsd.get_key_value(k)).map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut rest: Vec<(&str, &str)> = self.qsd.iter().filter(|(k, _)| !self.qsd_order.contains(k)).map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    rest.sort();
+    out.extend(rest);
+    out
+  }
+
+  /// Set a query argument the way a later `&key=value` in the URL would:
+  /// it replaces a key that differs only in case and keeps that key's
+  /// place. A key starting with `+`, `-` or `:` also updates the matching
+  /// prefix map.
+  pub fn set_arg(&mut self, key: &str, value: &str) {
+    insert_ci(&mut self.qsd, &mut self.qsd_order, key.to_string(), value.to_string());
+    if let Some(rest) = key.strip_prefix([' ', '+']) {
+      self.qsd_add.insert(rest.to_string(), value.to_string());
+    }
+    if let Some(rest) = key.strip_prefix('-') {
+      self.qsd_del.insert(rest.to_string(), value.to_string());
+    }
+    if let Some(rest) = key.strip_prefix(':') {
+      self.qsd_colon.insert(rest.to_string(), value.to_string());
+    }
+  }
+
+  /// Remove a query argument (case-insensitive).
+  pub fn remove_arg(&mut self, key: &str) {
+    let lower = key.to_lowercase();
+    self.qsd.retain(|k, _| k.to_lowercase() != lower);
+    self.qsd_order.retain(|k| k.to_lowercase() != lower);
   }
 
   /// Get the host, or return a default
@@ -278,7 +331,7 @@ fn qsd_get_ci<'a>(map: &'a HashMap<String, String>, key: &str) -> Option<&'a str
 /// commas or backslashes, which only appear encoded in a parsed path) and
 /// decode each non-empty segment.
 pub fn split_path(path: &str) -> Vec<String> {
-  path.trim_start_matches('/').split(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n' | ',' | '\\' | '/')).filter(|s| !s.is_empty()).map(unquote).collect()
+  path.trim_start_matches('/').split([' ', '\t', '\r', '\n', ',', '\\', '/']).filter(|s| !s.is_empty()).map(unquote).collect()
 }
 
 /// Python `str.strip()` whitespace (Unicode whitespace plus the ASCII
@@ -930,6 +983,10 @@ mod tests {
     v.as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string())).collect()
   }
 
+  fn str_vec(v: &Value) -> Vec<String> {
+    v.as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect()
+  }
+
   /// Replays upstream `URLBase.parse_url(url, verify_host=False)` results.
   #[test]
   fn test_parse_url_parity() {
@@ -966,9 +1023,17 @@ mod tests {
 
       let lowered: HashMap<String, String> = got.qsd.iter().map(|(k, v)| (k.to_lowercase(), v.clone())).collect();
       assert_eq!(lowered, str_map(&expected["qsd"]), "qsd of {:?}", url);
-      assert_eq!(got.qsd_add, str_map(&expected["qsd+"]), "qsd+ of {:?}", url);
-      assert_eq!(got.qsd_del, str_map(&expected["qsd-"]), "qsd- of {:?}", url);
-      assert_eq!(got.qsd_colon, str_map(&expected["qsd:"]), "qsd: of {:?}", url);
+      assert_eq!(got.qsd_add.clone().into_iter().collect::<HashMap<_, _>>(), str_map(&expected["qsd+"]), "qsd+ of {:?}", url);
+      assert_eq!(got.qsd_del.clone().into_iter().collect::<HashMap<_, _>>(), str_map(&expected["qsd-"]), "qsd- of {:?}", url);
+      assert_eq!(got.qsd_colon.clone().into_iter().collect::<HashMap<_, _>>(), str_map(&expected["qsd:"]), "qsd: of {:?}", url);
+
+      // Upstream dicts keep insertion order; so must we.
+      let order = &expected["order"];
+      let keys: Vec<String> = got.qsd_ordered().iter().map(|(k, _)| k.to_lowercase()).collect();
+      assert_eq!(keys, str_vec(&order["qsd"]), "qsd order of {:?}", url);
+      assert_eq!(got.qsd_add.keys().cloned().collect::<Vec<_>>(), str_vec(&order["qsd+"]), "qsd+ order of {:?}", url);
+      assert_eq!(got.qsd_del.keys().cloned().collect::<Vec<_>>(), str_vec(&order["qsd-"]), "qsd- order of {:?}", url);
+      assert_eq!(got.qsd_colon.keys().cloned().collect::<Vec<_>>(), str_vec(&order["qsd:"]), "qsd: order of {:?}", url);
     }
   }
 
@@ -1145,6 +1210,36 @@ mod tests {
     let p = ParsedUrl::parse("pover://u%40ser@tok%20en/").unwrap();
     assert_eq!(p.user.as_deref(), Some("u@ser"));
     assert_eq!(p.host.as_deref(), Some("tok en"));
+  }
+
+  #[test]
+  fn test_qsd_keeps_url_order() {
+    // WhatsApp template components and custom JSON/XML payload keys rely on it
+    let p = ParsedUrl::parse("whatsapp://t@id/?:2=second&:1=first&z=1&a=2&Z=3;m=4").unwrap();
+    let keys: Vec<&str> = p.qsd_colon.keys().map(String::as_str).collect();
+    assert_eq!(keys, vec!["2", "1"]);
+    let order: Vec<(&str, &str)> = p.qsd_ordered();
+    assert_eq!(order, vec![(":2", "second"), (":1", "first"), ("Z", "3"), ("a", "2"), ("m", "4")]);
+
+    let mut p = p;
+    p.set_arg("A", "9");
+    p.set_arg("new", "x");
+    p.set_arg("+Header", "h");
+    let order: Vec<&str> = p.qsd_ordered().iter().map(|(k, _)| *k).collect();
+    assert_eq!(order, vec![":2", ":1", "Z", "A", "m", "new", "+Header"]);
+    assert_eq!(p.get("a"), Some("9"));
+    assert_eq!(p.qsd_add.get("Header").map(String::as_str), Some("h"));
+    p.remove_arg("z");
+    assert!(p.get("z").is_none());
+    assert_eq!(p.qsd_ordered()[2].0, "A");
+  }
+
+  #[test]
+  fn test_qsd_splits_on_semicolons() {
+    let p = ParsedUrl::parse("json://host/?a=1;b=2&c=3").unwrap();
+    assert_eq!(p.get("a"), Some("1"));
+    assert_eq!(p.get("b"), Some("2"));
+    assert_eq!(p.get("c"), Some("3"));
   }
 
   #[test]

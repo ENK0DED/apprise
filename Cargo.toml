@@ -52,6 +52,7 @@ async-trait = "0.1"
 urlencoding = "2"
 
 regex-lite = "0.1"
+indexmap = "2"
 
 # Cryptographic primitives
 hmac = "0.13"
