@@ -9,6 +9,7 @@ pub mod locale;
 pub mod parse;
 pub mod pem;
 pub mod pgp;
+pub mod plugin_args;
 pub mod sanitize;
 pub mod socket;
 pub mod templates;

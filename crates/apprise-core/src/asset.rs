@@ -29,6 +29,22 @@ impl Default for AppriseAsset {
   }
 }
 
+/// Upstream's default `AppriseAsset.image_url_mask`, used when the asset
+/// does not set one.
+pub const DEFAULT_IMAGE_URL_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
+
+impl AppriseAsset {
+  /// The image URL for a notification type at `image_size` (such as
+  /// `"72x72"`), as upstream `AppriseAsset.image_url()` builds it.
+  pub fn image_url(&self, notify_type: &crate::types::NotifyType, image_size: &str) -> Option<String> {
+    let mask = self.image_url_mask.as_deref().unwrap_or(DEFAULT_IMAGE_URL_MASK);
+    if mask.is_empty() {
+      return None;
+    }
+    Some(mask.replace("{THEME}", &self.theme).replace("{TYPE}", notify_type.as_str()).replace("{XY}", image_size).replace("{EXTENSION}", ".png"))
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -63,5 +79,16 @@ mod tests {
     assert_eq!(asset.theme, "dark");
     assert_eq!(asset.body_format, Some("html".to_string()));
     assert!(!asset.secure_logging);
+  }
+
+  #[test]
+  fn test_image_url() {
+    let asset = AppriseAsset::default();
+    assert_eq!(
+      asset.image_url(&crate::types::NotifyType::Warning, "72x72").as_deref(),
+      Some("https://github.com/caronc/apprise/raw/master/apprise/assets/themes/default/apprise-warning-72x72.png")
+    );
+    let custom = AppriseAsset { image_url_mask: Some("https://x/{TYPE}-{XY}.png".into()), ..Default::default() };
+    assert_eq!(custom.image_url(&crate::types::NotifyType::Info, "128x128").as_deref(), Some("https://x/info-128x128.png"));
   }
 }
