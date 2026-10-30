@@ -43,11 +43,18 @@ pub fn url_credentials(url: &ParsedUrl) -> (Option<String>, Option<String>) {
   (user, password)
 }
 
-/// Split URL path entries the way upstream `URLBase.split_path()` does: on
-/// `/` (already done by `ParsedUrl`) and also on whitespace, commas and
-/// backslashes. Empty entries are dropped.
-pub fn split_path(parts: &[String]) -> Vec<String> {
-  parts.iter().flat_map(|p| p.split(|c: char| c.is_whitespace() || c == ',' || c == '\\')).filter(|s| !s.is_empty()).map(str::to_string).collect()
+/// Split the URL path the way upstream `URLBase.split_path()` does: the
+/// still-encoded path is split on `/`, whitespace, commas and backslashes,
+/// then each entry is percent-decoded. An encoded `%20` or `%2F` therefore
+/// stays inside its entry. Empty entries are dropped.
+pub fn split_path(url: &ParsedUrl) -> Vec<String> {
+  url
+    .path
+    .split(|c: char| c == '/' || c.is_whitespace() || c == ',' || c == '\\')
+    .filter(|s| !s.is_empty())
+    .map(|s| urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string()))
+    .filter(|s| !s.is_empty())
+    .collect()
 }
 
 /// Upstream `parse_list()`: split every entry on whitespace, commas,
@@ -113,8 +120,11 @@ mod tests {
 
   #[test]
   fn test_split_path_and_parse_list() {
-    let parts = vec!["a b".to_string(), "c,d\\e".to_string(), "".to_string()];
-    assert_eq!(split_path(&parts), vec!["a", "b", "c", "d", "e"]);
+    let split = |u: &str| split_path(&ParsedUrl::parse(u).unwrap());
+    assert_eq!(split("smpp://host/a,b//c/"), vec!["a", "b", "c"]);
+    // Encoded separators stay inside their entry
+    assert_eq!(split("smpp://host/+1%20(555)%20123-4567/a%2Fb?x=y"), vec!["+1 (555) 123-4567", "a/b"]);
+    assert!(split("smpp://host").is_empty());
     assert_eq!(parse_list(&["b, a", "c;[a] d", ""]), vec!["a", "b", "c", "d"]);
   }
 

@@ -93,7 +93,7 @@ impl Aprs {
 
     // The host and every path entry are call signs, as is ?to=.
     let mut raw = vec![url.host.clone().unwrap_or_default()];
-    raw.extend(split_path(&url.path_parts));
+    raw.extend(split_path(url));
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
       raw.extend(parse_list(&[to]));
     }

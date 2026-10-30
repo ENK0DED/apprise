@@ -85,7 +85,7 @@ impl RSyslog {
       None => url.port.unwrap_or(DEFAULT_PORT),
     };
 
-    let facility = match resolve_facility(&split_path(&url.path_parts), url.get("facility")) {
+    let facility = match resolve_facility(&split_path(url), url.get("facility")) {
       Ok(f) => f,
       Err(name) => {
         tracing::warn!("An invalid syslog facility ({}) was specified.", name);

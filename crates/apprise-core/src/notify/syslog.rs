@@ -30,7 +30,7 @@ impl Syslog {
     // The facility may be given as the host (syslog://local5) or as the
     // last path entry.
     let mut tokens: Vec<String> = url.host.iter().filter(|h| !h.is_empty()).cloned().collect();
-    tokens.extend(split_path(&url.path_parts));
+    tokens.extend(split_path(url));
     let facility = match resolve_facility(&tokens, url.get("facility")) {
       Ok(f) => f,
       Err(name) => {
