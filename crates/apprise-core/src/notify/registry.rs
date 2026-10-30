@@ -95,6 +95,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(parseplatform::ParsePlatform::static_details());
   collect!(plivo::Plivo::static_details());
   collect!(popcorn_notify::PopcornNotify::static_details());
+  collect!(postmark::Postmark::static_details());
   collect!(prowl::Prowl::static_details());
   collect!(pushbullet::Pushbullet::static_details());
   collect!(pushdeer::PushDeer::static_details());
@@ -239,6 +240,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(parseplatform::ParsePlatform::from_url, "parsep", "parseps");
   reg!(plivo::Plivo::from_url, "plivo");
   reg!(popcorn_notify::PopcornNotify::from_url, "popcorn");
+  reg!(postmark::Postmark::from_url, "postmark");
   reg!(prowl::Prowl::from_url, "prowl");
   reg!(pushbullet::Pushbullet::from_url, "pbul");
   reg!(pushdeer::PushDeer::from_url, "pushdeer", "pushdeers", "push");
