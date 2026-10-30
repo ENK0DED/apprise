@@ -59,6 +59,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(gotify::Gotify::static_details());
   collect!(growl::Growl::static_details());
   collect!(guilded::Guilded::static_details());
+  collect!(gupshup::Gupshup::static_details());
   collect!(home_assistant::HomeAssistant::static_details());
   collect!(httpsms::HttpSms::static_details());
   collect!(ifttt::Ifttt::static_details());
@@ -206,6 +207,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(gotify::Gotify::from_url, "gotify", "gotifys");
   reg!(growl::Growl::from_url, "growl");
   reg!(guilded::Guilded::from_url, "guilded");
+  reg!(gupshup::Gupshup::from_url, "gupshup");
   reg!(home_assistant::HomeAssistant::from_url, "hassio", "hassios");
   reg!(httpsms::HttpSms::from_url, "httpsms");
   reg!(ifttt::Ifttt::from_url, "ifttt");

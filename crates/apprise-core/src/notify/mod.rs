@@ -49,6 +49,7 @@ pub mod google_chat;
 pub mod gotify;
 pub mod growl;
 pub mod guilded;
+pub mod gupshup;
 pub mod home_assistant;
 pub mod httpsms;
 pub mod ifttt;
