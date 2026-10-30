@@ -42,11 +42,14 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(bulkvs::BulkVs::static_details());
   collect!(burstsms::BurstSms::static_details());
   collect!(chanify::Chanify::static_details());
+  collect!(cliq::Cliq::static_details());
   collect!(clickatell::Clickatell::static_details());
   collect!(clicksend::ClickSend::static_details());
   collect!(cm::Cm::static_details());
   collect!(d7networks::D7Networks::static_details());
   collect!(dapnet::Dapnet::static_details());
+  #[cfg(feature = "email")]
+  collect!(deltachat::DeltaChat::static_details());
   #[cfg(all(feature = "desktop", unix))]
   collect!(desktop::dbus::DBus::static_details());
   #[cfg(all(feature = "desktop", unix))]
@@ -63,6 +66,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(eight00com::Eight00com::static_details());
   collect!(emby::Emby::static_details());
   collect!(enigma2::Enigma2::static_details());
+  collect!(evolution::Evolution::static_details());
   collect!(exotel::Exotel::static_details());
   collect!(fcm::Fcm::static_details());
   collect!(feishu::FeiShu::static_details());
@@ -76,6 +80,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(google_chat::GoogleChat::static_details());
   collect!(gorush::Gorush::static_details());
   collect!(gotify::Gotify::static_details());
+  collect!(groundmail::Groundmail::static_details());
   collect!(groupme::GroupMe::static_details());
   collect!(growl::Growl::static_details());
   collect!(guilded::Guilded::static_details());
@@ -97,12 +102,14 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(kaleyra::Kaleyra::static_details());
   collect!(kavenegar::Kavenegar::static_details());
   collect!(kodi::Kodi::static_details());
+  collect!(kook::Kook::static_details());
   collect!(kumulos::Kumulos::static_details());
   collect!(lametric::LaMetric::static_details());
   collect!(lark::Lark::static_details());
   collect!(lauther::Lauther::static_details());
   collect!(lfgalarm::LfgAlarm::static_details());
   collect!(line::Line::static_details());
+  collect!(mailersend::MailerSend::static_details());
   collect!(mailgun::Mailgun::static_details());
   collect!(mastodon::Mastodon::static_details());
   collect!(matrix::Matrix::static_details());
@@ -117,7 +124,6 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(nextcloudtalk::NextcloudTalk::static_details());
   collect!(notica::Notica::static_details());
   collect!(notifiarr::Notifiarr::static_details());
-  collect!(notificationapi::NotificationApi::static_details());
   collect!(notifico::Notifico::static_details());
   collect!(notifyre::Notifyre::static_details());
   collect!(ntfy::Ntfy::static_details());
@@ -130,6 +136,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(pagertree::PagerTree::static_details());
   collect!(parseplatform::ParsePlatform::static_details());
   collect!(pinglet::Pinglet::static_details());
+  collect!(pingram::Pingram::static_details());
   collect!(plivo::Plivo::static_details());
   collect!(postmark::Postmark::static_details());
   collect!(prowl::Prowl::static_details());
@@ -237,11 +244,14 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(bulkvs::BulkVs::from_url, "bulkvs");
   reg!(burstsms::BurstSms::from_url, "burstsms");
   reg!(chanify::Chanify::from_url, "chanify");
+  reg!(cliq::Cliq::from_url, "cliq", "zcliq", "zohocliq");
   reg!(clickatell::Clickatell::from_url, "clickatell");
   reg!(clicksend::ClickSend::from_url, "clicksend");
   reg!(cm::Cm::from_url, "cm");
   reg!(d7networks::D7Networks::from_url, "d7sms");
   reg!(dapnet::Dapnet::from_url, "dapnet");
+  #[cfg(feature = "email")]
+  reg!(deltachat::DeltaChat::from_url, "deltachat", "deltachats");
   #[cfg(all(feature = "desktop", unix))]
   reg!(desktop::dbus::DBus::from_url, "dbus", "kde", "qt");
   #[cfg(all(feature = "desktop", unix))]
@@ -258,6 +268,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(eight00com::Eight00com::from_url, "eight00com");
   reg!(emby::Emby::from_url, "emby", "embys");
   reg!(enigma2::Enigma2::from_url, "enigma2", "enigma2s");
+  reg!(evolution::Evolution::from_url, "evolution", "evolutions");
   reg!(exotel::Exotel::from_url, "exotel");
   reg!(fcm::Fcm::from_url, "fcm");
   reg!(feishu::FeiShu::from_url, "feishu");
@@ -271,6 +282,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(google_chat::GoogleChat::from_url, "gchat");
   reg!(gorush::Gorush::from_url, "gorush", "gorushs");
   reg!(gotify::Gotify::from_url, "gotify", "gotifys");
+  reg!(groundmail::Groundmail::from_url, "groundmail");
   reg!(groupme::GroupMe::from_url, "groupme");
   reg!(growl::Growl::from_url, "growl");
   reg!(guilded::Guilded::from_url, "guilded");
@@ -292,12 +304,14 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(kaleyra::Kaleyra::from_url, "kaleyra", "klr");
   reg!(kavenegar::Kavenegar::from_url, "kavenegar");
   reg!(kodi::Kodi::from_url, "kodi", "kodis", "xbmc", "xbmcs");
+  reg!(kook::Kook::from_url, "kook");
   reg!(kumulos::Kumulos::from_url, "kumulos");
   reg!(lametric::LaMetric::from_url, "lametric", "lametrics");
   reg!(lark::Lark::from_url, "lark");
   reg!(lauther::Lauther::from_url, "lauther");
   reg!(lfgalarm::LfgAlarm::from_url, "lfg");
   reg!(line::Line::from_url, "line");
+  reg!(mailersend::MailerSend::from_url, "mailersend");
   reg!(mailgun::Mailgun::from_url, "mailgun");
   reg!(mastodon::Mastodon::from_url, "mastodon", "toot", "mastodons", "toots");
   reg!(matrix::Matrix::from_url, "matrix", "matrixs");
@@ -313,6 +327,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(notica::Notica::from_url, "notica", "noticas");
   reg!(notifiarr::Notifiarr::from_url, "notifiarr");
   reg!(notificationapi::NotificationApi::from_url, "napi", "notificationapi");
+  reg!(notifyre::Notifyre::from_url, "notifyre");
   reg!(notifico::Notifico::from_url, "notifico", "notificos");
   reg!(notifyre::Notifyre::from_url, "notifyre");
   reg!(ntfy::Ntfy::from_url, "ntfy", "ntfys");
@@ -325,6 +340,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(pagertree::PagerTree::from_url, "pagertree");
   reg!(parseplatform::ParsePlatform::from_url, "parsep", "parseps");
   reg!(pinglet::Pinglet::from_url, "pinglet", "pinglets");
+  reg!(pingram::Pingram::from_url, "pingram");
   reg!(plivo::Plivo::from_url, "plivo");
   reg!(postmark::Postmark::from_url, "postmark");
   reg!(prowl::Prowl::from_url, "prowl");
