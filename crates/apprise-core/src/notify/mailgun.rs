@@ -459,6 +459,8 @@ mod tests {
     let reqs = server.received_requests().await.unwrap();
     assert_eq!(reqs.len(), 1);
     assert!(form(&reqs[0].body).contains(&("to".to_string(), "user1@example.com,user2@example.com".to_string())));
+    assert_eq!(parse("mailgun://user@example.com/apikey?region=eu").api_base(), "https://api.eu.mailgun.net");
+    assert_eq!(parse("mailgun://user@example.com/apikey").api_base(), "https://api.mailgun.net");
   }
 
   #[tokio::test]
