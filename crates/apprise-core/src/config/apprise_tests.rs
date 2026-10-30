@@ -203,3 +203,21 @@ async fn test_huge_timeouts_do_not_panic() {
   // Nothing listens on port 1; the send fails instead of panicking
   assert!(!a.notify(&ctx).await.is_success());
 }
+
+#[cfg(feature = "yaml")]
+#[tokio::test]
+async fn test_yaml_url_settings_give_distinct_storage_ids() {
+  // host:/user: given as YAML keys are part of the service's identity
+  let mut a = Apprise::new();
+  a.add_config_text("urls:\n  - json://:\n      host: alpha.example.com\n  - json://:\n      host: beta.example.com\n", None, 1).await.unwrap();
+  let ids: Vec<Option<String>> = a.services().map(|svc| a.url_id(svc)).collect();
+  assert_eq!(ids.len(), 2);
+  assert!(ids[0].is_some());
+  assert_ne!(ids[0], ids[1]);
+  // A URL written out in full keeps the identity it always had
+  let mut b = Apprise::new();
+  assert!(b.add("json://alpha.example.com"));
+  let mut c = Apprise::new();
+  assert!(c.add("json://alpha.example.com"));
+  assert_eq!(b.services().map(|s| b.url_id(s)).next(), c.services().map(|s| c.url_id(s)).next());
+}

@@ -505,6 +505,14 @@ pub trait Notify: Send + Sync {
     None
   }
 
+  /// The parsed URL the service was built from, with any settings a
+  /// configuration file added (`host:`, `user:` and so on in YAML), which
+  /// the [`source_url`](Self::source_url) text may not show. Filled in by
+  /// `ConfiguredService`; storage namespaces are derived from it.
+  fn url_base(&self) -> Option<&crate::utils::parse::ParsedUrl> {
+    None
+  }
+
   /// When this instance last made a request, for [`throttle`]. Only
   /// `ConfiguredService` returns `Some`.
   fn throttle_clock(&self) -> Option<ThrottleClock> {

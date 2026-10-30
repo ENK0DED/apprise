@@ -123,18 +123,26 @@ pub struct ConfiguredService {
   inner: Box<dyn Notify>,
   options: ServiceOptions,
   url: Option<String>,
+  parsed: Option<ParsedUrl>,
   clock: ThrottleClock,
 }
 
 impl ConfiguredService {
   pub fn new(inner: Box<dyn Notify>, options: ServiceOptions) -> Self {
-    Self { inner, options, url: None, clock: ThrottleClock::default() }
+    Self { inner, options, url: None, parsed: None, clock: ThrottleClock::default() }
   }
 
   /// Remember the URL the service was loaded from (for masked display and
   /// its storage namespace).
   pub fn with_url(mut self, url: &str) -> Self {
     self.url = Some(url.to_string());
+    self
+  }
+
+  /// Remember the parsed URL the service was built from (see
+  /// [`Notify::url_base`]).
+  pub fn with_parsed(mut self, parsed: &ParsedUrl) -> Self {
+    self.parsed = Some(parsed.clone());
     self
   }
 
@@ -157,7 +165,14 @@ pub fn url_id(svc: &dyn Notify, salt: &[u8], idlen: usize) -> Option<String> {
       engine.update(part.as_bytes());
     }
   } else {
-    let url = ParsedUrl::parse(svc.source_url()?)?;
+    let reparsed;
+    let url = match svc.url_base() {
+      Some(url) => url,
+      None => {
+        reparsed = ParsedUrl::parse(svc.source_url()?)?;
+        &reparsed
+      }
+    };
     let field = |v: &Option<String>| v.as_deref().filter(|s| !s.is_empty()).map(|s| s.as_bytes().to_vec()).unwrap_or_else(|| b"\0".to_vec());
     engine.update(url.schema.as_bytes());
     engine.update(url.password.as_deref().map(|p| p.as_bytes().to_vec()).unwrap_or_else(|| b"\0".to_vec()));
@@ -242,6 +257,9 @@ impl Notify for ConfiguredService {
   }
   fn source_url(&self) -> Option<&str> {
     self.url.as_deref().or_else(|| self.inner.source_url())
+  }
+  fn url_base(&self) -> Option<&ParsedUrl> {
+    self.parsed.as_ref().or_else(|| self.inner.url_base())
   }
   fn url_identifier(&self) -> Option<Vec<String>> {
     self.inner.url_identifier()
