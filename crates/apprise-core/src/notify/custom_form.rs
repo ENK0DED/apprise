@@ -1,8 +1,8 @@
 use crate::error::NotifyError;
-use crate::notify::custom_json::{attachment_filename, basic_auth, custom_args, fullpath, header_map, parse_method};
+use crate::notify::custom_json::{CUSTOM_FORMATS, attachment_filename, basic_auth, custom_args, fullpath, header_map, parse_method};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
+use crate::types::NotifyFormat;
 use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd;
 use async_trait::async_trait;
 
 /// The core fields, in payload order. `:message=text` renames one and
@@ -76,9 +76,9 @@ impl Form {
     let host = url.host.clone().filter(|h| !h.is_empty())?;
     let method = parse_method(url)?;
 
-    let attach_as = match qsd::get(url, "attach-as").filter(|v| !v.is_empty()) {
+    let attach_as = match url.get("attach-as").filter(|v| !v.is_empty()) {
       None => AttachAs::default_name(),
-      Some(v) => match AttachAs::parse(&v) {
+      Some(v) => match AttachAs::parse(v) {
         Some(a) => a,
         None => {
           tracing::warn!("The attach-as specified ({}) is invalid.", v);
@@ -163,6 +163,9 @@ impl Notify for Form {
     // Upstream disables throttling for this service
     0.0
   }
+  fn notify_formats(&self) -> Vec<NotifyFormat> {
+    CUSTOM_FORMATS.to_vec()
+  }
   fn attachment_support(&self) -> bool {
     true
   }
@@ -218,6 +221,7 @@ impl Notify for Form {
       req = req.basic_auth(user, Some(password));
     }
 
+    crate::notify::throttle().await;
     let resp = req.send().await?;
     let status = resp.status();
     if status.is_success() {

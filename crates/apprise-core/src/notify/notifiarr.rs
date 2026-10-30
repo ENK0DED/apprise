@@ -1,8 +1,7 @@
+use crate::asset::NotifyImageSize;
 use crate::error::NotifyError;
-use crate::notify::ntfy::image_url;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
-use crate::utils::parse::{ParsedUrl, parse_bool};
-use crate::utils::qsd;
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list, unquote};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -95,13 +94,16 @@ impl Notifiarr {
     let host = url.host.clone().unwrap_or_default();
     let mut targets: Vec<String> = url.path_parts.clone();
 
+    // Upstream unquotes query values a second time
+    let arg = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote);
+
     // With ?apikey= (or ?key=) the host is a channel instead of the key
-    let apikey = match qsd::get(url, "apikey").filter(|v| !v.is_empty()).or_else(|| qsd::get(url, "key").filter(|v| !v.is_empty())) {
+    let apikey = match arg("apikey").or_else(|| arg("key")) {
       Some(k) => {
         if !host.is_empty() {
           targets.push(host.clone());
         }
-        qsd::unquote(&k)
+        k
       }
       None => host,
     };
@@ -110,19 +112,19 @@ impl Notifiarr {
       return None;
     }
 
-    if let Some(to) = qsd::get(url, "to").filter(|v| !v.is_empty()) {
-      targets.extend(qsd::unquote(&to).split(|c: char| " \t\r\n,#\\/".contains(c)).filter(|s| !s.is_empty()).map(String::from));
+    if let Some(to) = arg("to") {
+      targets.extend(to.split(|c: char| " \t\r\n,#\\/".contains(c)).filter(|s| !s.is_empty()).map(String::from));
     }
     let mut channels = Vec::new();
-    for target in qsd::parse_list(&targets.join(" ")) {
+    for target in parse_list(&targets.join(" ")) {
       match parse_channel(&target) {
         Some(c) => channels.push(c),
         None => tracing::warn!("Dropped invalid channel ({}) specified.", target),
       }
     }
 
-    let event = match qsd::get(url, "event").filter(|v| !v.is_empty()) {
-      Some(e) => match qsd::unquote(&e).trim().parse::<i64>() {
+    let event = match arg("event") {
+      Some(e) => match e.trim().parse::<i64>() {
         Ok(n) => n,
         Err(_) => {
           tracing::warn!("An invalid Notifiarr Discord Event ID ({}) was specified.", e);
@@ -132,16 +134,12 @@ impl Notifiarr {
       None => 0,
     };
 
-    let source = qsd::get(url, "source")
-      .filter(|v| !v.is_empty())
-      .or_else(|| qsd::get(url, "from").filter(|v| !v.is_empty()))
-      .map(|s| qsd::unquote(&s).trim().to_string())
-      .filter(|s| !s.is_empty());
+    let source = arg("source").or_else(|| arg("from")).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
     Some(Self {
       apikey,
       channels,
-      include_image: qsd::get(url, "image").is_some_and(|v| parse_bool(&v)),
+      include_image: url.get("image").is_some_and(parse_bool),
       event,
       source,
       verify_certificate: url.verify_certificate(),
@@ -183,8 +181,9 @@ impl Notifiarr {
         "ids": {"channel": channel},
       },
     });
-    if self.include_image {
-      let icon = image_url(&ctx.asset, &ctx.notify_type, "256x256");
+    if self.include_image
+      && let Some(icon) = ctx.image_url(NotifyImageSize::Xy256)
+    {
       payload["discord"]["text"]["icon"] = json!(icon);
       payload["discord"]["images"] = json!({"thumbnail": icon});
     }
@@ -224,7 +223,14 @@ impl Notify for Notifiarr {
 
     let mut has_error = false;
     for channel in &self.channels {
+      // Skip a channel that already accepted this message so a retry does
+      // not deliver it twice
+      let key = channel.to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
       tracing::debug!("Notifiarr POST URL: {} (cert_verify={})", url, self.verify_certificate);
+      crate::notify::throttle().await;
       let resp = client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -235,14 +241,17 @@ impl Notify for Notifiarr {
         .send()
         .await;
       match resp {
-        Ok(r) if r.status().is_success() => tracing::info!("Sent Notifiarr notification."),
+        Ok(r) if r.status().is_success() => {
+          tracing::info!("Sent Notifiarr notification.");
+          crate::delivery::mark_delivered(&key, false);
+        }
         Ok(r) => {
           tracing::warn!("Failed to send Notifiarr notification: error={}.", r.status().as_u16());
           has_error = true;
         }
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Notifiarr Chat notification.");
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           has_error = true;
         }
       }
@@ -361,5 +370,33 @@ mod tests {
     assert!(body["discord"].get("images").is_none());
 
     assert!(!arr("notifiarr://apikey").send(&ctx).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_channels_that_accepted() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/api/v1/notification/apprise"));
+    let channel = |id: u64| wiremock::matchers::body_partial_json(json!({"discord": {"ids": {"channel": id}}}));
+    send().and(channel(1)).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second channel fails once, then accepts the retry
+    send().and(channel(2)).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(channel(2)).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("notifiarr://apikey/1/2?retry=1&wait=0"));
+    let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx)).await.is_success());
+  }
+
+  #[tokio::test]
+  async fn test_requests_are_spaced_out() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/api/v1/notification/apprise")).respond_with(ResponseTemplate::new(200)).expect(3).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("notifiarr://apikey/1/2/3"));
+    let ctx = NotifyContext { title: "t".into(), body: "b".into(), ..Default::default() };
+    let started = std::time::Instant::now();
+    assert!(crate::notify::with_throttling_in_tests(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx))).await.is_success());
+    // Upstream waits 0.04s between requests
+    assert!(started.elapsed() >= std::time::Duration::from_millis(80), "{:?}", started.elapsed());
   }
 }

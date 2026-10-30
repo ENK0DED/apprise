@@ -2,8 +2,7 @@ use crate::error::NotifyError;
 use crate::notify::apprise_api::uuid4;
 use crate::notify::custom_json::basic_auth;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
-use crate::utils::parse::{ParsedUrl, parse_bool};
-use crate::utils::qsd;
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list, unquote};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -58,7 +57,7 @@ fn parse_service(entry: &str) -> Option<Service> {
     None => (DEFAULT_DOMAIN.to_string(), first),
   };
   let targets = match rest.strip_prefix(':') {
-    Some(after) => qsd::parse_list(&after.chars().take_while(|c| is_name_char(*c) || *c == ',').collect::<String>()),
+    Some(after) => parse_list(&after.chars().take_while(|c| is_name_char(*c) || *c == ',').collect::<String>()),
     None => Vec::new(),
   };
   Some(Service { domain, service, targets })
@@ -120,9 +119,11 @@ impl HomeAssistant {
     // targets), else the first path element that looks like a token (the
     // others are targets), else the last path element (and no targets)
     let mut targets: Vec<String> = Vec::new();
-    let access_token = if let Some(t) = qsd::get(url, "accesstoken").filter(|t| !t.is_empty()).or_else(|| qsd::get(url, "token").filter(|t| !t.is_empty())) {
+    // Upstream unquotes query values a second time
+    let arg = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote);
+    let access_token = if let Some(t) = arg("accesstoken").or_else(|| arg("token")) {
       targets = tokens.clone();
-      Some(qsd::unquote(&t))
+      Some(t)
     } else if let Some(idx) = tokens.iter().position(|t| is_long_lived_token(t)) {
       targets.extend(tokens[idx + 1..].iter().rev().cloned());
       targets.extend(tokens[..idx].iter().rev().cloned());
@@ -131,8 +132,8 @@ impl HomeAssistant {
       tokens.last().cloned()
     };
 
-    if let Some(to) = qsd::get(url, "to").filter(|t| !t.is_empty()) {
-      targets.extend(qsd::unquote(&to).split(|c: char| " \t\r\n,\\/".contains(c)).filter(|s| !s.is_empty()).map(String::from));
+    if let Some(to) = arg("to") {
+      targets.extend(to.split(|c: char| " \t\r\n,\\/".contains(c)).filter(|s| !s.is_empty()).map(String::from));
     }
 
     let Some(access_token) = access_token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) else {
@@ -140,7 +141,7 @@ impl HomeAssistant {
       return None;
     };
 
-    let nid = match qsd::get(url, "nid").filter(|n| !n.is_empty()).map(|n| qsd::unquote(&n).trim().to_string()) {
+    let nid = match arg("nid").map(|n| n.trim().to_string()) {
       Some(n) if !n.is_empty() && n.chars().all(is_name_char) => Some(n),
       Some(n) => {
         tracing::warn!("An invalid Home Assistant Notification Identifier ({}) was specified.", n);
@@ -159,8 +160,8 @@ impl HomeAssistant {
       access_token,
       secure,
       nid,
-      batch: qsd::get(url, "batch").is_some_and(|b| parse_bool(&b)),
-      prefix: qsd::get(url, "prefix").filter(|p| !p.is_empty()).map(|p| qsd::unquote(&p)).unwrap_or_default(),
+      batch: url.get("batch").is_some_and(parse_bool),
+      prefix: arg("prefix").unwrap_or_default(),
       has_targets: !targets.is_empty(),
       services,
       verify_certificate: url.verify_certificate(),
@@ -195,6 +196,7 @@ impl HomeAssistant {
       Some((user, password)) => req.basic_auth(user, Some(password)),
       None => req.header("Authorization", format!("Bearer {}", self.access_token)),
     };
+    crate::notify::throttle().await;
     let resp = req.send().await?;
     let status = resp.status().as_u16();
     if status != 200 {
@@ -239,16 +241,27 @@ impl Notify for HomeAssistant {
 
     let batch_size = if self.batch { BATCH_SIZE } else { 1 };
     for s in &self.services {
+      // Skip a service call that already went out so a retry does not
+      // deliver it twice; each batch of its targets is tracked on its own
+      let key = format!("{}.{}:{}", s.domain, s.service, s.targets.join(","));
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
       let url = format!("{}{}/api/services/{}/{}", self.base_url(), self.prefix.trim_end_matches('/'), s.domain, s.service);
       if s.targets.is_empty() {
         self.post(&client, &url, &payload).await?;
-        continue;
       }
-      for chunk in s.targets.chunks(batch_size) {
+      for (index, chunk) in s.targets.chunks(batch_size).enumerate() {
+        let batch_key = format!("batch|{}|{}", key, index * batch_size);
+        if crate::delivery::is_delivered(&batch_key, false) {
+          continue;
+        }
         let mut p = payload.clone();
         p["targets"] = json!(chunk);
         self.post(&client, &url, &p).await?;
+        crate::delivery::mark_delivered(&batch_key, false);
       }
+      crate::delivery::mark_delivered(&key, false);
     }
     Ok(true)
   }
@@ -446,5 +459,21 @@ mod tests {
     // Every service entry was invalid
     assert!(!ha("hassio://localhost/%only%/%invalid%/?token=lng.lived.token").send(&ctx()).await.unwrap());
     assert!(ha("hassio://127.0.0.1:1/long.lived.token").send(&ctx()).await.is_err());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_calls_that_went_out() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/api/services/notify/serviceA")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second batch of service2 fails once, then accepts the retry
+    let service2 = |targets: Value| {
+      Mock::given(method("POST")).and(path("/api/services/notify/service2")).and(wiremock::matchers::body_partial_json(json!({"targets": targets})))
+    };
+    service2(json!(["t1"])).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    service2(json!(["t2"])).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    service2(json!(["t2"])).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("hassio://localhost:{}/long.lived.token/service2:t1,t2/serviceA?retry=1&wait=0", server.address().port())));
+    assert!(apprise.notify(&ctx()).await.is_success());
   }
 }

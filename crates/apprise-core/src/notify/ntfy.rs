@@ -3,15 +3,17 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value};
 
 use crate::asset::AppriseAsset;
+use crate::asset::NotifyImageSize;
 use crate::error::NotifyError;
 use crate::notify::apprise_api::uuid4;
 use crate::notify::{APP_ID, Attachment, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::types::{NotifyFormat, NotifyType};
-use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd;
-use crate::utils::validate::is_ipaddr;
+use crate::utils::parse::{ParsedUrl, parse_bool_or, parse_list, quote, unquote};
+use crate::utils::validate::{is_hostname, is_ipaddr};
 
 /// Upstream `AppriseAsset.image_url_mask`, used when the asset sets none.
+/// Only Rocket.Chat still uses [`image_url`]; ntfy itself uses
+/// `NotifyContext::image_url`.
 const DEFAULT_IMAGE_URL_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
 
 /// The notification icon URL for `notify_type` at `size` (`"256x256"`),
@@ -34,30 +36,6 @@ pub(crate) fn image_url(asset: &AppriseAsset, notify_type: &NotifyType, size: &s
     rest = &rest[c.len_utf8()..];
   }
   out
-}
-
-/// Upstream `is_hostname()`: RFC 1123 labels (underscores allowed), an
-/// optional trailing dot, or an IP address.
-pub(crate) fn py_is_hostname(host: &str) -> bool {
-  if host.is_empty() || host.len() > 253 {
-    return false;
-  }
-  let h = host.strip_suffix('.').unwrap_or(host);
-  let labels: Vec<&str> = h.split('.').collect();
-  if labels.len() == 4 && h.chars().all(|c| c.is_ascii_digit() || c == '.') {
-    return is_ipaddr(h);
-  }
-  let label_ok = |l: &str| {
-    let ok_chars = l.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    let first = l.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
-    let last_ok = !l.ends_with('_') && !l.ends_with('-');
-    match l.len() {
-      1 => l.chars().all(|c| c.is_ascii_alphabetic()),
-      2..=63 => ok_chars && first && last_ok,
-      _ => false,
-    }
-  };
-  labels.iter().all(|l| label_ok(l)) || is_ipaddr(h.trim_start_matches('[').trim_end_matches(']'))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -122,7 +100,7 @@ pub struct Ntfy {
 
 /// A query value as upstream reads it: `qsd` value, unquoted once more.
 fn arg(url: &ParsedUrl, key: &str) -> Option<String> {
-  qsd::get(url, key).filter(|v| !v.is_empty()).map(|v| qsd::unquote(&v))
+  url.get(key).filter(|v| !v.is_empty()).map(unquote)
 }
 
 /// The part after the last `/`, or `None` when that is empty.
@@ -152,20 +130,15 @@ impl Ntfy {
   const CLOUD_NOTIFY_URL: &'static str = "https://ntfy.sh";
 
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // Native https://ntfy.sh/topic URLs always use cloud mode
-    let native = url.schema == "http" || url.schema == "https";
-    if native && (!url.host.as_deref().is_some_and(|h| h.eq_ignore_ascii_case("ntfy.sh")) || url.user.is_some() || url.password.is_some() || url.port.is_some())
-    {
-      return None;
-    }
-
-    let host = if native { String::new() } else { url.host.clone().unwrap_or_default() };
+    // Native https://ntfy.sh/topic URLs arrive here already rewritten by the
+    // registry as ntfys:///topic?mode=cloud
+    let host = url.host.clone().unwrap_or_default();
     let user = url.user.clone().filter(|u| !u.is_empty());
     let password = url.password.clone().filter(|p| !p.is_empty());
 
     let mut targets: Vec<String> = url.path_parts.clone();
-    if let Some(to) = qsd::get(url, "to").filter(|v| !v.is_empty()) {
-      targets.extend(qsd::parse_list(&to));
+    if let Some(to) = url.get("to").filter(|v| !v.is_empty()) {
+      targets.extend(parse_list(to));
     }
 
     // Authentication
@@ -175,8 +148,8 @@ impl Ntfy {
       auth = Some("token".into());
       token = Some(t);
     }
-    if let Some(a) = qsd::get(url, "auth").filter(|v| !v.is_empty()) {
-      auth = Some(qsd::unquote(&a.trim().to_lowercase()));
+    if let Some(a) = url.get("auth").filter(|v| !v.is_empty()) {
+      auth = Some(unquote(&a.trim().to_lowercase()));
     }
     if auth.is_none()
       && let Some(u) = &user
@@ -198,14 +171,10 @@ impl Ntfy {
     };
 
     // Mode
-    let mode = if native {
-      "cloud".to_string()
-    } else {
-      match qsd::get(url, "mode").filter(|v| !v.is_empty()) {
-        Some(m) => qsd::unquote(&m.trim().to_lowercase()),
-        None if (py_is_hostname(&host) || is_ipaddr(&host)) && !targets.is_empty() => "private".into(),
-        None => "cloud".into(),
-      }
+    let mode = match url.get("mode").filter(|v| !v.is_empty()) {
+      Some(m) => unquote(&m.trim().to_lowercase()),
+      None if (is_hostname(&host) || is_ipaddr(&host)) && !targets.is_empty() => "private".into(),
+      None => "cloud".into(),
     };
     let mode = match mode.as_str() {
       "cloud" => Mode::Cloud,
@@ -218,7 +187,7 @@ impl Ntfy {
     match mode {
       // ntfy://topic: the host is the first topic
       Mode::Cloud if !host.to_lowercase().contains("ntfy.sh") => targets.insert(0, host.clone()),
-      Mode::Private if !py_is_hostname(&host) => return None,
+      Mode::Private if !is_hostname(&host) => return None,
       _ => {}
     }
 
@@ -232,9 +201,9 @@ impl Ntfy {
       }
     }
 
-    let priority = match qsd::get(url, "priority").filter(|v| !v.is_empty()) {
+    let priority = match arg(url, "priority") {
       Some(p) => {
-        let p = qsd::unquote(&p).to_lowercase();
+        let p = p.to_lowercase();
         PRIORITY_MAP.iter().find(|(k, _)| p.starts_with(k)).map(|(_, v)| *v).unwrap_or("default")
       }
       None => "default",
@@ -244,7 +213,7 @@ impl Ntfy {
     let attach = arg(url, "attach");
     let mut filename = None;
     if let Some(a) = &attach {
-      if let Some(p) = ParsedUrl::parse(a).filter(|p| p.host.as_deref().is_some_and(py_is_hostname)) {
+      if let Some(p) = ParsedUrl::parse(a).filter(|p| p.host.as_deref().is_some_and(is_hostname)) {
         filename = basename(&p.path);
       }
       if let Some(f) = arg(url, "filename") {
@@ -253,16 +222,12 @@ impl Ntfy {
     }
 
     // Non-ASCII click URLs are encoded once here (and again when sent)
-    let click = arg(url, "click").map(|c| if c.is_ascii() { c } else { qsd::quote(&c, ":/?&=[]") });
+    let click = arg(url, "click").map(|c| if c.is_ascii() { c } else { quote(&c, ":/?&=[]") });
 
-    let xtags =
-      qsd::get(url, "xtags").filter(|v| !v.is_empty()).or_else(|| qsd::get(url, "tags")).map(|t| qsd::parse_list(&qsd::unquote(&t))).unwrap_or_default();
+    let xtags = url.get("xtags").filter(|v| !v.is_empty()).or_else(|| url.get("tags")).map(|t| parse_list(&unquote(t))).unwrap_or_default();
 
     // Upstream parse_bool() with a default of yes
-    let include_image = qsd::get(url, "image").is_none_or(|v| {
-      let head: String = v.to_lowercase().chars().take(2).collect();
-      !["de", "di", "ne", "f", "n", "no", "of", "0", "fa"].contains(&head.as_str())
-    });
+    let include_image = url.get("image").is_none_or(|v| parse_bool_or(v, true));
 
     Some(Self {
       mode,
@@ -283,7 +248,7 @@ impl Ntfy {
       xtags,
       actions: arg(url, "actions"),
       include_image,
-      avatar_url: qsd::get(url, "avatar_url").map(|v| qsd::unquote(&v)),
+      avatar_url: url.get("avatar_url").map(unquote),
       verify_certificate: url.verify_certificate(),
       tags: url
         .assigned_tags
@@ -337,7 +302,7 @@ impl Ntfy {
       list.push(("X-Delay", d.clone()));
     }
     if let Some(c) = &self.click {
-      list.push(("X-Click", qsd::quote(c, ":/?@&=#")));
+      list.push(("X-Click", quote(c, ":/?@&=#")));
     }
     if let Some(e) = &self.email {
       list.push(("X-Email", e.clone()));
@@ -425,11 +390,12 @@ impl Ntfy {
     }
 
     tracing::debug!("ntfy POST URL: {} (cert_verify={})", url, self.verify_certificate);
+    crate::notify::throttle().await;
     let resp = match req.send().await {
       Ok(r) => r,
       Err(e) => {
         tracing::warn!("A Connection error occurred sending ntfy:{} notification.", url);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return Ok(false);
       }
     };
@@ -471,6 +437,9 @@ impl Notify for Ntfy {
   fn body_maxlen(&self) -> usize {
     7800
   }
+  fn overflow_amalgamate_title(&self) -> bool {
+    true
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     if self.topics.is_empty() {
@@ -478,21 +447,22 @@ impl Notify for Ntfy {
       return Ok(false);
     }
 
-    let icon = if self.include_image {
-      Some(self.avatar_url.clone().filter(|a| !a.is_empty()).unwrap_or_else(|| image_url(&ctx.asset, &ctx.notify_type, "256x256")))
-    } else {
-      None
-    };
+    let icon = if self.include_image { self.avatar_url.clone().filter(|a| !a.is_empty()).or_else(|| ctx.image_url(NotifyImageSize::Xy256)) } else { None };
 
     let client = build_client(self.verify_certificate)?;
     let mut has_error = false;
     // Upstream pops topics off the end of its list
     for topic in self.topics.iter().rev() {
+      // Skip a topic that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(topic, false) {
+        continue;
+      }
       if ctx.attachments.is_empty() {
         if !self.send_one(&client, ctx, topic, (&ctx.title, &ctx.body), None, icon.as_deref()).await? {
           has_error = true;
+          continue;
         }
-        continue;
       }
       // One upload per attachment; the first carries the title and body
       for (no, att) in ctx.attachments.iter().enumerate() {
@@ -501,6 +471,7 @@ impl Notify for Ntfy {
           return Ok(false);
         }
       }
+      crate::delivery::mark_delivered(topic, false);
     }
     Ok(!has_error)
   }
@@ -591,7 +562,8 @@ mod tests {
     let n = ntfy("ntfy://ntfy.sh/topic1/topic2/");
     assert_eq!((n.mode, n.base_url()), (Mode::Private, "http://ntfy.sh".to_string()));
 
-    let n = ntfy("https://ntfy.sh/t1/t2?mode=private");
+    // What the registry makes of https://ntfy.sh/t1/t2?mode=private
+    let n = ntfy("ntfys:///t1/t2?mode=private&mode=cloud");
     assert_eq!((n.mode, n.topics.clone(), n.base_url()), (Mode::Cloud, vec!["t1".to_string(), "t2".to_string()], "https://ntfy.sh".to_string()));
 
     let n = ntfy("ntfys://user:pass@localhost:8080?to=topic,abc---&priority=max");
@@ -664,18 +636,11 @@ mod tests {
   }
 
   #[test]
-  fn test_image_url_and_hostname() {
+  fn test_image_url() {
     let asset = AppriseAsset::default();
     assert_eq!(image_url(&asset, &NotifyType::Info, "256x256"), ICON);
     let custom = AppriseAsset { image_url_mask: Some("http://x/{theme}/{TYPE}-{xy}{EXTENSION}?{TYPE}".into()), ..AppriseAsset::default() };
     assert_eq!(image_url(&custom, &NotifyType::Warning, "72x72"), "http://x/default/warning-72x72.png?warning");
-
-    for ok in ["localhost", "my_host", "a", "ntfy.sh.", "10.0.0.1", "a1.b-c"] {
-      assert!(py_is_hostname(ok), "{ok}");
-    }
-    for bad in ["", "-_", "_a", "a-", "a..b", "1"] {
-      assert!(!py_is_hostname(bad), "{bad}");
-    }
   }
 
   #[test]
@@ -809,5 +774,20 @@ mod tests {
     assert!(!ntfy("ntfy://").send(&ctx("t", "b")).await.unwrap());
     assert!(!ntfy("ntfy://localhost/topic1?auth=token").send(&ctx("t", "b")).await.unwrap());
     assert!(!ntfy("ntfy://127.0.0.1:1/topic1").send(&ctx("t", "b")).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_retry_skips_topics_that_accepted() {
+    let server = MockServer::start().await;
+    let topic = |t: &str| Mock::given(method("POST")).and(path("/")).and(wiremock::matchers::body_partial_json(serde_json::json!({"topic": t})));
+    topic("t2").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second topic fails once, then accepts the retry
+    topic("t1").respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    topic("t1").respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("ntfy://localhost:{}/t1/t2?retry=1&wait=0", server.address().port())));
+    assert!(apprise.notify(&ctx("t", "b")).await.is_success());
+    // ntfy shows the title with the body, so both count against its limit
+    assert!(ntfy("ntfy://localhost/t1").overflow_amalgamate_title());
   }
 }

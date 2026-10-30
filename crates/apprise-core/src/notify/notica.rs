@@ -2,7 +2,6 @@ use crate::error::NotifyError;
 use crate::notify::custom_json::{basic_auth, custom_args, header_map};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::qsd;
 use async_trait::async_trait;
 
 pub struct Notica {
@@ -22,17 +21,8 @@ pub struct Notica {
 
 impl Notica {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    // Native https://notica.us/?{token}[&options]
-    if url.schema == "http" || url.schema == "https" {
-      if !url.host.as_deref().is_some_and(|h| h.eq_ignore_ascii_case("notica.us")) || url.user.is_some() || url.port.is_some() {
-        return None;
-      }
-      let after_host = url.raw.splitn(4, '/').nth(3).unwrap_or("");
-      let rest = after_host.strip_prefix('?').unwrap_or(after_host);
-      let token = rest.split('&').next().unwrap_or("");
-      return Self::build(url, Some(qsd::unquote(token)), None, String::new());
-    }
-
+    // Native https://notica.us/?{token} URLs arrive here already rewritten
+    // by the registry as notica://{token}/
     let encoded: Vec<&str> = url.path.split('/').filter(|s| !s.is_empty()).collect();
     match encoded.split_last() {
       // notica://{token}: the official service
@@ -120,6 +110,7 @@ impl Notify for Notica {
       req = req.basic_auth(user, Some(password));
     }
 
+    crate::notify::throttle().await;
     let resp = req.send().await?;
     let status = resp.status().as_u16();
     if status == 200 {
@@ -168,7 +159,8 @@ mod tests {
 
   #[test]
   fn test_parse() {
-    let n = notica("https://notica.us/?zzzzzz&overflow=upstream");
+    // What the registry makes of https://notica.us/?zzzzzz&overflow=upstream
+    let n = notica("notica://zzzzzz/?overflow=upstream");
     assert_eq!((n.token.as_str(), n.host.is_none()), ("zzzzzz", true));
     let n = notica("notica://aaaaaa");
     assert_eq!((n.token.as_str(), n.host.is_none()), ("aaaaaa", true));
