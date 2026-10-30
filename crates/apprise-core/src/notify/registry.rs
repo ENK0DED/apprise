@@ -151,6 +151,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(wecombot::WeComBot::static_details());
   collect!(whatsapp::WhatsApp::static_details());
   collect!(workflows::Workflows::static_details());
+  collect!(wpush::WPush::static_details());
   collect!(wxpusher::WxPusher::static_details());
   collect!(xbmc::Xbmc::static_details());
   collect!(xmpp::Xmpp::static_details());
@@ -299,6 +300,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(wecombot::WeComBot::from_url, "wecombot");
   reg!(whatsapp::WhatsApp::from_url, "whatsapp");
   reg!(workflows::Workflows::from_url, "workflow", "workflows");
+  reg!(wpush::WPush::from_url, "wpush");
   reg!(wxpusher::WxPusher::from_url, "wxpusher");
   reg!(xbmc::Xbmc::from_url, "xbmc", "xbmcs", "kodi", "kodis");
   reg!(xmpp::Xmpp::from_url, "xmpp", "xmpps");
@@ -356,6 +358,7 @@ fn instantiate(parsed: &ParsedUrl) -> Option<Box<dyn Notify>> {
         ("push.spug.cc", "spugpush"),
         ("push.spug.dev", "spugpush"),
         ("stackfield.com", "stackfield"),
+        ("api.wpush.cn", "wpush"),
         ("youlmk.com", "youlmk"),
         ("inbots.zoom.us", "zoom"),
         ("qyapi.weixin.qq.com", "wecombot"),

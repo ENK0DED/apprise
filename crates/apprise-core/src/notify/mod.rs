@@ -138,6 +138,7 @@ pub mod webexteams;
 pub mod wecombot;
 pub mod whatsapp;
 pub mod workflows;
+pub mod wpush;
 pub mod wxpusher;
 pub mod xbmc;
 pub mod xmpp;
