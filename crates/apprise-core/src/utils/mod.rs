@@ -11,6 +11,7 @@ pub mod pem;
 pub mod pgp;
 pub mod sanitize;
 pub mod socket;
+pub mod targets;
 pub mod templates;
 pub mod time;
 pub mod validate;
