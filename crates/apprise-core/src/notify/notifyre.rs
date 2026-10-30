@@ -46,7 +46,7 @@ impl Notifyre {
     // Upstream strips query values and ignores empty ones
     let qsd = |key: &str| url.get(key).map(str::trim).filter(|v| !v.is_empty());
 
-    let apikey = decode(url.host.as_deref().unwrap_or_default());
+    let apikey = url.host.clone().unwrap_or_default();
     if apikey.is_empty() {
       tracing::warn!("A Notifyre API key must be specified.");
       return None;
@@ -200,11 +200,12 @@ impl Notify for Notifyre {
     let client = build_client(self.verify_certificate)?;
 
     tracing::debug!("Notifyre {} POST URL: {} (cert_verify={})", kind, url, self.verify_certificate);
+    crate::notify::throttle().await;
     let resp = match client.post(&url).header("User-Agent", APP_ID).header("x-api-token", self.apikey.as_str()).json(&payload).send().await {
       Ok(r) => r,
       Err(e) => {
         tracing::warn!("A Connection error occurred sending Notifyre {}.", kind);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         return Ok(false);
       }
     };
@@ -239,10 +240,6 @@ fn truthy(v: &Value) -> bool {
     Value::Array(a) => !a.is_empty(),
     Value::Object(o) => !o.is_empty(),
   }
-}
-
-fn decode(s: &str) -> String {
-  urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string())
 }
 
 fn truncate(text: &str) -> &str {
@@ -359,6 +356,7 @@ mod tests {
     // The campaign defaults to the application ID; attachments are dropped
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path(format!("/{API_VERSION}/sms/send")))
       .and(body_json(json!({
         "body": "title\r\nbody",
         "recipients": [{"type": "mobile_number", "value": "+15551234567"}],
@@ -419,6 +417,7 @@ mod tests {
     // Defaults, without attachments
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path(format!("/{API_VERSION}/fax/send")))
       .and(body_json(json!({
         "templateName": "",
         "recipients": [{"type": "fax_number", "value": "+15551234567"}],
@@ -448,14 +447,24 @@ mod tests {
       let svc = from_url(&format!("notifyre://KEY/15551234567?mode={}", mode)).unwrap();
       for (status, body) in [(200, r#"{"success": false, "message": "Insufficient credit"}"#), (200, r#"{"success": null}"#), (201, ""), (500, ""), (999, "")] {
         let server = MockServer::start().await;
-        Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(1).mount(&server).await;
+        Mock::given(method("POST"))
+          .and(path(format!("/{API_VERSION}/{mode}/send")))
+          .respond_with(ResponseTemplate::new(status).set_body_string(body))
+          .expect(1)
+          .mount(&server)
+          .await;
         assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap(), "{} status {} {}", mode, status, body);
       }
 
       // Without a success flag the status code decides
       for body in ["garbage", "[]", "{}"] {
         let server = MockServer::start().await;
-        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string(body)).expect(1).mount(&server).await;
+        Mock::given(method("POST"))
+          .and(path(format!("/{API_VERSION}/{mode}/send")))
+          .respond_with(ResponseTemplate::new(200).set_body_string(body))
+          .expect(1)
+          .mount(&server)
+          .await;
         assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap(), "{} {}", mode, body);
       }
 

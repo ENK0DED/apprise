@@ -2,7 +2,6 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 use crate::utils::phone::{is_phone_no, parse_phone_no};
-use crate::utils::urlbase::url_host;
 use async_trait::async_trait;
 
 pub struct MessageBird {
@@ -15,7 +14,7 @@ pub struct MessageBird {
 
 impl MessageBird {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let apikey = url_host(url);
+    let apikey = url.host.clone().unwrap_or_default();
     // ^[a-z0-9]{25}$ (case-insensitive)
     if apikey.len() != 25 || !apikey.chars().all(|c| c.is_ascii_alphanumeric()) {
       tracing::warn!("An invalid MessageBird API Key was specified.");
@@ -97,14 +96,21 @@ impl Notify for MessageBird {
     let mut has_error = false;
 
     for target in &self.targets {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
+
       let recipient = format!("+{}", target);
       let payload = [("originator", originator.as_str()), ("recipients", recipient.as_str()), ("body", ctx.body.as_str())];
+      crate::notify::throttle().await;
       let resp =
         match client.post(&notify_url).header("User-Agent", APP_ID).header("Authorization", format!("AccessKey {}", self.apikey)).form(&payload).send().await {
           Ok(r) => r,
           Err(e) => {
             tracing::warn!("A Connection error occurred sending MessageBird:{} notification.", target);
-            tracing::debug!("Socket Exception: {}", e);
+            tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
             has_error = true;
             continue;
           }
@@ -118,6 +124,7 @@ impl Notify for MessageBird {
         continue;
       }
       tracing::info!("Sent MessageBird notification to {}.", target);
+      crate::delivery::mark_delivered(target, false);
     }
 
     Ok(!has_error)
@@ -128,7 +135,7 @@ impl Notify for MessageBird {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_string, header, method, path};
+  use wiremock::matchers::{body_string, body_string_contains, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   const KEY: &str = "aaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -230,10 +237,23 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/messages"));
+    send().and(body_string_contains("recipients=%2B15551232001")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    send().and(body_string_contains("recipients=%2B15551232002")).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(body_string_contains("recipients=%2B15551232002")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("msgbird://{}/15551232000/15551232001/15551232002?retry=1&wait=0", KEY)));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("body"))).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_failure() {
     for status in [500, 202] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/messages")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       let svc = from_url(&format!("msgbird://{}/15551232000", KEY)).unwrap();
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap(), "{}", status);
     }

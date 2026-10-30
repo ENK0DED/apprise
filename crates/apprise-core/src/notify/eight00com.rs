@@ -26,7 +26,7 @@ pub struct Eight00com {
 
 impl Eight00com {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = decode(url.host.as_deref().unwrap_or_default());
+    let host = url.host.clone().unwrap_or_default();
 
     // With ?from= the host becomes another target
     let (source, mut entries) = match url.get("from").filter(|f| !f.is_empty()) {
@@ -109,6 +109,7 @@ impl Eight00com {
       req.multipart(form)
     };
 
+    crate::notify::throttle().await;
     match req.send().await {
       Ok(resp) if resp.status().as_u16() == 200 => {
         tracing::info!("Sent 800.com {} to {}.", kind, recipient);
@@ -122,7 +123,7 @@ impl Eight00com {
       }
       Err(e) => {
         tracing::warn!("A Connection error occurred sending 800.com {} to {}.", kind, recipient);
-        tracing::debug!("Socket Exception: {}", e);
+        tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
         false
       }
     }
@@ -162,7 +163,14 @@ impl Notify for Eight00com {
     let client = build_client(self.verify_certificate)?;
     let mut ok = true;
     for target in &self.targets {
-      if !self.send_one(&client, &format!("+{}", target), &ctx.body, &ctx.attachments).await {
+      // Skip a target that already accepted this message so a retry does
+      // not deliver it twice
+      if crate::delivery::is_delivered(target, false) {
+        continue;
+      }
+      if self.send_one(&client, &format!("+{}", target), &ctx.body, &ctx.attachments).await {
+        crate::delivery::mark_delivered(target, false);
+      } else {
         ok = false;
       }
     }
@@ -185,10 +193,6 @@ fn status_reason(status: u16) -> &'static str {
   }
 }
 
-fn decode(s: &str) -> String {
-  urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
 fn truncate(text: &str) -> &str {
   match text.char_indices().nth(2000) {
     Some((i, _)) => &text[..i],
@@ -200,7 +204,7 @@ fn truncate(text: &str) -> &str {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   fn parse(url: &str) -> Option<Eight00com> {
@@ -310,7 +314,9 @@ mod tests {
     };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
 
-    let requests = server.received_requests().await.unwrap();
+    let requests: Vec<_> =
+      server.received_requests().await.unwrap().into_iter().filter(|r| r.method.as_str() == "POST" && r.url.path() == "/message").collect();
+    assert_eq!(requests.len(), 1);
     let content_type = requests[0].headers.get("content-type").unwrap().to_str().unwrap();
     assert!(content_type.starts_with("multipart/form-data; boundary="));
     let body = String::from_utf8_lossy(&requests[0].body);
@@ -324,23 +330,38 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/message"));
+    send().and(body_partial_json(json!({"recipient": "+15551234567"}))).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    let second = json!({"recipient": "+15551234568"});
+    send().and(body_partial_json(&second)).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(body_partial_json(&second)).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add("eight00com://token123@8005551234/15551234567/15551234568?retry=1&wait=0"));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("body"))).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_failures() {
     let svc = from_url("eight00com://token123@8005551234/15551234567").unwrap();
     for status in [201, 401, 422, 429, 500, 999] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/message")).respond_with(ResponseTemplate::new(status)).expect(1).mount(&server).await;
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap(), "status {}", status);
     }
 
     // One failed target fails the send, but the rest are still tried
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/message"))
       .and(body_json(json!({"sender": "+8005551234", "recipient": "+15551234567", "message": "body"})))
       .respond_with(ResponseTemplate::new(500))
       .expect(1)
       .mount(&server)
       .await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/message")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
     let svc = from_url("eight00com://token123@8005551234/15551234567/15551234568").unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("body"))).await.unwrap());
 

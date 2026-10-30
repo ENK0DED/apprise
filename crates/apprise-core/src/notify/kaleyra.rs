@@ -57,7 +57,7 @@ impl Kaleyra {
       return None;
     };
     // ?sender= wins over ?from=, which wins over the host
-    let sender = qsd("sender").or_else(|| qsd("from")).map(str::to_string).unwrap_or_else(|| decode(url.host.as_deref().unwrap_or_default()));
+    let sender = qsd("sender").or_else(|| qsd("from")).map(str::to_string).unwrap_or_else(|| url.host.clone().unwrap_or_default());
     let Some(sender) = validate(&sender) else {
       tracing::warn!("A Kaleyra Sender ID must be specified.");
       return None;
@@ -158,12 +158,20 @@ impl Notify for Kaleyra {
 
     let batch_size = if self.batch { BATCH_SIZE } else { 1 };
     let mut ok = true;
-    for targets in self.targets.chunks(batch_size) {
+    for (index, targets) in self.targets.chunks(batch_size).enumerate() {
+      // Skip a batch that already went out so a retry does not deliver it
+      // to those recipients twice
+      let key = (index * batch_size).to_string();
+      if crate::delivery::is_delivered(&key, false) {
+        continue;
+      }
+
       // Several phone numbers are separated by a comma
       let to = targets.join(",");
       payload["to"] = json!(to);
 
       tracing::debug!("Kaleyra POST URL: {} (cert_verify={})", url, self.verify_certificate);
+      crate::notify::throttle().await;
       let resp = match client
         .post(&url)
         .header("User-Agent", APP_ID)
@@ -176,7 +184,7 @@ impl Notify for Kaleyra {
         Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred sending Kaleyra notification to {}.", to);
-          tracing::debug!("Socket Exception: {}", e);
+          tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
           ok = false;
           continue;
         }
@@ -194,6 +202,7 @@ impl Notify for Kaleyra {
         continue;
       }
       tracing::info!("Sent Kaleyra notification to {}.", to);
+      crate::delivery::mark_delivered(&key, false);
     }
     Ok(ok)
   }
@@ -227,10 +236,6 @@ fn status_reason(status: u16) -> &'static str {
   }
 }
 
-fn decode(s: &str) -> String {
-  urlencoding::decode(s).map(|d| d.into_owned()).unwrap_or_else(|_| s.to_string())
-}
-
 fn truncate(text: &str) -> &str {
   match text.char_indices().nth(2000) {
     Some((i, _)) => &text[..i],
@@ -242,7 +247,7 @@ fn truncate(text: &str) -> &str {
 mod tests {
   use super::*;
   use crate::notify::registry::from_url;
-  use wiremock::matchers::{body_json, header, method, path};
+  use wiremock::matchers::{body_json, body_partial_json, header, method, path};
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   const SID: &str = "HXAP16XXXXXX97IN";
@@ -376,6 +381,20 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn test_retry_skips_accepted_targets() {
+    let server = MockServer::start().await;
+    let send = || Mock::given(method("POST")).and(path("/v1/S/messages"));
+    send().and(body_partial_json(json!({"to": "15551234567"}))).respond_with(ok_response()).expect(1).mount(&server).await;
+    // The second number fails once, then accepts the retry
+    let second = json!({"to": "15551234568"});
+    send().and(body_partial_json(&second)).respond_with(ResponseTemplate::new(500)).up_to_n_times(1).expect(1).mount(&server).await;
+    send().and(body_partial_json(&second)).respond_with(ok_response()).expect(1).mount(&server).await;
+    let mut apprise = crate::Apprise::new();
+    assert!(apprise.add(&format!("kaleyra://S:K@{SENDER}/15551234567/15551234568?retry=1&wait=0")));
+    assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&ctx("B"))).await.is_success());
+  }
+
+  #[tokio::test]
   async fn test_send_failures() {
     let svc = from_url(&format!("kaleyra://S:K@{SENDER}/15551234567")).unwrap();
     for (status, body) in [
@@ -386,24 +405,25 @@ mod tests {
       (999, ""),
     ] {
       let server = MockServer::start().await;
-      Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(1).mount(&server).await;
+      Mock::given(method("POST")).and(path("/v1/S/messages")).respond_with(ResponseTemplate::new(status).set_body_string(body)).expect(1).mount(&server).await;
       assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap(), "status {}", status);
     }
 
     // A 2xx answer that is not JSON relies on the status code
     let server = MockServer::start().await;
-    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/S/messages")).respond_with(ResponseTemplate::new(200).set_body_string("garbage")).mount(&server).await;
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap());
 
     // One failed target fails the send, but the rest are still tried
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+      .and(path("/v1/S/messages"))
       .and(body_json(json!({"to": "15551234567", "sender": SENDER, "body": "B", "unicode": "AUTO"})))
       .respond_with(ResponseTemplate::new(400))
       .expect(1)
       .mount(&server)
       .await;
-    Mock::given(method("POST")).respond_with(ok_response()).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/S/messages")).respond_with(ok_response()).expect(1).mount(&server).await;
     let svc = from_url(&format!("kaleyra://S:K@{SENDER}/15551234567/15551234568")).unwrap();
     assert!(!crate::notify::with_test_base(server.uri(), svc.send(&ctx("B"))).await.unwrap());
 
