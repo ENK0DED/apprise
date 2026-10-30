@@ -210,6 +210,11 @@ impl Connection {
         return Err(amqp_error("the broker does not speak AMQP 0-9-1"));
       }
       let size = u32::from_be_bytes([header[3], header[4], header[5], header[6]]) as usize;
+      // Frames may not exceed the negotiated frame_max (at most FRAME_MAX);
+      // a larger size would make us allocate whatever the broker claims.
+      if size > self.frame_max as usize {
+        return Err(amqp_error("the broker sent a frame larger than frame_max"));
+      }
       let mut payload = vec![0u8; size + 1];
       self.io.read_exact(&mut payload).await?;
       if payload.pop() != Some(FRAME_END) {

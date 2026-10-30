@@ -115,3 +115,14 @@ fn test_names_lose_control_characters() {
   // A name of nothing but control characters falls back to the default
   assert_eq!(final_name(Some("\r\n"), None, "text/plain"), "apprise-attachment.txt");
 }
+
+#[tokio::test]
+async fn test_load_limited_refuses_more_than_asked() {
+  let server = MockServer::start().await;
+  Mock::given(method("GET")).and(path("/key.pem")).respond_with(ResponseTemplate::new(200).set_body_string("k".repeat(9000))).mount(&server).await;
+  let source = http::HttpSource::from_url(&format!("{}/key.pem", server.uri())).unwrap();
+  assert!(matches!(source.load_limited(8000).await, Err(AttachError::TooLarge { limit: 8000, .. })));
+  assert_eq!(source.load_limited(9000).await.unwrap().data.len(), 9000);
+  // Key files go through the same limit
+  assert!(crate::utils::keyfile::read_source(&format!("{}/key.pem", server.uri()), 8000).await.is_none());
+}

@@ -68,10 +68,16 @@ impl HttpSource {
 
   /// Download the content, refusing anything over [`MAX_FILE_SIZE`].
   pub async fn load(&self) -> Result<Attachment, AttachError> {
-    with_http_options(self.http.clone(), self.fetch()).await
+    self.load_limited(MAX_FILE_SIZE).await
   }
 
-  async fn fetch(&self) -> Result<Attachment, AttachError> {
+  /// Download the content, refusing anything over `limit` bytes (or
+  /// [`MAX_FILE_SIZE`], if smaller) before reading past it.
+  pub async fn load_limited(&self, limit: u64) -> Result<Attachment, AttachError> {
+    with_http_options(self.http.clone(), self.fetch(limit.min(MAX_FILE_SIZE))).await
+  }
+
+  async fn fetch(&self, limit: u64) -> Result<Attachment, AttachError> {
     let fail = |e: reqwest::Error| {
       tracing::error!("A Connection error occurred retrieving HTTP attachment from {}.", self.url.host_str().unwrap_or(""));
       tracing::debug!("Socket Exception: {}", crate::error::loggable_http_error(&e));
@@ -97,10 +103,10 @@ impl HttpSource {
       return Err(AttachError::NotFound(self.display.clone()));
     }
     let too_large = || {
-      tracing::error!("HTTP response exceeds allowable maximum file length ({}KB): {}", MAX_FILE_SIZE / 1024, self.display);
-      AttachError::TooLarge { source_url: self.display.clone(), limit: MAX_FILE_SIZE }
+      tracing::error!("HTTP response exceeds allowable maximum file length ({}KB): {}", limit / 1024, self.display);
+      AttachError::TooLarge { source_url: self.display.clone(), limit }
     };
-    if response.content_length().is_some_and(|len| len > MAX_FILE_SIZE) {
+    if response.content_length().is_some_and(|len| len > limit) {
       return Err(too_large());
     }
     let header = |name: reqwest::header::HeaderName| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -108,7 +114,7 @@ impl HttpSource {
     let disposition = header(reqwest::header::CONTENT_DISPOSITION).and_then(|d| disposition_filename(&d));
     let mut data = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(fail)? {
-      if (data.len() + chunk.len()) as u64 > MAX_FILE_SIZE {
+      if (data.len() + chunk.len()) as u64 > limit {
         return Err(too_large());
       }
       data.extend_from_slice(&chunk);

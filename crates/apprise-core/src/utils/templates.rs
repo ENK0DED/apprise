@@ -204,7 +204,7 @@ impl TemplateFile {
   /// "Could not access {service} template ..." and one that cannot be
   /// read logs "{service} template ... could not be read.", as upstream.
   pub async fn read(&self, service: &str) -> Option<String> {
-    let loaded = match self.source.load().await {
+    let loaded = match self.source.load_limited(self.max_size as u64).await {
       Ok(a) if a.data.len() <= self.max_size => a,
       Ok(_) | Err(AttachError::NotFound(_)) | Err(AttachError::TooLarge { .. }) | Err(AttachError::Disallowed(_)) => {
         tracing::error!("Could not access {} template {}.", service, self.loggable());

@@ -227,6 +227,9 @@ fn parts_from_json(value: &Value) -> Option<(Vec<Vec<u8>>, u8, u8)> {
   Some((parts, u8::try_from(value.get(1)?.as_u64()?).ok()?, u8::try_from(value.get(2)?.as_u64()?).ok()?))
 }
 
+/// Largest PDU accepted from the server.
+const MAX_PDU_LEN: usize = 64 * 1024;
+
 /// Read one PDU and return its command ID, status and sequence.
 async fn read_pdu(stream: &mut TcpStream) -> Result<(u32, u32, u32), String> {
   let io = async {
@@ -234,7 +237,9 @@ async fn read_pdu(stream: &mut TcpStream) -> Result<(u32, u32, u32), String> {
     stream.read_exact(&mut header).await.map_err(|e| e.to_string())?;
     let word = |i: usize| u32::from_be_bytes([header[i], header[i + 1], header[i + 2], header[i + 3]]);
     let length = word(0) as usize;
-    if length < 16 {
+    // The PDUs read here are short responses; refuse a length that would
+    // make us allocate whatever the server claims.
+    if !(16..=MAX_PDU_LEN).contains(&length) {
       return Err("broken PDU".to_string());
     }
     let mut body = vec![0u8; length - 16];

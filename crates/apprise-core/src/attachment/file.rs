@@ -39,10 +39,17 @@ impl FileSource {
 
   /// Read the file.
   pub async fn load(&self) -> Result<Attachment, AttachError> {
+    self.load_limited(MAX_FILE_SIZE).await
+  }
+
+  /// [`load`](Self::load), refusing files over `limit` bytes (or
+  /// [`MAX_FILE_SIZE`], if smaller) before reading them.
+  pub async fn load_limited(&self, limit: u64) -> Result<Attachment, AttachError> {
+    let limit = limit.min(MAX_FILE_SIZE);
     let meta = tokio::fs::metadata(&self.path).await.ok().filter(|m| m.is_file()).ok_or_else(|| AttachError::NotFound(self.display.clone()))?;
-    if meta.len() > MAX_FILE_SIZE {
-      tracing::error!("Content exceeds allowable maximum file length ({}KB): {}", MAX_FILE_SIZE / 1024, self.display);
-      return Err(AttachError::TooLarge { source_url: self.display.clone(), limit: MAX_FILE_SIZE });
+    if meta.len() > limit {
+      tracing::error!("Content exceeds allowable maximum file length ({}KB): {}", limit / 1024, self.display);
+      return Err(AttachError::TooLarge { source_url: self.display.clone(), limit });
     }
     let data = tokio::fs::read(&self.path).await.map_err(|_| AttachError::NotFound(self.display.clone()))?;
     let detected = self.path.file_name().map(|n| n.to_string_lossy().into_owned());

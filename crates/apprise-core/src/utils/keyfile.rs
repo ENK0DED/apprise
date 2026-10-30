@@ -9,11 +9,15 @@ use std::path::PathBuf;
 /// the content and, for a local file, its path.
 pub async fn read_source(source: &str, max_size: usize) -> Option<(Vec<u8>, Option<PathBuf>)> {
   if source.starts_with("http://") || source.starts_with("https://") {
-    let attachment = crate::attachment::http::HttpSource::from_url(source).ok()?.load().await.ok()?;
-    if attachment.data.len() > max_size {
-      tracing::warn!("Remote file exceeds the {} byte limit", max_size);
-      return None;
-    }
+    // The limit applies while downloading, not after.
+    let attachment = match crate::attachment::http::HttpSource::from_url(source).ok()?.load_limited(max_size as u64).await {
+      Ok(attachment) => attachment,
+      Err(crate::error::AttachError::TooLarge { .. }) => {
+        tracing::warn!("Remote file exceeds the {} byte limit", max_size);
+        return None;
+      }
+      Err(_) => return None,
+    };
     return Some((attachment.data, None));
   }
   let path = PathBuf::from(source.strip_prefix("file://").unwrap_or(source));

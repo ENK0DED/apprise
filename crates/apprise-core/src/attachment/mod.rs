@@ -61,6 +61,15 @@ impl AttachSource {
     }
   }
 
+  /// Read the content, refusing anything over `limit` bytes before
+  /// reading past it (for templates and key files, which are small).
+  pub async fn load_limited(&self, limit: u64) -> Result<Attachment, AttachError> {
+    match self {
+      Self::File(f) => f.load_limited(limit).await,
+      Self::Http(h) => h.load_limited(limit).await,
+    }
+  }
+
   /// The source with secrets masked, for logs.
   pub fn loggable(&self) -> &str {
     match self {
