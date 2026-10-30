@@ -35,7 +35,7 @@ fn strip_is_empty(s: &str) -> bool {
 
 /// Parse the preprocessed document into `root`.
 pub(super) fn parse_document(md: &mut Markdown, root: Id, source: &str, tables: bool) {
-  let mut p = BlockParser { md, state: Vec::new(), tables };
+  let mut p = BlockParser { md, state: Vec::new(), tables, depth: 0 };
   p.parse_chunk(root, source);
 }
 
@@ -43,7 +43,17 @@ struct BlockParser<'a> {
   md: &'a mut Markdown,
   state: Vec<&'static str>,
   tables: bool,
+  /// How many `parse_blocks` calls are active: the nesting depth of
+  /// blockquotes, lists and indented blocks.
+  depth: usize,
 }
+
+/// Deepest container nesting that is parsed as such; deeper markup stays
+/// paragraph text. Python-Markdown stops nesting blockquotes as it nears the
+/// interpreter's recursion limit, which upstream reaches at 298 levels (its
+/// lists raise `RecursionError` a little deeper). The limit also bounds the
+/// recursion here, so hostile input cannot overflow the stack.
+const MAX_NESTING: usize = 298;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Proc {
@@ -383,6 +393,7 @@ impl BlockParser<'_> {
   }
 
   fn parse_blocks(&mut self, parent: Id, mut blocks: VecDeque<String>) {
+    self.depth += 1;
     while let Some(first) = blocks.front().cloned() {
       for &proc in PROCS {
         if proc == Proc::Table && !self.tables {
@@ -393,6 +404,7 @@ impl BlockParser<'_> {
         }
       }
     }
+    self.depth -= 1;
   }
 
   /// Test and run one processor: `None` when its test fails, else whether
@@ -419,6 +431,9 @@ impl BlockParser<'_> {
         Some(true)
       }
       Proc::Indent => {
+        if self.depth > MAX_NESTING {
+          return None;
+        }
         let parent_is_item = self.tag(parent) == "li";
         let last_is_list = self.last_child(parent).is_some_and(|c| matches!(self.tag(c), "ul" | "ol"));
         if !(block.starts_with("    ") && !self.isstate("detabbed") && (parent_is_item || last_is_list)) {
@@ -501,6 +516,9 @@ impl BlockParser<'_> {
         Some(true)
       }
       Proc::OList | Proc::UList => {
+        if self.depth > MAX_NESTING {
+          return None;
+        }
         let ordered = proc == Proc::OList;
         list_item(block, ordered)?;
         let block = blocks.pop_front().unwrap();
@@ -508,6 +526,9 @@ impl BlockParser<'_> {
         Some(true)
       }
       Proc::Quote => {
+        if self.depth > MAX_NESTING {
+          return None;
+        }
         let start = quote_search(block)?;
         let block = blocks.pop_front().unwrap();
         let before = &block[..start];

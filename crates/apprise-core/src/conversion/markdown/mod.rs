@@ -48,12 +48,39 @@ pub fn markdown_to_html(content: &str) -> String {
   markdown_to_html_with(content, DEFAULT_EXTENSIONS)
 }
 
+/// Stack reserved for one conversion. Nested emphasis builds a tree about
+/// half as deep as the input has `*`/`_` delimiters, and the walkers below
+/// recurse over it, so the conversion runs on its own thread with room for
+/// any input upstream converts. The stack is reserved address space; only
+/// what the conversion touches is committed.
+const CONVERT_STACK: usize = 256 << 20;
+
+/// Bodies with more emphasis delimiters than this are sent as escaped text,
+/// so no input can exhaust even [`CONVERT_STACK`]. No notification comes
+/// close.
+const MAX_EMPHASIS_DELIMITERS: usize = 200_000;
+
 /// Convert Markdown to HTML with an explicit extension list (upstream's
 /// `extensions=` argument; Matrix passes none).
 pub fn markdown_to_html_with(content: &str, extensions: &[MarkdownExtension]) -> String {
   if pystr::strip(content).is_empty() {
     return String::new();
   }
+  if content.chars().filter(|c| matches!(c, '*' | '_')).count() > MAX_EMPHASIS_DELIMITERS {
+    tracing::warn!("The Markdown body is nested too deeply to convert; sending it as escaped text.");
+    return crate::conversion::text_to_html(content);
+  }
+  std::thread::scope(|scope| {
+    let worker = std::thread::Builder::new().name("apprise-markdown".into()).stack_size(CONVERT_STACK);
+    match worker.spawn_scoped(scope, || convert(content, extensions)) {
+      Ok(handle) => handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+      // No thread available: convert here, as before.
+      Err(_) => convert(content, extensions),
+    }
+  })
+}
+
+fn convert(content: &str, extensions: &[MarkdownExtension]) -> String {
   let mut md = Markdown { tree: Tree::default(), stash: Vec::new(), references: HashMap::new() };
   let nl2br = extensions.contains(&MarkdownExtension::Nl2br);
   let tables = extensions.contains(&MarkdownExtension::Tables);
@@ -557,5 +584,33 @@ mod tests {
     assert_eq!(markdown_to_html("a\nb"), "<p>a<br />\nb</p>");
     assert_eq!(markdown_to_html_with("a\nb", &[]), "<p>a\nb</p>");
     assert_eq!(markdown_to_html("   \n "), "");
+  }
+
+  /// Convert on a thread with the 2 MiB stack a Tokio worker has.
+  fn on_small_stack(input: String) -> String {
+    std::thread::Builder::new().stack_size(2 << 20).spawn(move || markdown_to_html(&input)).unwrap().join().unwrap()
+  }
+
+  #[test]
+  fn test_deep_nesting_is_bounded_like_upstream() {
+    // Upstream stops nesting blockquotes at 298 levels and keeps the rest
+    let out = on_small_stack(format!("{} x", ">".repeat(400)));
+    assert_eq!(out.matches("<blockquote>").count(), 298);
+    assert_eq!(out.len(), 8463);
+    // Upstream nests emphasis as deep as the input asks (2,500 here)
+    let out = on_small_stack(format!("{0}x{0}", "*".repeat(5_000)));
+    assert_eq!(out.len(), 42_508);
+    // Inputs that crashed the process before (10,000 `>` on an 8 MiB
+    // stack) must not overflow a worker's stack now
+    on_small_stack(">".repeat(12_000));
+    on_small_stack((0..400).map(|i| format!("{}- a\n", "    ".repeat(i))).collect());
+  }
+
+  #[test]
+  fn test_absurd_emphasis_is_sent_as_text() {
+    let body = format!("{0}x{0}", "*".repeat(150_000));
+    let out = markdown_to_html(&body);
+    assert!(!out.contains("<strong>"));
+    assert!(out.starts_with("***"));
   }
 }
