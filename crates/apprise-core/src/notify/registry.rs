@@ -42,6 +42,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(bulkvs::BulkVs::static_details());
   collect!(burstsms::BurstSms::static_details());
   collect!(chanify::Chanify::static_details());
+  collect!(cliq::Cliq::static_details());
   collect!(clickatell::Clickatell::static_details());
   collect!(clicksend::ClickSend::static_details());
   collect!(cm::Cm::static_details());
@@ -65,6 +66,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(eight00com::Eight00com::static_details());
   collect!(emby::Emby::static_details());
   collect!(enigma2::Enigma2::static_details());
+  collect!(evolution::Evolution::static_details());
   collect!(exotel::Exotel::static_details());
   collect!(fcm::Fcm::static_details());
   collect!(feishu::FeiShu::static_details());
@@ -100,6 +102,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(kaleyra::Kaleyra::static_details());
   collect!(kavenegar::Kavenegar::static_details());
   collect!(kodi::Kodi::static_details());
+  collect!(kook::Kook::static_details());
   collect!(kumulos::Kumulos::static_details());
   collect!(lametric::LaMetric::static_details());
   collect!(lark::Lark::static_details());
@@ -241,6 +244,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(bulkvs::BulkVs::from_url, "bulkvs");
   reg!(burstsms::BurstSms::from_url, "burstsms");
   reg!(chanify::Chanify::from_url, "chanify");
+  reg!(cliq::Cliq::from_url, "cliq", "zcliq", "zohocliq");
   reg!(clickatell::Clickatell::from_url, "clickatell");
   reg!(clicksend::ClickSend::from_url, "clicksend");
   reg!(cm::Cm::from_url, "cm");
@@ -264,6 +268,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(eight00com::Eight00com::from_url, "eight00com");
   reg!(emby::Emby::from_url, "emby", "embys");
   reg!(enigma2::Enigma2::from_url, "enigma2", "enigma2s");
+  reg!(evolution::Evolution::from_url, "evolution", "evolutions");
   reg!(exotel::Exotel::from_url, "exotel");
   reg!(fcm::Fcm::from_url, "fcm");
   reg!(feishu::FeiShu::from_url, "feishu");
@@ -299,6 +304,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(kaleyra::Kaleyra::from_url, "kaleyra", "klr");
   reg!(kavenegar::Kavenegar::from_url, "kavenegar");
   reg!(kodi::Kodi::from_url, "kodi", "kodis", "xbmc", "xbmcs");
+  reg!(kook::Kook::from_url, "kook");
   reg!(kumulos::Kumulos::from_url, "kumulos");
   reg!(lametric::LaMetric::from_url, "lametric", "lametrics");
   reg!(lark::Lark::from_url, "lark");

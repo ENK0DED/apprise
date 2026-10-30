@@ -331,7 +331,7 @@ fn json_type_name(v: &Value) -> &'static str {
 /// `@name` mentions (`@everyone`, `@here`) found in `args`, as
 /// `allow_mentions` plus a `content` line that pings them. Empty when
 /// there are none.
-fn ping_payload(args: &[&str]) -> Map<String, Value> {
+pub(crate) fn ping_payload(args: &[&str]) -> Map<String, Value> {
   let mut parse: Vec<String> = Vec::new();
   let mut users: Vec<String> = Vec::new();
   let mut roles: Vec<String> = Vec::new();
@@ -415,7 +415,7 @@ fn find_mentions(text: &str) -> Vec<Mention> {
 /// Upstream `extract_markdown_sections()`: the text before the first
 /// heading, and each heading's section as an embed field shown as a code
 /// block (an empty section stays empty).
-fn extract_markdown_sections(markdown: &str) -> (String, Vec<Value>) {
+pub(crate) fn extract_markdown_sections(markdown: &str) -> (String, Vec<Value>) {
   // Leave room for the code block markers around each section
   let (description, sections) = commonmark_sections(markdown, FIELD_NAME_MAXLEN, FIELD_VALUE_MAXLEN - 10);
   let fields = sections
