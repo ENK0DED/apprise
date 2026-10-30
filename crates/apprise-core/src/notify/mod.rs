@@ -140,6 +140,7 @@ pub mod workflows;
 pub mod wxpusher;
 pub mod xbmc;
 pub mod xmpp;
+pub mod youlmk;
 pub mod zoom;
 pub mod zulip;
 
