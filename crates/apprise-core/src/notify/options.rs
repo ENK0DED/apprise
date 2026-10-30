@@ -152,6 +152,9 @@ impl Notify for ConfiguredService {
   fn attachment_support(&self) -> bool {
     self.inner.attachment_support()
   }
+  fn attachment_send_index(&self, total: usize) -> usize {
+    self.inner.attachment_send_index(total)
+  }
   fn tags(&self) -> Vec<String> {
     self.inner.tags()
   }
@@ -230,6 +233,9 @@ mod tests {
     fn attachment_support(&self) -> bool {
       true
     }
+    fn attachment_send_index(&self, total: usize) -> usize {
+      total.saturating_sub(1)
+    }
     fn tags(&self) -> Vec<String> {
       vec!["tag".into()]
     }
@@ -277,6 +283,7 @@ mod tests {
     assert_eq!(wrapped.service_name(), direct.service_name());
     assert_eq!(wrapped.details().to_json(), direct.details().to_json());
     assert_eq!(wrapped.attachment_support(), direct.attachment_support());
+    assert_eq!(wrapped.attachment_send_index(5), direct.attachment_send_index(5));
     assert_eq!(wrapped.tags(), direct.tags());
     assert_eq!(wrapped.notify_format(), direct.notify_format());
     assert_eq!(wrapped.notify_formats(), direct.notify_formats());

@@ -148,3 +148,14 @@ fn test_markdown_long_inputs_are_fast() {
     assert_fast(start, 5);
   }
 }
+
+#[test]
+fn test_reported_notification_spacing() {
+  // The Markdown and HTML samples from apprise-go issue #78, converted the
+  // way upstream converts them (line breaks, paragraphs and code blocks).
+  let v: serde_json::Value = serde_json::from_str(include_str!("testdata/telegram_spacing.json")).unwrap();
+  let s = |k: &str| v[k].as_str().unwrap().to_string();
+  assert_eq!(markdown_to_html(&s("md")), s("md_html"));
+  assert_eq!(html_to_markdown(&s("html")), s("html_md"));
+  assert_eq!(html_to_text(&s("html")), s("html_text"));
+}

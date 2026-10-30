@@ -287,6 +287,13 @@ pub trait Notify: Send + Sync {
     false
   }
 
+  /// Which of the `total` prepared pieces carries the attachments (upstream
+  /// `_attachment_send_index`). Attachments are sent once, never repeated
+  /// across a split message. Default: the first piece.
+  fn attachment_send_index(&self, _total: usize) -> usize {
+    0
+  }
+
   /// Tags associated with this notification target
   fn tags(&self) -> Vec<String> {
     vec![]

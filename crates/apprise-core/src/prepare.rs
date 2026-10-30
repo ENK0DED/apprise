@@ -139,6 +139,7 @@ pub(crate) fn prepare_contexts(svc: &dyn Notify, ctx: &NotifyContext) -> Result<
   // Truncate mode keeps only the first attachment, and only one piece
   // carries attachments so they are never repeated across a split.
   let attachments = if overflow == OverflowMode::Truncate && ctx.attachments.len() > 1 { ctx.attachments[..1].to_vec() } else { ctx.attachments.clone() };
+  let attach_index = svc.attachment_send_index(pieces.len());
 
   Ok(
     pieces
@@ -149,7 +150,7 @@ pub(crate) fn prepare_contexts(svc: &dyn Notify, ctx: &NotifyContext) -> Result<
         c.title = piece.title;
         c.body = piece.body;
         c.body_format = target.clone();
-        c.attachments = if i == 0 { attachments.clone() } else { Vec::new() };
+        c.attachments = if i == attach_index { attachments.clone() } else { Vec::new() };
         c
       })
       .collect(),
