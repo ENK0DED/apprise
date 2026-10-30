@@ -104,6 +104,7 @@ pub mod ryver;
 pub mod sendgrid;
 pub mod sendpulse;
 pub mod serverchan;
+pub mod serwersms;
 pub mod ses;
 pub mod seven;
 pub mod sfr;

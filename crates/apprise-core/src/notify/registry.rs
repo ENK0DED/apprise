@@ -116,6 +116,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(sendgrid::SendGrid::static_details());
   collect!(sendpulse::SendPulse::static_details());
   collect!(serverchan::ServerChan::static_details());
+  collect!(serwersms::SerwerSms::static_details());
   collect!(ses::Ses::static_details());
   collect!(seven::Seven::static_details());
   collect!(sfr::Sfr::static_details());
@@ -266,6 +267,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(sendgrid::SendGrid::from_url, "sendgrid");
   reg!(sendpulse::SendPulse::from_url, "sendpulse");
   reg!(serverchan::ServerChan::from_url, "schan");
+  reg!(serwersms::SerwerSms::from_url, "serwersms");
   reg!(ses::Ses::from_url, "ses");
   reg!(seven::Seven::from_url, "seven");
   reg!(sfr::Sfr::from_url, "sfr");
