@@ -126,6 +126,7 @@ pub mod syslog;
 pub mod techuluspush;
 pub mod telegram;
 pub mod threema;
+pub mod trigv;
 pub mod twilio;
 pub mod twist;
 pub mod twitter;

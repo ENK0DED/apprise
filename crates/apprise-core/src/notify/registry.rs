@@ -139,6 +139,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(techuluspush::TechulusPush::static_details());
   collect!(telegram::Telegram::static_details());
   collect!(threema::Threema::static_details());
+  collect!(trigv::Trigv::static_details());
   collect!(twilio::Twilio::static_details());
   collect!(twist::Twist::static_details());
   collect!(twitter::Twitter::static_details());
@@ -286,6 +287,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(techuluspush::TechulusPush::from_url, "techulus");
   reg!(telegram::Telegram::from_url, "tgram");
   reg!(threema::Threema::from_url, "threema");
+  reg!(trigv::Trigv::from_url, "trigv", "trigvs");
   reg!(twilio::Twilio::from_url, "twilio");
   reg!(twist::Twist::from_url, "twist");
   reg!(twitter::Twitter::from_url, "twitter", "x", "tweet");
