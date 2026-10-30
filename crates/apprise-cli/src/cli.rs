@@ -62,6 +62,12 @@ pub struct Cli {
     )]
   pub plugin_path: Vec<String>,
 
+  /// Value for a YAML configuration written with ${NAME} (NAME=VALUE).
+  /// Repeat for more than one. A value not given here is looked for in the
+  /// configuration's own default and then in APPRISE_TEMPLATE_<NAME>.
+  #[arg(long = "template-var", value_name = "NAME=VALUE", action = ArgAction::Append)]
+  pub template_var: Vec<String>,
+
   /// Configuration include recursion depth
   #[arg(short = 'R', long = "recursion-depth", default_value = "1")]
   pub recursion_depth: u32,
@@ -166,4 +172,17 @@ pub struct StorageArgs {
   /// UID character length
   #[arg(long = "storage-uid-length", default_value = "8", env = "APPRISE_STORAGE_UID_LENGTH")]
   pub storage_uid_length: u32,
+}
+
+/// Accept upstream's two-letter `-tv` for `--template-var`; clap only has
+/// one-letter short options, and `-tv` would otherwise read as `-t v`.
+pub fn expand_template_var_alias(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+  args
+    .into_iter()
+    .map(|arg| match arg.to_str() {
+      Some("-tv") => "--template-var".into(),
+      Some(s) if s.starts_with("-tv=") => format!("--template-var={}", &s[4..]).into(),
+      _ => arg,
+    })
+    .collect()
 }
