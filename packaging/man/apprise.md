@@ -4,7 +4,7 @@ apprise(1) -- Push Notifications that work with just about every platform!
 ## SYNOPSIS
 
 `apprise` [<options>...] <service-url>...<br>
-`apprise` storage [<options>...] [<action>] <url-id>...<br>
+`apprise` storage [<options>...] [<action>] [<url-or-uid>...]<br>
 
 ## DESCRIPTION
 
@@ -18,6 +18,9 @@ Telegram, Pushbullet, Slack, Twitter, etc.
     accept them).
   * It's incredibly lightweight.
   * Amazing response times because all messages sent asynchronously.
+
+This is the Rust port of Apprise. It accepts the same service URLs,
+configuration files, options and exit codes as upstream Apprise 2.1.0.
 
 ## OPTIONS
 
@@ -37,12 +40,9 @@ The Apprise options are as follows:
   Specify one or more file attachment locations.
 
   `-P`, `--plugin-path=`<PATH>:
-  Specify a path to scan for custom notification plugin support.
-  You can create your own notification by simply creating a Python file
-  that contains the `@notify("schema")` decorator.
-
-  You can optionally choose to specify more than one **--plugin-path** (**-P**)
-  to increase the modules included.
+  Accepted for compatibility with upstream Apprise, whose custom plugins are
+  Python files. This build cannot load them, so the option is ignored with a
+  warning.
 
   `-n`, `--notification-type=`<VALUE>:
   Specify the message type (default=info). Possible values are "info",
@@ -55,6 +55,14 @@ The Apprise options are as follows:
   `-T`, `--theme=`<VALUE>:
   Specify the default theme.
 
+  `-tv`, `--template-var=`<NAME=VALUE>:
+  Supply a value used by a YAML configuration written with `${NAME}`.
+  Specify this option more than once to supply more than one value, but
+  name each one only once.
+  A value not provided here uses the default in the configuration's
+  `template:` section, then `APPRISE_TEMPLATE_<NAME>`. A URL that still has no value
+  available is not loaded.
+
   `-g`, `--tag=`<VALUE>:
   Specify one or more tags to filter which services to notify:
 
@@ -63,27 +71,48 @@ The Apprise options are as follows:
   * `-g "all"`: Notify **ALL** services.
   * `(Omitted)`: Notify **untagged** services only.
 
+  Tag values may include an optional priority prefix and/or retry suffix:
+
+  * `-g "2:tagA"`: Match **only** entries for tagA assigned priority 2.
+  * `-g "tagA:3"`: Match all tagA entries, retrying each up to 3 times.
+  * `-g "2:tagA:3"`: Priority-2 tagA entries only, with up to 3 retries.
+
+  Tags only filter services loaded from configuration; they are ignored (with
+  a warning) when service URLs are given on the command line.
+
   `-Da`, `--disable-async`:
   Send notifications synchronously (one after the other) instead of
   all at once.
 
-  `-R`, `--recursion-depth`<INTEGER>:
+  `-L`, `--limit=`<SECONDS>:
+  Give up on the whole run if it's taking too long, e.g. `-L 10` or
+  `-L 2.5`. By default (`0`) there's no limit; see `--service-limit`
+  below to cap each service on its own instead. Services still running
+  when the limit is reached are reported as timed out, and if nothing
+  else went wrong **apprise** exits with status **5**.
+
+  `-SL`, `--service-limit=`<SECONDS>:
+  Give up on any single service if it's taking too long, e.g. `-SL 10`
+  or `-SL 2.5`, or `0` to turn this off entirely. Leave it unset to use
+  Apprise's own default of 60 seconds.
+
+  `-R`, `--recursion-depth=`<INTEGER>:
   The number of recursive import entries that can be loaded from within
   Apprise configuration. By default this is set to 1. If this is set to
   zero, then import statements found in any configuration is ignored.
 
-  `-e`, `--interpret-escapes`
+  `-e`, `--interpret-escapes`:
   Enable interpretation of backslash escapes. For example, this would convert
   sequences such as \n and \r to their respected ascii new-line and carriage
   return characters prior to the delivery of the notification.
 
-  `-j`, `--interpret-emojis`
+  `-j`, `--interpret-emojis`:
   Enable interpretation of emoji strings. For example, this would convert
   sequences such as :smile: or :grin: to their respected unicode emoji
   character.
 
   `-S`, `--storage-path=`<PATH>:
-  Specify the path to the persistent storage caching location
+  Specify the path to the persistent storage caching location.
 
   `-SM`, `--storage-mode=`<MODE>:
   Specify the persistent storage operational mode. Possible values are "auto",
@@ -102,7 +131,7 @@ The Apprise options are as follows:
   Perform a trial run but only prints the notification services to-be
   triggered to **stdout**. Notifications are never sent using this mode.
 
-  `-l`, `--details`
+  `-l`, `--details`:
   Prints details about the current services supported by Apprise.
 
   `-v`, `--verbose`:
@@ -119,9 +148,11 @@ The Apprise options are as follows:
 
 ## PERSISTENT STORAGE
 
-Persistent storage by default writes to the following location unless the environment variable `APPRISE_STORAGE_PATH` overrides it and/or `--storage-path` (`-SP`) is specified to override it:
+Persistent storage by default writes to the following location unless the environment variable `APPRISE_STORAGE_PATH` overrides it and/or `--storage-path` (`-S`) is specified to override it:
 
     ~/.local/share/apprise/cache
+
+On Windows the default is `%APPDATA%/Apprise/cache`.
 
 To utilize the [persistent storage][pstorage] element associated with Apprise, simply
 specify the keyword **storage**
@@ -133,7 +164,11 @@ The **storage** action has the following sub actions:
   `list`:
   List all of the detected persistent storage elements and their state
   (**stale**, **active**, or **unused**).  This is the default action if
-  nothing further is identified.
+  nothing further is identified.  Results may be filtered by passing one
+  or more 8-character UID prefix strings, or by passing full Apprise
+  service URLs — each URL is resolved to its storage namespace
+  automatically, making it easy to look up a specific plugin's cache
+  entry without knowing the hash in advance.
 
   `prune`:
   Removes all persistent storage that has not been referenced for more than 30
@@ -141,33 +176,44 @@ The **storage** action has the following sub actions:
   default value.
 
   `clean`:
-  Removes all persistent storage regardless of age.
+  Removes all persistent storage regardless of age. `clear` is accepted as
+  well.
+
+Like `list`, `prune` and `clean` can be limited with UID prefixes, service
+URLs or `--tag`.
 
 ## EXIT STATUS
 
 **apprise** exits with a status of:
 
 * **0** if all of the notifications were sent successfully.
-* **1** if one or more notifications could not be sent.
+* **1** if every notification failed, or the notification could not start.
 * **2** if there was an error specified on the command line such as not
-  providing an valid argument.
-* **3** if there was one or more Apprise Service URLs successfully
-  loaded but none could be notified due to user filtering (via tags).
+  providing a valid argument.
+* **3** if one or more Apprise Service URLs were successfully loaded but
+  none could be notified due to user filtering (via tags).
+* **4** if at least one notification was sent successfully and at least
+  one other was not (whether it failed outright or ran out of time).
+* **5** if no notification was sent, and the only problem was that one or
+  more services ran out of time.
 
 ## SERVICE URLS
 
 There are too many service URL and combinations to list here. It's best to
-visit the [Apprise GitHub page][serviceurls] and see what's available.
+visit the [Apprise service list][serviceurls] and see what's available.
+Also try out the [Apprise URL Builder][buildurls] to easily construct the URLS
+this tool supports and works with. `apprise --details` lists every service
+this build supports.
 
 [serviceurls]: https://appriseit.com/services/
+[buildurls]: https://appriseit.com/tools/url-builder/
 
 The **environment variable** of `APPRISE_URLS` (comma/space delimited) can be specified to
 provide the default set of URLs you wish to notify if none are otherwise specified.
 
 ## EXAMPLES
 
-Send a notification to as many servers as you want to specify as you can
-easily chain them together:
+Send a notification to multiple services by chaining their URLs:
 
     $ apprise -vv -t "my title" -b "my notification body" \
        "mailto://myemail:mypass@gmail.com" \
@@ -190,7 +236,7 @@ notification service URLs and only notify the ones tagged as _devops_.
 
     $ apprise -vv -t "my title" -b "my notification body" \
        --config=https://localhost/my/apprise/config \
-       -t devops
+       -g devops
 
 **Tagging Logic Examples:**
 
@@ -206,6 +252,18 @@ Notify only services tagged with BOTH "devops" AND "critical" (Intersection):
        --config=~/apprise.yml \
        -g devops,critical
 
+Notify only priority-2 "alerts" services (exclusive priority filter):
+
+    $ apprise -vv -t "High Alert" \
+       --config=~/apprise.yml \
+       -g "2:alerts"
+
+Notify all "alerts" services and retry each up to 3 times on failure:
+
+    $ apprise -vv -t "Critical Event" \
+       --config=~/apprise.yml \
+       -g "alerts:3"
+
 Include an attachment:
 
     $ apprise -vv -t "School Assignment" -b "See attached" \
@@ -219,40 +277,21 @@ List all of the details around the current persistent storage setup:
 
     $ apprise storage list
 
+Look up the storage namespace for a specific notification URL (shows the
+UID even when no data has been written yet):
+
+    $ apprise storage list "mailtos://user:pass@example.com"
+
 Prune all persistent storage that has not been referenced for at least 10 days or more
 
     $ apprise storage prune --storage-prune-days=10
 
 ## CUSTOM PLUGIN/NOTIFICATIONS
-Apprise can additionally allow you to define your own custom **schema://**
-entries that you can trigger on and call services you've defined.
 
-By default **apprise** looks in the following local locations for custom plugin
-files and loads them:
-
-    ~/.apprise/plugins
-    ~/.config/apprise/plugins
-    /var/lib/apprise/plugins
-
-The **environment variable** of `APPRISE_PLUGIN_PATH` can be specified to override
-the list identified above with one of your own.  use a semi-colon (`;`), line-feed (`\n`),
-and/or carriage return (`\r`) to delimit multiple entries.
-
-Simply create your own python file with the following bare minimum content in
-it:
-
-    from apprise.decorators import notify
-
-    # This example assumes you want your function to trigger on foobar://
-    # references:
-    @notify(on="foobar", name="My Custom Notification")
-    def my_wrapper(body, title, notify_type, *args, **kwargs):
-
-         print("Define your custom code here")
-
-         # Returning True/False will relay your status back through Apprise
-         # Returning nothing (None by default) is always interpreted as True
-         return True
+Upstream Apprise can load custom **schema://** handlers written in Python
+with its `@notify` decorator. This build has no Python runtime, so it does
+not load them: `--plugin-path` (`-P`) and `APPRISE_PLUGIN_PATH` are accepted
+and ignored with a warning.
 
 ## CONFIGURATION
 
@@ -269,23 +308,31 @@ command line and all of them will be loaded.  You can also point your configurat
 a cloud location (by referencing `http://` or `https://`. By default **apprise** looks
 in the following local locations for configuration files and loads them:
 
+    ~/.apprise
     ~/.apprise.conf
+    ~/.apprise.yml
     ~/.apprise.yaml
+    ~/.config/apprise
     ~/.config/apprise.conf
+    ~/.config/apprise.yml
     ~/.config/apprise.yaml
 
+    ~/.apprise/apprise
     ~/.apprise/apprise.conf
+    ~/.apprise/apprise.yml
     ~/.apprise/apprise.yaml
+    ~/.config/apprise/apprise
     ~/.config/apprise/apprise.conf
+    ~/.config/apprise/apprise.yml
     ~/.config/apprise/apprise.yaml
 
-    /etc/apprise.conf
+    /etc/apprise
+    /etc/apprise.yml
     /etc/apprise.yaml
+    /etc/apprise/apprise
     /etc/apprise/apprise.conf
+    /etc/apprise/apprise.yml
     /etc/apprise/apprise.yaml
-
-The **configuration files** specified above can also be identified with a `.yml`
-extension or even just entirely removing the `.conf` extension altogether.
 
 The **environment variable** of `APPRISE_CONFIG_PATH` can be specified to override
 the list identified above with one of your own.  use a semi-colon (`;`), line-feed (`\n`),
@@ -304,6 +351,51 @@ configuration that you want and only specifically notify a subset of them:
         --body "Please go ahead and make dinner without me." \
         --tag=family
 
+### TEMPLATE VARIABLES
+
+A **YAML** configuration can leave a value out of a URL and have it filled in
+later.  Write `${NAME}` where the value belongs and declare every name you use
+in a `template:` section:
+
+    template:
+      # A value written here is used when nothing else supplies one
+      smtp_host: smtp.example.com
+      # No value, so this one must always be supplied
+      api_key:
+
+    urls:
+      - sendgrid://${API_KEY}:noreply@example.com/you@example.com:
+          - tag: alerts
+
+Values are looked for in this order, stopping at the first that answers:
+
+* a value given with `--template-var` (`-tv`)
+* the default written in the `template:` section
+* the environment variable `APPRISE_TEMPLATE_<NAME>`
+
+A URL with no value available is not loaded: **apprise** logs an error naming
+the missing variable and still notifies the other services.  `--dry-run`
+logs the same error and lists only the services that loaded.
+
+`${NAME}` only means something when `NAME` appears in the `template:` section.
+Anywhere else it is ordinary text and is sent exactly as written, so a password
+containing `${...}` is never altered.  Names ignore case, and a name may be
+used as often as you like. Values may be up to 1,024 characters. Extra supplied
+names are accepted and ignored.
+
+The configuration author may place a variable directly in a URL or in a named
+YAML setting below it. URL markers can change any field, including the
+destination; whole-host markers also accept `user@host` and `user:pass@host`.
+A named setting changes only its option, so prefer it for values supplied by
+less-trusted callers.
+
+A variable may not appear before `://`, may not be used for `tag:`/`tags:`, and
+may not be used as a setting's name. The service and tags are selected before
+values are filled in, so neither can be dynamic.
+
+This applies to **YAML** configuration only; **TEXT** configuration is passed
+through unchanged.
+
 [config]: https://appriseit.com/getting-started/configuration/
 [tagging]: https://appriseit.com/cli/usage/#tagging-and-filtering
 [pstorage]: https://appriseit.com/cli/persistent-storage/
@@ -319,19 +411,36 @@ configuration that you want and only specifically notify a subset of them:
   Use a semi-colon (`;`), line-feed (`\n`), and/or carriage return (`\r`) to delimit multiple entries.
 
   `APPRISE_PLUGIN_PATH`:
-  Explicitly specify the custom plugin search path to use (overriding the default).
-  Use a semi-colon (`;`), line-feed (`\n`), and/or carriage return (`\r`) to delimit multiple entries.
+  Ignored with a warning; see **CUSTOM PLUGIN/NOTIFICATIONS**.
 
   `APPRISE_STORAGE_PATH`:
   Explicitly specify the persistent storage path to use (overriding the default).
+  `--storage-path` (`-S`) takes priority over it.
+
+  `APPRISE_STORAGE_PRUNE_DAYS`:
+  The default for `--storage-prune-days` (`-SPD`); 30 if unset.
+
+  `APPRISE_STORAGE_UID_LENGTH`:
+  The default for `--storage-uid-length` (`-SUL`); 8 if unset.
+
+  `APPRISE_TEMPLATE_<NAME>`:
+  Supply a value for a `${NAME}` used by a YAML configuration.  For example
+  `APPRISE_TEMPLATE_API_KEY` fills in `${API_KEY}`.  A value supplied with
+  `--template-var` (`-tv`) and a configuration default both take priority.
+  Blank values are ignored.
+
+  `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`:
+  Standard proxy variables honored by the HTTP client. Set
+  `HTTP_PROXY`/`HTTPS_PROXY` to route outbound notifications through a proxy,
+  and `NO_PROXY` to exempt specific hosts. SOCKS proxies are not supported.
 
 ## BUGS
 
-If you find any bugs, please make them known at:
-<https://github.com/caronc/apprise/issues>
+If you find any bugs in this port, please make them known at:
+<https://github.com/ENK0DED/apprise/issues>
 
 ## DONATIONS
-If you found Apprise useful at all, [please consider sponsoring][sponsorship] or [donating][donating]!
+If you found Apprise useful at all, [please consider sponsoring][sponsorship] or [donating][donating] to its creator!
 
 [sponsorship]: https://github.com/sponsors/caronc
 [donating]: https://www.paypal.com/donate/?hosted_button_id=CR6YF7KLQWQ5E
