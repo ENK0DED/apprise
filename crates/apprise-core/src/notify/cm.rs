@@ -84,7 +84,7 @@ impl Cm {
     }
     let mut targets = Vec::new();
     for entry in parse_phone_no(&entries) {
-      match is_phone_no(&entry, 10) {
+      match is_phone_no(&entry, 10).map(|p| p.full) {
         Some(no) => targets.push(no),
         None => tracing::warn!("Dropped invalid CM.com phone # ({}) specified.", entry),
       }

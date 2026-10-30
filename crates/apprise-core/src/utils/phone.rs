@@ -4,23 +4,60 @@
 //! mirrors `parse_phone_no()` (without prefixes), so SMS plugins accept and
 //! drop exactly the numbers upstream does.
 
-/// Validate a phone number and return its digits (upstream `is_phone_no()`'s
-/// `full` value).
+/// A phone number broken apart as upstream `is_phone_no()` returns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhoneNo {
+  /// The country code (whatever is left before the area code).
+  pub country: String,
+  /// The area code (the 3 digits before the line).
+  pub area: String,
+  /// The line (last 7 digits).
+  pub line: String,
+  /// Every digit, in order.
+  pub full: String,
+  /// A consistently formatted number, e.g. `+1 800-123-4567`.
+  pub pretty: String,
+}
+
+/// Validate a phone number (upstream `is_phone_no()`).
 ///
 /// The entry may only hold digits, whitespace, `(`, `)`, `+` and `-`. Once
 /// stripped down to its digits it must be between `min_len` and 14 digits
 /// long. Upstream SMS plugins use a `min_len` of 10 unless they say otherwise.
-pub fn is_phone_no(phone: &str, min_len: usize) -> Option<String> {
+pub fn is_phone_no(phone: &str, min_len: usize) -> Option<PhoneNo> {
   // Upstream IS_PHONE_NO: ^\+?[0-9\s)(+-]+\s*$
   let rest = phone.strip_prefix('+').unwrap_or(phone);
   if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit() || c.is_whitespace() || matches!(c, '(' | ')' | '+' | '-')) {
     return None;
   }
-  let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
-  if digits.len() > 14 || digits.len() < min_len {
+  let full: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+  if full.len() > 14 || full.len() < min_len {
     return None;
   }
-  Some(digits)
+
+  // The last 7 digits are the line, the 3 before them the area code and
+  // anything left the country code
+  let split = full.len().saturating_sub(7);
+  let line = full[split..].to_string();
+  let rest = &full[..split];
+  let area_split = rest.len().saturating_sub(3);
+  let area = rest[area_split..].to_string();
+  let country = rest[..area_split].to_string();
+
+  let mut pretty = String::new();
+  if !country.is_empty() {
+    pretty.push_str(&format!("+{} ", country));
+  }
+  if !area.is_empty() {
+    pretty.push_str(&format!("{}-", area));
+  }
+  if line.len() >= 7 {
+    pretty.push_str(&format!("{}-{}", &line[..3], &line[3..]));
+  } else {
+    pretty.push_str(&line);
+  }
+
+  Some(PhoneNo { country, area, line, full, pretty })
 }
 
 /// Split strings holding one or more phone numbers into a list (upstream
@@ -115,18 +152,28 @@ mod tests {
 
   #[test]
   fn test_is_phone_no() {
-    assert_eq!(is_phone_no("+1 (555) 123-4567", 10).as_deref(), Some("15551234567"));
-    assert_eq!(is_phone_no("15551234567", 10).as_deref(), Some("15551234567"));
-    assert_eq!(is_phone_no("15551234567  ", 10).as_deref(), Some("15551234567"));
+    let full = |s: &str, min: usize| is_phone_no(s, min).map(|p| p.full);
+    assert_eq!(full("+1 (555) 123-4567", 10).as_deref(), Some("15551234567"));
+    assert_eq!(full("15551234567", 10).as_deref(), Some("15551234567"));
+    assert_eq!(full(" 15551234567  ", 10).as_deref(), Some("15551234567"));
     // Too short, too long, or not a phone number at all
-    assert_eq!(is_phone_no("123", 10), None);
-    assert_eq!(is_phone_no("123456789", 10), None);
-    assert_eq!(is_phone_no("123456789", 9).as_deref(), Some("123456789"));
-    assert_eq!(is_phone_no("123456789012345", 10), None);
-    assert_eq!(is_phone_no("abcd", 10), None);
-    assert_eq!(is_phone_no("555-abc-1234", 10), None);
-    assert_eq!(is_phone_no("+", 1), None);
-    assert_eq!(is_phone_no("", 1), None);
+    assert_eq!(full("123", 10), None);
+    assert_eq!(full("123456789", 10), None);
+    assert_eq!(full("123456789", 9).as_deref(), Some("123456789"));
+    assert_eq!(full("123456789012345", 10), None);
+    assert_eq!(full("abcd", 10), None);
+    assert_eq!(full("555-abc-1234", 10), None);
+    assert_eq!(full("+", 1), None);
+    assert_eq!(full("", 1), None);
+  }
+
+  #[test]
+  fn test_is_phone_no_parts() {
+    let p = is_phone_no("+1 (555) 123-4567", 10).unwrap();
+    assert_eq!((p.country.as_str(), p.area.as_str(), p.line.as_str()), ("1", "555", "1234567"));
+    assert_eq!(p.pretty, "+1 555-123-4567");
+    assert_eq!(is_phone_no("411", 3).unwrap().pretty, "411");
+    assert_eq!(is_phone_no("5551234567", 10).unwrap().pretty, "555-123-4567");
   }
 
   #[test]
