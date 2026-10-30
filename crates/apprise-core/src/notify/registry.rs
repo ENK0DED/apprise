@@ -153,6 +153,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(wxpusher::WxPusher::static_details());
   collect!(xbmc::Xbmc::static_details());
   collect!(xmpp::Xmpp::static_details());
+  collect!(zoom::Zoom::static_details());
   collect!(zulip::Zulip::static_details());
   #[cfg(feature = "email")]
   collect!(email::Email::static_details());
@@ -298,6 +299,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(wxpusher::WxPusher::from_url, "wxpusher");
   reg!(xbmc::Xbmc::from_url, "xbmc", "xbmcs", "kodi", "kodis");
   reg!(xmpp::Xmpp::from_url, "xmpp", "xmpps");
+  reg!(zoom::Zoom::from_url, "zoom");
   reg!(zulip::Zulip::from_url, "zulip");
   #[cfg(feature = "email")]
   reg!(email::Email::from_url, "mailto", "mailtos");
@@ -350,6 +352,7 @@ fn instantiate(parsed: &ParsedUrl) -> Option<Box<dyn Notify>> {
         ("push.spug.cc", "spugpush"),
         ("push.spug.dev", "spugpush"),
         ("stackfield.com", "stackfield"),
+        ("inbots.zoom.us", "zoom"),
         ("qyapi.weixin.qq.com", "wecombot"),
         ("n.tkte.ch", "notifico"),
         ("api.46elks.com", "46elks"),
