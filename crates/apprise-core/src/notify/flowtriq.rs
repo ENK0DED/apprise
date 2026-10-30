@@ -24,7 +24,9 @@ pub struct Flowtriq {
 impl Flowtriq {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     let host = url.host.clone().filter(|h| !h.is_empty())?;
-    let apikey = url.user.as_deref().map(str::trim).filter(|k| !k.is_empty())?.to_string();
+    // validate_regex(): must start with a non-space character; surrounding
+    // whitespace is then stripped
+    let apikey = url.user.as_deref().filter(|k| k.chars().next().is_some_and(|c| !c.is_whitespace()))?.trim().to_string();
     let webhook_path = url.path.trim_matches('/').to_string();
     if webhook_path.is_empty() {
       return None;
@@ -142,6 +144,7 @@ mod tests {
       "flowtriq://hostname/hooks/abc123",
       // Whitespace API key
       "flowtriq://%20%20@hostname/hooks/abc123",
+      "flowtriq://%20key@hostname/hooks/abc123",
     ];
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
