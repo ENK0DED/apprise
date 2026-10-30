@@ -113,6 +113,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(pushover::Pushover::static_details());
   collect!(pushplus::PushPlus::static_details());
   collect!(pushsafer::Pushsafer::static_details());
+  collect!(pushward::PushWard::static_details());
   collect!(pushy::Pushy::static_details());
   collect!(qq::Qq::static_details());
   collect!(reddit::Reddit::static_details());
@@ -266,6 +267,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(pushover::Pushover::from_url, "pover");
   reg!(pushplus::PushPlus::from_url, "pushplus");
   reg!(pushsafer::Pushsafer::from_url, "psafer", "psafers");
+  reg!(pushward::PushWard::from_url, "pushward");
   reg!(pushy::Pushy::from_url, "pushy");
   reg!(qq::Qq::from_url, "qq");
   reg!(reddit::Reddit::from_url, "reddit");

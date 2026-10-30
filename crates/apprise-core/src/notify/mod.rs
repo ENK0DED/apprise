@@ -100,6 +100,7 @@ pub mod pushme;
 pub mod pushover;
 pub mod pushplus;
 pub mod pushsafer;
+pub mod pushward;
 pub mod pushy;
 pub mod qq;
 pub mod reddit;
