@@ -6,6 +6,7 @@ use crate::asset::AppriseAsset;
 use crate::error::NotifyError;
 use crate::types::{NotifyFormat, NotifyType};
 
+mod incident;
 mod messaging_targets;
 pub mod options;
 pub mod registry;
