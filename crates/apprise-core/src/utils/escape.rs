@@ -1,30 +1,82 @@
-/// Interpret backslash escape sequences in a string
+//! Backslash escape interpretation (upstream `decode_escapes` in
+//! `apprise/apprise.py`).
+//!
+//! Only well-formed escapes change: `\\`, `\'`, `\"`, `\a`, `\b`, `\f`,
+//! `\n`, `\r`, `\t`, `\v`, a backslash before a line break, octal `\ooo`,
+//! `\xhh`, `\uhhhh` and `\Uhhhhhhhh`. Anything else after a backslash is
+//! kept as written, so a Windows path such as `C:\Users` does not change.
+//!
+//! Upstream also decodes `\N{NAME}` from Unicode's character names; the
+//! port keeps those as written rather than carrying the name database.
+
+fn hex_value(s: &[char]) -> Option<u32> {
+  s.iter().try_fold(0u32, |acc, c| c.to_digit(16).map(|d| acc * 16 + d))
+}
+
+/// Interpret backslash escape sequences in `text`.
 pub fn interpret_escapes(text: &str) -> String {
-  let mut result = String::with_capacity(text.len());
-  let mut chars = text.chars().peekable();
-  while let Some(c) = chars.next() {
-    if c == '\\' {
-      match chars.next() {
-        Some('n') => result.push('\n'),
-        Some('t') => result.push('\t'),
-        Some('r') => result.push('\r'),
-        Some('\\') => result.push('\\'),
-        Some('0') => result.push('\0'),
-        Some('a') => result.push('\x07'),
-        Some('b') => result.push('\x08'),
-        Some('f') => result.push('\x0C'),
-        Some('v') => result.push('\x0B'),
-        Some(other) => {
-          result.push('\\');
-          result.push(other);
-        }
-        None => result.push('\\'),
-      }
-    } else {
-      result.push(c);
+  let chars: Vec<char> = text.chars().collect();
+  let n = chars.len();
+  let mut out = String::with_capacity(text.len());
+  let mut i = 0;
+  while i < n {
+    if chars[i] != '\\' || i + 1 >= n {
+      out.push(chars[i]);
+      i += 1;
+      continue;
     }
+    let next = chars[i + 1];
+    let simple = match next {
+      '\\' => Some(Some('\\')),
+      '\'' => Some(Some('\'')),
+      '"' => Some(Some('"')),
+      'a' => Some(Some('\x07')),
+      'b' => Some(Some('\x08')),
+      'f' => Some(Some('\x0c')),
+      'n' => Some(Some('\n')),
+      'r' => Some(Some('\r')),
+      't' => Some(Some('\t')),
+      'v' => Some(Some('\x0b')),
+      // A backslash before a line break joins the lines.
+      '\n' => Some(None),
+      _ => None,
+    };
+    if let Some(c) = simple {
+      if let Some(c) = c {
+        out.push(c);
+      }
+      i += 2;
+      continue;
+    }
+    if ('0'..='7').contains(&next) {
+      let digits = chars[i + 1..].iter().take(3).take_while(|c| ('0'..='7').contains(*c)).count();
+      let value = chars[i + 1..i + 1 + digits].iter().fold(0u32, |acc, c| acc * 8 + c.to_digit(8).unwrap_or(0));
+      if let Some(c) = char::from_u32(value) {
+        out.push(c);
+      }
+      i += 1 + digits;
+      continue;
+    }
+    let width = match next {
+      'x' => 2,
+      'u' => 4,
+      'U' => 8,
+      _ => 0,
+    };
+    if width > 0
+      && i + 2 + width <= n
+      && let Some(value) = hex_value(&chars[i + 2..i + 2 + width])
+      && let Some(c) = char::from_u32(value)
+    {
+      out.push(c);
+      i += 2 + width;
+      continue;
+    }
+    // Not a valid escape: keep the backslash and move on.
+    out.push('\\');
+    i += 1;
   }
-  result
+  out
 }
 
 #[cfg(test)]
@@ -32,87 +84,34 @@ mod tests {
   use super::*;
 
   #[test]
-  fn test_escape_newline() {
-    assert_eq!(interpret_escapes(r"hello\nworld"), "hello\nworld");
+  fn test_escapes_match_upstream() {
+    // Expected values come from upstream's decode_escapes().
+    let cases = [
+      (r"a\nb", "a\nb"),
+      (r"hello\tworld", "hello\tworld"),
+      (r"C:\Users", r"C:\Users"),
+      (r"\x41\u00e9\U0001F427", "Aé🐧"),
+      (r"\N{NOPE}", r"\N{NOPE}"),
+      (r"\101\7\0", "A\x07\0"),
+      (r#"\'\\\""#, "'\\\""),
+      (r"\q", r"\q"),
+      ("a\\\nb", "ab"),
+      (r"\U00110000", r"\U00110000"),
+      (r"\x4", r"\x4"),
+      (r"\8", r"\8"),
+      (r"\a\b\f\v\r", "\x07\x08\x0c\x0b\r"),
+      ("trailing\\", "trailing\\"),
+      (r"\\n", "\\n"),
+      ("", ""),
+    ];
+    for (input, expected) in cases {
+      assert_eq!(interpret_escapes(input), expected, "{}", input);
+    }
   }
 
   #[test]
-  fn test_escape_tab() {
-    assert_eq!(interpret_escapes(r"hello\tworld"), "hello\tworld");
-  }
-
-  #[test]
-  fn test_escape_carriage_return() {
-    assert_eq!(interpret_escapes(r"hello\rworld"), "hello\rworld");
-  }
-
-  #[test]
-  fn test_escape_backslash() {
-    assert_eq!(interpret_escapes(r"hello\\world"), "hello\\world");
-  }
-
-  #[test]
-  fn test_escape_null() {
-    assert_eq!(interpret_escapes(r"hello\0world"), "hello\0world");
-  }
-
-  #[test]
-  fn test_escape_bell() {
-    assert_eq!(interpret_escapes(r"hello\aworld"), "hello\x07world");
-  }
-
-  #[test]
-  fn test_escape_backspace() {
-    assert_eq!(interpret_escapes(r"hello\bworld"), "hello\x08world");
-  }
-
-  #[test]
-  fn test_escape_form_feed() {
-    assert_eq!(interpret_escapes(r"hello\fworld"), "hello\x0Cworld");
-  }
-
-  #[test]
-  fn test_escape_vertical_tab() {
-    assert_eq!(interpret_escapes(r"hello\vworld"), "hello\x0Bworld");
-  }
-
-  #[test]
-  fn test_unknown_escape_preserved() {
-    assert_eq!(interpret_escapes(r"hello\xworld"), r"hello\xworld");
-  }
-
-  #[test]
-  fn test_trailing_backslash() {
-    assert_eq!(interpret_escapes("hello\\"), "hello\\");
-  }
-
-  #[test]
-  fn test_no_escapes() {
-    assert_eq!(interpret_escapes("hello world"), "hello world");
-  }
-
-  #[test]
-  fn test_empty_string() {
-    assert_eq!(interpret_escapes(""), "");
-  }
-
-  #[test]
-  fn test_multiple_escapes() {
-    assert_eq!(interpret_escapes(r"a\nb\tc\r"), "a\nb\tc\r");
-  }
-
-  #[test]
-  fn test_consecutive_escapes() {
-    assert_eq!(interpret_escapes(r"\n\n\n"), "\n\n\n");
-  }
-
-  #[test]
-  fn test_double_backslash_then_n() {
-    // Input r"\\n" = three chars: \, \, n
-    // \\ -> single \, then 'n' is literal
-    let result = interpret_escapes(r"\\n");
-    assert_eq!(result.len(), 2);
-    assert_eq!(result.as_bytes()[0], b'\\');
-    assert_eq!(result.as_bytes()[1], b'n');
+  fn test_invalid_sequence_kept_as_written() {
+    // Upstream ae118a4c: an invalid escape no longer fails the message.
+    assert_eq!(interpret_escapes(r"path C:\temp\new\xyz"), "path C:\temp\new\\xyz");
   }
 }
