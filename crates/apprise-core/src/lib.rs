@@ -71,6 +71,7 @@ pub struct Apprise {
   tag_filter: TagFilter,
   timeout: Option<std::time::Duration>,
   stores: storage::StoreRegistry,
+  location: attachment::ContentLocation,
 }
 
 impl Default for Apprise {
@@ -88,7 +89,14 @@ impl Apprise {
   /// Create with a custom asset (branding, delivery and storage settings).
   pub fn with_asset(asset: AppriseAsset) -> Self {
     ensure_crypto_provider();
-    Self { services: Vec::new(), asset, tag_filter: TagFilter::All, timeout: None, stores: storage::StoreRegistry::default() }
+    Self {
+      services: Vec::new(),
+      asset,
+      tag_filter: TagFilter::All,
+      timeout: None,
+      stores: storage::StoreRegistry::default(),
+      location: attachment::ContentLocation::Local,
+    }
   }
 
   /// Set the asset (branding/theming) for this instance.
@@ -262,6 +270,45 @@ impl Apprise {
   /// this instance in `ctx.asset`.
   pub async fn notify(&self, ctx: &NotifyContext) -> SendResult {
     self.dispatch(ctx, &self.dispatch_options()).await
+  }
+
+  /// [`notify`](Self::notify) with attachments loaded from `sources` (paths
+  /// or `file://`/`http(s)://` URLs) added to `ctx.attachments`.
+  ///
+  /// As upstream: a source that can never load (unknown schema, invalid
+  /// `?mime=`, or not allowed from this instance's location) fails the whole
+  /// call; one that cannot be read now (missing file, HTTP error, too large)
+  /// fails only the services that take attachments, and the others send the
+  /// message without it.
+  pub async fn notify_with_attachments(&self, ctx: &NotifyContext, sources: &[String]) -> SendResult {
+    let mut opts = self.dispatch_options();
+    let mut ctx = ctx.clone();
+    if !self.services.is_empty() {
+      let mut parsed = Vec::with_capacity(sources.len());
+      for source in sources {
+        match attachment::parse_attachment_from(source, self.location) {
+          Ok(p) => parsed.push(p),
+          Err(_) => {
+            tracing::warn!("Could not prepare the notification: One or more attachments could not be added.");
+            return SendResult::new(ResultStatus::Failure, Vec::new(), std::time::Duration::ZERO);
+          }
+        }
+      }
+      for source in parsed {
+        tracing::debug!("Loading attachment: {}", source.loggable());
+        match source.load().await {
+          Ok(att) => ctx.attachments.push(att),
+          Err(_) => opts.attachment_errors.push(source.loggable().to_string()),
+        }
+      }
+    }
+    self.dispatch(&ctx, &opts).await
+  }
+
+  /// Where this instance runs, which limits where attachments may come
+  /// from (a hosted instance only accepts web content).
+  pub fn set_location(&mut self, location: attachment::ContentLocation) {
+    self.location = location;
   }
 
   /// [`notify`](Self::notify), but one service at a time.

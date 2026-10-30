@@ -61,6 +61,9 @@ pub(crate) struct DispatchOptions {
   pub storage_salt: Vec<u8>,
   pub storage_idlen: usize,
   pub stores: crate::storage::StoreRegistry,
+  /// Attachments that were requested but could not be read (masked
+  /// sources). Services that take attachments fail; others send without.
+  pub attachment_errors: Vec<String>,
 }
 
 impl DispatchOptions {
@@ -79,6 +82,7 @@ impl DispatchOptions {
       storage_salt: asset.storage_salt.clone(),
       storage_idlen: asset.storage_idlen,
       stores: crate::storage::StoreRegistry::default(),
+      attachment_errors: Vec::new(),
     }
   }
 }
@@ -111,7 +115,7 @@ pub(crate) async fn notify(services: &[Box<dyn Notify>], filter: &TagFilter, ctx
     return finish(ResultStatus::NoMatch, Vec::new());
   }
 
-  if ctx.title.is_empty() && ctx.body.is_empty() && ctx.attachments.is_empty() {
+  if ctx.title.is_empty() && ctx.body.is_empty() && ctx.attachments.is_empty() && opts.attachment_errors.is_empty() {
     tracing::error!("No message content specified to deliver");
     return finish(ResultStatus::Failure, Vec::new());
   }
@@ -315,6 +319,8 @@ async fn run_service(call: &Call<'_>, ctx: &NotifyContext, opts: &DispatchOption
   let interval = call.svc.request_rate_per_sec();
   let clock = call.svc.throttle_clock().unwrap_or_default();
 
+  let blocked = attachment_problem(call.svc, ctx, opts);
+
   let run = async {
     let started = Instant::now();
     let mut attempts = Vec::with_capacity(total as usize);
@@ -334,6 +340,11 @@ async fn run_service(call: &Call<'_>, ctx: &NotifyContext, opts: &DispatchOption
         if accepted[index] {
           tracing::debug!("{} already accepted this message piece; skipping.", name);
           continue;
+        }
+        if let Some(problem) = &blocked {
+          tracing::error!("{}", problem);
+          ok = false;
+          break;
         }
         set_piece(index);
         match with_throttle(interval, clock.clone(), with_http_options(http.clone(), call.svc.send(piece))).await {
@@ -393,6 +404,24 @@ fn store_slot(call: &Call<'_>, opts: &DispatchOptions) -> crate::storage::StoreS
     path: opts.storage_path.clone(),
     mode: if disabled { crate::types::StorageMode::Memory } else { opts.storage_mode.clone() },
   }
+}
+
+/// Why this service cannot be sent the attachments it was given, if so.
+fn attachment_problem(svc: &dyn Notify, ctx: &NotifyContext, opts: &DispatchOptions) -> Option<String> {
+  let name = svc.service_name();
+  let has_attachments = !ctx.attachments.is_empty() || !opts.attachment_errors.is_empty();
+  if !svc.attachment_support() {
+    // Without a body there is nothing left to send.
+    return (has_attachments && ctx.body.is_empty()).then(|| format!("{name} does not support attachments; service skipped"));
+  }
+  if let Some(source) = opts.attachment_errors.first() {
+    return Some(format!("Could not access {name} attachment {source}."));
+  }
+  ctx
+    .attachments
+    .iter()
+    .find(|a| a.data.len() as u64 > crate::attachment::MAX_FILE_SIZE)
+    .map(|a| format!("Content exceeds allowable maximum file length ({}KB): {}", crate::attachment::MAX_FILE_SIZE / 1024, a.name))
 }
 
 /// Log a failed `send()` without leaking secrets from URLs in the error.
@@ -529,10 +558,15 @@ mod tests {
     bodies: Arc<Mutex<Vec<String>>>,
     http: Arc<Mutex<Vec<HttpOptions>>>,
     body_max: usize,
+    attach: bool,
+    attachments: Arc<Mutex<Vec<String>>>,
   }
 
   #[async_trait]
   impl Notify for Scripted {
+    fn attachment_support(&self) -> bool {
+      self.attach
+    }
     fn schemas(&self) -> &[&str] {
       &["test"]
     }
@@ -555,6 +589,7 @@ mod tests {
       let n = self.calls.fetch_add(1, Ordering::SeqCst);
       self.bodies.lock().unwrap().push(ctx.body.clone());
       self.http.lock().unwrap().push(crate::notify::current_http_options());
+      self.attachments.lock().unwrap().extend(ctx.attachments.iter().map(|a| a.name.clone()));
       match self.script.get(n).or(self.script.last()).copied().unwrap_or(Step::Ok) {
         Step::Ok => Ok(true),
         Step::Fail => Ok(false),
@@ -571,6 +606,7 @@ mod tests {
     calls: Arc<AtomicUsize>,
     bodies: Arc<Mutex<Vec<String>>>,
     http: Arc<Mutex<Vec<HttpOptions>>>,
+    attachments: Arc<Mutex<Vec<String>>>,
   }
 
   impl Handle {
@@ -583,7 +619,7 @@ mod tests {
   fn scripted(name: &'static str, url: &str, script: &[Step]) -> (Box<dyn Notify>, Handle) {
     let parsed = ParsedUrl::parse(url).unwrap();
     let options = ServiceOptions::from_url(&parsed).unwrap();
-    let handle = Handle { calls: Arc::default(), bodies: Arc::default(), http: Arc::default() };
+    let handle = Handle { calls: Arc::default(), bodies: Arc::default(), http: Arc::default(), attachments: Arc::default() };
     let plugin = Scripted {
       name,
       tags: parsed.tags(),
@@ -592,6 +628,8 @@ mod tests {
       bodies: handle.bodies.clone(),
       http: handle.http.clone(),
       body_max: parsed.get("max").and_then(|m| m.parse().ok()).unwrap_or(32768),
+      attach: parsed.get("attach").is_some(),
+      attachments: handle.attachments.clone(),
     };
     (Box::new(ConfiguredService::new(Box::new(plugin), options).with_url(url)), handle)
   }
@@ -1090,5 +1128,51 @@ mod tests {
       assert_eq!(started.elapsed(), Duration::ZERO);
     })
     .await;
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn test_attachments_reach_plugins_that_take_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("report.txt");
+    std::fs::write(&file, b"data").unwrap();
+    let (with, hw) = scripted("With", "test://a/?attach=yes", &[Step::Ok]);
+    let (without, hwo) = scripted("Without", "test://b", &[Step::Ok]);
+    let a = apprise(vec![with, without]);
+    let r = a.notify_with_attachments(&ctx(), &[file.to_string_lossy().into_owned()]).await;
+    assert!(r.is_success());
+    assert_eq!(*hw.attachments.lock().unwrap(), vec!["report.txt"]);
+    assert_eq!(hwo.calls(), 1);
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn test_unreadable_attachment_fails_only_attachment_services() {
+    let (with, hw) = scripted("With", "test://a/?attach=yes", &[Step::Ok]);
+    let (without, hwo) = scripted("Without", "test://b", &[Step::Ok]);
+    let a = apprise(vec![with, without]);
+    let r = a.notify_with_attachments(&ctx(), &["/nonexistent/file".into()]).await;
+    assert_eq!(r.status, ResultStatus::Partial);
+    assert_eq!((hw.calls(), hwo.calls()), (0, 1));
+    assert_eq!(r.results[0].status, ResultStatus::Failure);
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn test_unusable_attachment_source_fails_the_call() {
+    let (svc, h) = scripted("With", "test://a/?attach=yes", &[Step::Ok]);
+    let a = apprise(vec![svc]);
+    let r = a.notify_with_attachments(&ctx(), &["foo://x".into()]).await;
+    assert_eq!((r.status, r.total, h.calls()), (ResultStatus::Failure, 0, 0));
+    // With nothing loaded at all, there is nothing to match.
+    assert_eq!(Apprise::new().notify_with_attachments(&ctx(), &["foo://x".into()]).await.status, ResultStatus::NoMatch);
+  }
+
+  #[tokio::test(start_paused = true)]
+  async fn test_attachment_only_message_skips_services_without_support() {
+    let (with, hw) = scripted("With", "test://a/?attach=yes", &[Step::Ok]);
+    let (without, hwo) = scripted("Without", "test://b", &[Step::Ok]);
+    let a = apprise(vec![with, without]);
+    let c = NotifyContext { attachments: vec![crate::attachment::memory::from_text("x")], ..Default::default() };
+    let r = a.notify(&c).await;
+    assert_eq!(r.status, ResultStatus::Partial);
+    assert_eq!((hw.calls(), hwo.calls()), (1, 0));
   }
 }

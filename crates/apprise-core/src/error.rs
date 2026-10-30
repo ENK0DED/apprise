@@ -72,8 +72,26 @@ pub enum AttachError {
   #[error("HTTP error: {0}")]
   Http(#[from] reqwest::Error),
 
+  /// The attachment could not be found or fetched; the message is safe to
+  /// log (secrets masked).
   #[error("File not found: {0}")]
   NotFound(String),
+
+  /// The attachment exceeds the size limit (in bytes).
+  #[error("Content exceeds allowable maximum file length ({}KB): {source_url}", limit / 1024)]
+  TooLarge { source_url: String, limit: u64 },
+
+  /// The attachment URL uses a schema no attachment type handles.
+  #[error("Unsupported schema {0}.")]
+  UnsupportedSchema(String),
+
+  /// `?mime=` names an unknown MIME type.
+  #[error("An invalid mime-type ({0}) was specified.")]
+  InvalidMime(String),
+
+  /// The attachment location is not allowed from where Apprise runs.
+  #[error("Attachment was disallowed due to accessibility restrictions: {0}")]
+  Disallowed(String),
 
   #[error("{0}")]
   Other(String),
