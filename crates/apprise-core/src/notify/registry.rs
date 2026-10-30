@@ -67,6 +67,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(custom_form::Form::static_details());
   collect!(custom_xml::Xml::static_details());
   collect!(kavenegar::Kavenegar::static_details());
+  collect!(kodi::Kodi::static_details());
   collect!(kumulos::Kumulos::static_details());
   collect!(lametric::LaMetric::static_details());
   collect!(lark::Lark::static_details());
@@ -156,7 +157,6 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(workflows::Workflows::static_details());
   collect!(wpush::WPush::static_details());
   collect!(wxpusher::WxPusher::static_details());
-  collect!(xbmc::Xbmc::static_details());
   collect!(xmpp::Xmpp::static_details());
   collect!(youlmk::YouLmk::static_details());
   collect!(zoom::Zoom::static_details());
@@ -219,6 +219,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(custom_form::Form::from_url, "form", "forms");
   reg!(custom_xml::Xml::from_url, "xml", "xmls");
   reg!(kavenegar::Kavenegar::from_url, "kavenegar");
+  reg!(kodi::Kodi::from_url, "kodi", "kodis", "xbmc", "xbmcs");
   reg!(kumulos::Kumulos::from_url, "kumulos");
   reg!(lametric::LaMetric::from_url, "lametric", "lametrics");
   reg!(lark::Lark::from_url, "lark");
@@ -308,7 +309,6 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(workflows::Workflows::from_url, "workflow", "workflows");
   reg!(wpush::WPush::from_url, "wpush");
   reg!(wxpusher::WxPusher::from_url, "wxpusher");
-  reg!(xbmc::Xbmc::from_url, "xbmc", "xbmcs", "kodi", "kodis");
   reg!(xmpp::Xmpp::from_url, "xmpp", "xmpps");
   reg!(youlmk::YouLmk::from_url, "youlmk");
   reg!(zoom::Zoom::from_url, "zoom");
