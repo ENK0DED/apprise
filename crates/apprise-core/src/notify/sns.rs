@@ -1,8 +1,8 @@
 use crate::error::NotifyError;
+use crate::notify::sms_targets::{is_phone_no, parse_list};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::aws::{AwsResponse, SigV4Request, flatten_response, sign};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::targets::{is_phone_no, parse_list};
 use async_trait::async_trait;
 
 const CONTENT_TYPE: &str = "application/x-www-form-urlencoded; charset=utf-8";

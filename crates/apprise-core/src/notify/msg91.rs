@@ -1,7 +1,7 @@
 use crate::error::NotifyError;
+use crate::notify::sms_targets::{is_phone_no, parse_phone_no};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
-use crate::utils::targets::{is_phone_no, parse_phone_no};
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 

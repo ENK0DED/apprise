@@ -1,6 +1,6 @@
-//! Target list parsing that mirrors upstream `apprise.utils.parse`
-//! (`parse_list`, `parse_phone_no`, `is_phone_no`), so plugins split and
-//! validate their targets the same way the Python library does.
+//! Target list parsing shared by the SMS plugins, mirroring upstream
+//! `apprise.utils.parse` (`parse_list`, `parse_phone_no`, `is_phone_no`), so
+//! they split and validate targets the same way the Python library does.
 //!
 //! URL path entries need no extra splitting: upstream quotes the path before
 //! `split_path()`, so only `/` separates them, exactly like
@@ -8,15 +8,15 @@
 
 /// A phone number broken apart the way upstream `is_phone_no()` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PhoneNo {
+pub(super) struct PhoneNo {
   /// Leftover leading digits (empty for numbers of 10 digits or fewer).
-  pub country: String,
+  pub(super) country: String,
   /// The 3 digits before the line number (may be empty).
-  pub area: String,
+  pub(super) area: String,
   /// The last 7 digits.
-  pub line: String,
+  pub(super) line: String,
   /// Every digit of the number, without markup.
-  pub full: String,
+  pub(super) full: String,
 }
 
 fn is_list_delim(c: char, allow_whitespace: bool) -> bool {
@@ -25,7 +25,7 @@ fn is_list_delim(c: char, allow_whitespace: bool) -> bool {
 
 /// Upstream `parse_list()`: split every entry on `[\[\];,\s]+` (whitespace
 /// only when `allow_whitespace`) and return the unique entries sorted.
-pub fn parse_list<I, S>(entries: I, allow_whitespace: bool) -> Vec<String>
+pub(super) fn parse_list<I, S>(entries: I, allow_whitespace: bool) -> Vec<String>
 where
   I: IntoIterator<Item = S>,
   S: AsRef<str>,
@@ -44,7 +44,7 @@ where
 
 /// Upstream `is_phone_no()`: the entry may only hold digits, whitespace,
 /// brackets, `+` and `-`, and must carry between `min_len` and 14 digits.
-pub fn is_phone_no(phone: &str, min_len: usize) -> Option<PhoneNo> {
+pub(super) fn is_phone_no(phone: &str, min_len: usize) -> Option<PhoneNo> {
   if phone.is_empty() || !phone.chars().all(|c| c.is_ascii_digit() || c.is_whitespace() || matches!(c, '(' | ')' | '+' | '-')) {
     return None;
   }
@@ -62,7 +62,7 @@ pub fn is_phone_no(phone: &str, min_len: usize) -> Option<PhoneNo> {
 /// each string. Content that holds no phone number at all is kept (split on
 /// the list delimiters) so the caller can report it. With `prefix`, an
 /// optional `label:` may precede each number (Twilio's `w:` WhatsApp prefix).
-pub fn parse_phone_no<I, S>(entries: I, prefix: bool) -> Vec<String>
+pub(super) fn parse_phone_no<I, S>(entries: I, prefix: bool) -> Vec<String>
 where
   I: IntoIterator<Item = S>,
   S: AsRef<str>,
@@ -150,7 +150,8 @@ fn match_phone_at(chars: &[char], start: usize, prefix: bool) -> Option<usize> {
 }
 
 fn phone_lookahead(chars: &[char], at: usize, prefix: bool) -> bool {
-  if at >= chars.len() {
+  // Python's `$` also matches just before a final newline
+  if at >= chars.len() || (at + 1 == chars.len() && chars[at] == '\n') {
     return true;
   }
   let separated = |from: usize| {
@@ -210,5 +211,8 @@ mod tests {
     assert_eq!(parse_phone_no(["+15551232000 w:+15551232001, sms:12345678901"], true), vec!["sms:12345678901"]);
     assert_eq!(parse_phone_no(["12"], false), vec!["12"]);
     assert_eq!(parse_phone_no(["1"], false), vec!["1"]);
+    assert_eq!(parse_phone_no(["15551232000\n"], false), vec!["15551232000"]);
+    assert_eq!(parse_phone_no(["12345678901,+12345678902,#g1"], false), vec!["12345678901"]);
+    assert_eq!(parse_phone_no(["12345678901,#g1,#g2"], false), vec!["12345678901", "#g1", "#g2"]);
   }
 }
