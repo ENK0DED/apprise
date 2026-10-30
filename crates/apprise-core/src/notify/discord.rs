@@ -911,6 +911,11 @@ mod tests {
     assert_eq!(d.format_override, None);
     assert_eq!(discord("discord://AAAA/BBBB/?format=markdown").format_override, Some(NotifyFormat::Markdown));
 
+    // Bot names are decoded
+    for (quoted, name) in [("App%201", "App 1"), ("a%2Fb%3Ac", "a/b:c"), ("you%26me", "you&me")] {
+      assert_eq!(discord(&format!("discord://{quoted}@AAAA/BBBB/")).user.as_deref(), Some(name));
+    }
+
     // Only ?emojis=no turns escaping on
     assert!(discord("discord://AAAA/BBBB/?emojis=no").escape_emojis);
     assert!(!discord("discord://AAAA/BBBB/?emojis=yes").escape_emojis);
