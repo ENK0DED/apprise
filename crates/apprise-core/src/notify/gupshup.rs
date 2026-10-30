@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::error::NotifyError;
-use crate::notify::phone_no::{is_phone_no, parse_phone_no};
+use crate::utils::phone::{is_phone_no, parse_phone_no};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::ParsedUrl;
 
