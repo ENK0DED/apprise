@@ -93,6 +93,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(notifiarr::Notifiarr::static_details());
   collect!(notificationapi::NotificationApi::static_details());
   collect!(notifico::Notifico::static_details());
+  collect!(notifyre::Notifyre::static_details());
   collect!(ntfy::Ntfy::static_details());
   collect!(office365::Office365::static_details());
   collect!(one_signal::OneSignal::static_details());
@@ -244,6 +245,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(notifiarr::Notifiarr::from_url, "notifiarr");
   reg!(notificationapi::NotificationApi::from_url, "napi", "notificationapi");
   reg!(notifico::Notifico::from_url, "notifico");
+  reg!(notifyre::Notifyre::from_url, "notifyre");
   reg!(ntfy::Ntfy::from_url, "ntfy", "ntfys");
   reg!(office365::Office365::from_url, "o365", "azure");
   reg!(one_signal::OneSignal::from_url, "onesignal");
