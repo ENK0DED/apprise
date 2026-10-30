@@ -808,7 +808,7 @@ mod tests {
       format!("o365://hg-fe-dc-ba/tenant/ab-cd-ef-gh/{}/", SECRET_PATH),
       format!("o365://_/?oauth_id=ab-cd-ef-gh&oauth_secret={}&tenant=tenant&to=email1@test.ca&from=user@example.ca", SECRET_PATH),
       format!("o365://user@example.com/tenant/ab-cd-ef-gh/{}", SECRET_PATH),
-      format!("o365://tenant:user@example.com/01-12-23-34/abcd/321/4321/@test/test/email1@test.ca"),
+      "o365://tenant:user@example.com/01-12-23-34/abcd/321/4321/@test/test/email1@test.ca".to_string(),
       format!("o365://user@example.edu/tenant/ab-cd-ef-gh/{}/email1@test.ca?reply_to=reply@example.org", SECRET_PATH),
       format!("o365://user@example.edu/tenant/ab-cd-ef-gh/{}/email1@test.ca?savesent=no", SECRET_PATH),
       format!("azure://user@example.edu/tenant/ab-cd-ef-gh/{}/email1@test.ca", SECRET_PATH),

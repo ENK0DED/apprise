@@ -686,8 +686,7 @@ mod tests {
       .await;
     Mock::given(method("POST")).and(path("/2/tweets")).respond_with(ResponseTemplate::new(200)).expect(2).mount(&server).await;
     let svc = from_url("tweet://ckey/csecret/akey/asecret?batch=no").unwrap();
-    let mut ctx = NotifyContext::default();
-    ctx.attachments = vec![png("a.png"), png("b.png")];
+    let ctx = NotifyContext { attachments: vec![png("a.png"), png("b.png")], ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
     let tweets = json_bodies(&server.received_requests().await.unwrap(), "/2/tweets");
     // No body: every tweet is numbered

@@ -61,7 +61,7 @@ impl Zulip {
 
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
       let to = unquote(to);
-      targets.extend(to.split(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n' | ',' | '#' | '\\' | '/')).filter(|t| !t.is_empty()).map(String::from));
+      targets.extend(to.split([' ', '\t', '\r', '\n', ',', '#', '\\', '/']).filter(|t| !t.is_empty()).map(String::from));
     }
     let mut targets = parse_list(&targets);
     if targets.is_empty() {
