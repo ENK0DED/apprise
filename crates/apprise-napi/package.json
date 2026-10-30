@@ -1,6 +1,6 @@
 {
   "name": "@enk0ded/apprise",
-  "version": "1.9.9",
+  "version": "2.1.0",
   "description": "Push notifications that work with everything — Node.js native binding",
   "type": "module",
   "main": "index.js",

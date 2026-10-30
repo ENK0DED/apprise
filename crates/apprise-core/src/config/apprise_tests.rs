@@ -110,3 +110,27 @@ fn test_default_config_paths() {
   assert!(!paths.contains(&std::path::PathBuf::from("/etc/apprise.conf")));
   assert_eq!(paths.len(), 23);
 }
+
+#[tokio::test]
+async fn test_notify_tagged_selects_services_per_call() {
+  use wiremock::matchers::{method, path};
+  use wiremock::{Mock, MockServer, ResponseTemplate};
+
+  let (alpha, beta) = (MockServer::start().await, MockServer::start().await);
+  for server in [&alpha, &beta] {
+    Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(200)).mount(server).await;
+  }
+  let mut a = Apprise::new();
+  assert!(a.add_with_tags(&format!("json://{}/", alpha.address()), &["alpha"]));
+  assert!(a.add_with_tags(&format!("json://{}/", beta.address()), &["beta"]));
+
+  let ctx = crate::NotifyContext { body: "body".into(), ..Default::default() };
+  let result = a.notify_tagged(&ctx, &crate::TagFilter::from_cli(&["beta".to_string()]), &[]).await;
+  assert!(result.is_success());
+  assert_eq!(result.total, 1);
+  let posts = |reqs: Vec<wiremock::Request>| reqs.into_iter().filter(|r| r.method == wiremock::http::Method::POST).count();
+  assert_eq!(posts(alpha.received_requests().await.unwrap()), 0);
+  assert_eq!(posts(beta.received_requests().await.unwrap()), 1);
+  // The instance's own filter is untouched
+  assert_eq!(a.tag_filter(), &crate::TagFilter::All);
+}
