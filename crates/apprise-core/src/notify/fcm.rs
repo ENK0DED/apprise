@@ -24,7 +24,7 @@ use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client,
 use crate::types::NotifyType;
 use crate::utils::keyfile::{pem_blocks, read_source};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{parse_bool_or, parse_list, split_path, unquote};
+use crate::utils::plugin_args::{parse_bool_or, parse_list, prefixed_args, split_path, unquote};
 
 /// Largest key file accepted (`max_fcm_keyfile_size`).
 const MAX_KEYFILE_SIZE: usize = 5000;
@@ -216,27 +216,6 @@ pub struct Fcm {
   token: Mutex<Option<CachedToken>>,
 }
 
-/// Upstream `qsd+`: query arguments whose key starts with `+` (or the space
-/// a form-decoded `+` becomes), prefix removed and case kept. Values are
-/// percent-decoded with `+` left literal, and trimmed.
-fn plus_args(url: &ParsedUrl) -> Vec<(String, String)> {
-  let Some((_, query)) = url.raw.split_once('?') else { return Vec::new() };
-  let mut out: Vec<(String, String)> = Vec::new();
-  for pair in query.split(['&', ';']) {
-    let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else { continue };
-    let key = unquote(&format!("{}{}", first, chars.as_str().replace('+', " ")));
-    let Some(key) = key.strip_prefix('+').or_else(|| key.strip_prefix(' ')) else { continue };
-    let value = unquote(value).trim().to_string();
-    match out.iter_mut().find(|(k, _)| k == key) {
-      Some(entry) => entry.1 = value,
-      None => out.push((key.to_string(), value)),
-    }
-  }
-  out
-}
-
 /// Upstream `dict_full_update()`: merge `update` into `base`, recursing into
 /// objects present in both.
 fn merge(base: &mut Value, update: &Value) {
@@ -331,7 +310,7 @@ impl Fcm {
       project,
       keyfile: if mode == FcmMode::OAuth2 { keyfile } else { None },
       targets,
-      data: plus_args(url),
+      data: prefixed_args(url, '+'),
       include_image,
       image_src,
       priority,
@@ -676,7 +655,7 @@ ORhLPuBVA+eLw73wx7FgbyPuxxVY6JN1M7xsFy4GSXFH4Ub3TV67PsgUVr7H7Btw
   }
 
   #[test]
-  fn test_plus_args() {
+  fn test_data_args() {
     let f = parse_fcm("fcm://apikey/device?+key1=val1&+Key2=Val+2&%2Bkey3=a%20b&-other=x");
     assert_eq!(f.data, vec![("key1".to_string(), "val1".to_string()), ("Key2".to_string(), "Val+2".to_string()), ("key3".to_string(), "a b".to_string())]);
   }

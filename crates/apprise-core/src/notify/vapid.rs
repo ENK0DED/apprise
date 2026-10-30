@@ -28,7 +28,7 @@ use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::keyfile::{pem_blocks, read_source};
 use crate::utils::parse::ParsedUrl;
-use crate::utils::plugin_args::{parse_list, split_path, unquote};
+use crate::utils::plugin_args::{email_address, parse_list, split_path, unquote};
 
 /// Upstream `VAPID_PUSH_MODES`; the first entry is the default.
 const VAPID_PUSH_MODES: &[&str] = &["chrome", "firefox", "edge", "opera", "apple"];
@@ -192,81 +192,6 @@ fn is_p256_point(point: &[u8]) -> bool {
   let rng = SystemRandom::new();
   let Ok(probe) = agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng) else { return false };
   agreement::agree_ephemeral(probe, &agreement::UnparsedPublicKey::new(&agreement::ECDH_P256, point), |_| ()).is_ok()
-}
-
-/// The subscriber's full email address (upstream `is_email()["full_email"]`).
-///
-/// Like upstream's (unanchored) regular expression, a leading display name
-/// (`Name <user@example.com>`) and anything after the domain are dropped.
-fn full_email(address: &str) -> Option<String> {
-  let at = address.find('@')?;
-  let is_sep = |c: char| matches!(c, ':' | '<' | '\'' | '"') || c.is_whitespace();
-
-  // The display name is greedy, so the latest separator is tried first
-  let mut starts: Vec<usize> = Vec::new();
-  if let Some((i, c)) = address[..at].char_indices().rev().find(|(_, c)| is_sep(*c)) {
-    starts.push(i + c.len_utf8());
-  }
-  starts.push(0);
-
-  for start in starts {
-    let s = &address[start..];
-    // An optional "label+" prefix comes first
-    if let Some(plus) = s.find('+')
-      && (1..=128).contains(&plus)
-      && !s[..plus].chars().any(char::is_whitespace)
-      && let Some(len) = email_len(&s[plus + 1..])
-    {
-      return Some(s[..plus + 1 + len].to_string());
-    }
-    if let Some(len) = email_len(s) {
-      return Some(s[..len].to_string());
-    }
-  }
-  None
-}
-
-/// Length of the `userid@domain` match at the start of `s`, or `None`.
-fn email_len(s: &str) -> Option<usize> {
-  const USER: &str = "_!#$%&*/=?%`{|}~^-";
-  let at = s.find('@')?;
-  let user = &s[..at];
-  let mut segments = user.split('.');
-  let first = segments.next()?;
-  let ok_char = |c: char, extra: &str| c.is_ascii_alphanumeric() || USER.contains(c) || extra.contains(c);
-  if first.is_empty() || !first.chars().all(|c| ok_char(c, "")) {
-    return None;
-  }
-  if !segments.all(|seg| !seg.is_empty() && seg.chars().all(|c| ok_char(c, "'"))) {
-    return None;
-  }
-  Some(at + 1 + domain_len(&s[at + 1..])?)
-}
-
-/// Length of the longest domain match at the start of `s`: dotted labels
-/// whose last label has at least 2 characters, or one label of 6+.
-fn domain_len(s: &str) -> Option<usize> {
-  let run: String = s.chars().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).collect();
-  let label_ok = |l: &str, min: usize| {
-    l.len() >= min
-      && l.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
-      && l.chars().last().is_some_and(|c| c.is_ascii_alphanumeric())
-      && l.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-  };
-  // Dotted form: try the longest prefix first
-  for end in (1..=run.len()).rev() {
-    let candidate = &run[..end];
-    let labels: Vec<&str> = candidate.split('.').collect();
-    if labels.len() >= 2 && labels[..labels.len() - 1].iter().all(|l| label_ok(l, 1)) && label_ok(labels[labels.len() - 1], 2) {
-      return Some(end);
-    }
-  }
-  // Single label form
-  let single: String = run.chars().take_while(|c| *c != '.').collect();
-  if single.len() >= 6 && single.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) {
-    return Some(single.len());
-  }
-  None
 }
 
 // ── Keys and encryption ──────────────────────────────────────────────────────
@@ -553,7 +478,7 @@ impl Vapid {
       None => format!("{}@{}", user.unwrap_or_default(), host.unwrap_or_default()),
     };
 
-    let Some(subscriber) = full_email(&subscriber) else {
+    let Some(subscriber) = email_address(&subscriber) else {
       tracing::warn!("An invalid Vapid Subscriber was specified.");
       return None;
     };
@@ -931,23 +856,6 @@ Oc4My77ylXst/I1fVk62i06E2YwM//ZmgQ==
     assert_eq!(obj.state.lock().await.targets, vec!["user1", "user2"]);
     assert_eq!(obj.ttl, 15);
     assert_eq!(obj.mode, "edge");
-  }
-
-  #[test]
-  fn test_full_email() {
-    assert_eq!(full_email("user@example.com").as_deref(), Some("user@example.com"));
-    assert_eq!(full_email("label+user@example.com").as_deref(), Some("label+user@example.com"));
-    assert_eq!(full_email("Name <user@example.com>").as_deref(), Some("user@example.com"));
-    assert_eq!(full_email("user@localhost1").as_deref(), Some("user@localhost1"));
-    assert_eq!(full_email("@invalid-subscriber"), None);
-    assert_eq!(full_email("user@short"), None);
-    assert_eq!(full_email("invalid"), None);
-    assert_eq!(full_email("a+b+c@d.com"), None);
-    // Matches upstream's unanchored expression
-    assert_eq!(full_email("user@example.c").as_deref(), Some("user@example"));
-    assert_eq!(full_email("user@example.com/x").as_deref(), Some("user@example.com"));
-    assert_eq!(full_email("us.er@ex-ample.co.uk").as_deref(), Some("us.er@ex-ample.co.uk"));
-    assert_eq!(full_email("o'k@x.com").as_deref(), Some("k@x.com"));
   }
 
   #[test]
