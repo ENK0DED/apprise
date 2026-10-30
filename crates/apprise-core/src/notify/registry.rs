@@ -42,6 +42,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(bulkvs::BulkVs::static_details());
   collect!(burstsms::BurstSms::static_details());
   collect!(chanify::Chanify::static_details());
+  collect!(cliq::Cliq::static_details());
   collect!(clickatell::Clickatell::static_details());
   collect!(clicksend::ClickSend::static_details());
   collect!(cm::Cm::static_details());
@@ -238,6 +239,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(bulkvs::BulkVs::from_url, "bulkvs");
   reg!(burstsms::BurstSms::from_url, "burstsms");
   reg!(chanify::Chanify::from_url, "chanify");
+  reg!(cliq::Cliq::from_url, "cliq", "zcliq", "zohocliq");
   reg!(clickatell::Clickatell::from_url, "clickatell");
   reg!(clicksend::ClickSend::from_url, "clicksend");
   reg!(cm::Cm::from_url, "cm");
