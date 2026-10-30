@@ -43,6 +43,7 @@ pub mod flowtriq;
 pub mod fluxer;
 pub mod fortysixelks;
 pub mod freemobile;
+pub mod github;
 pub mod google_chat;
 pub mod gotify;
 pub mod growl;
