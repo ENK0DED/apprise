@@ -210,11 +210,14 @@ impl Irc {
     client.register(self.pass().as_deref(), REGISTER_TIMEOUT, self.send_timeout).await?;
 
     // Upstream clears the password before identifying, so it never sends
-    // IDENTIFY; apprise-go sends it, and so does this port.
+    // IDENTIFY; apprise-go sends it, and so does this port. The NICKSERV
+    // command is routed by the server to its services only; a PRIVMSG to
+    // the nick NickServ would hand the password to whoever holds that nick
+    // on a network without services.
     if self.auth_mode == AuthMode::NickServ
       && let Some(password) = self.password.as_deref().filter(|p| !p.is_empty())
     {
-      client.write(&format!("PRIVMSG NickServ :IDENTIFY {}", password), self.send_timeout).await?;
+      client.write(&format!("NICKSERV IDENTIFY {}", password), self.send_timeout).await?;
       client.pump(PUMP_INTERVAL).await?;
     }
 
@@ -837,7 +840,7 @@ mod tests {
     assert!(svc.send(&ctx("Title", "Body")).await.unwrap());
     assert_eq!(
       server.await.unwrap(),
-      vec!["NICK me", "USER me 0 * :Apprise Notifications", "PRIVMSG NickServ :IDENTIFY pw", "PRIVMSG #chan :Title Body", "QUIT :Apprise Notifications"]
+      vec!["NICK me", "USER me 0 * :Apprise Notifications", "NICKSERV IDENTIFY pw", "PRIVMSG #chan :Title Body", "QUIT :Apprise Notifications"]
     );
   }
 
