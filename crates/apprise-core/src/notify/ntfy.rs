@@ -352,14 +352,14 @@ impl Ntfy {
     Ok(map)
   }
 
-  /// Publish one message (or one attachment) to `topic`.
+  /// Publish one message (or one attachment) to `topic` with the given
+  /// title and body.
   async fn send_one(
     &self,
     client: &reqwest::Client,
     ctx: &NotifyContext,
     topic: &str,
-    title: &str,
-    body: &str,
+    (title, body): (&str, &str),
     attach: Option<&Attachment>,
     icon: Option<&str>,
   ) -> Result<bool, NotifyError> {
@@ -398,7 +398,7 @@ impl Ntfy {
           };
           let content = if title.is_empty() { body.to_string() } else { format!("{}\n{}", title, body) };
           let att = Attachment { name: format!("{}.txt", uuid4()), data: content.into_bytes(), mime_type: mime.into() };
-          return Box::pin(self.send_one(client, ctx, topic, "", "", Some(&att), icon)).await;
+          return Box::pin(self.send_one(client, ctx, topic, ("", ""), Some(&att), icon)).await;
         }
 
         headers.insert(reqwest::header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -485,7 +485,7 @@ impl Notify for Ntfy {
     // Upstream pops topics off the end of its list
     for topic in self.topics.iter().rev() {
       if ctx.attachments.is_empty() {
-        if !self.send_one(&client, ctx, topic, &ctx.title, &ctx.body, None, icon.as_deref()).await? {
+        if !self.send_one(&client, ctx, topic, (&ctx.title, &ctx.body), None, icon.as_deref()).await? {
           has_error = true;
         }
         continue;
@@ -493,7 +493,7 @@ impl Notify for Ntfy {
       // One upload per attachment; the first carries the title and body
       for (no, att) in ctx.attachments.iter().enumerate() {
         let (title, body) = if no == 0 { (ctx.title.as_str(), ctx.body.as_str()) } else { ("", "") };
-        if !self.send_one(&client, ctx, topic, title, body, Some(att), icon.as_deref()).await? {
+        if !self.send_one(&client, ctx, topic, (title, body), Some(att), icon.as_deref()).await? {
           return Ok(false);
         }
       }

@@ -274,7 +274,7 @@ mod tests {
     let ctx = default_ctx();
     let result = gotify.send(&ctx).await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), true);
+    assert!(result.unwrap());
   }
 
   #[tokio::test]
