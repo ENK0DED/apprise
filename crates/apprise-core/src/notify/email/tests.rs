@@ -66,6 +66,8 @@ pub(crate) struct ServerConfig {
   pub mail_code: u16,
   /// DATA fails (once) for messages to these recipients.
   pub fail_data_once: Vec<String>,
+  /// Send a forged response in the clear right after the STARTTLS reply.
+  pub inject_after_starttls: bool,
   pub acceptor: tokio_rustls::TlsAcceptor,
 }
 
@@ -80,6 +82,7 @@ impl Default for ServerConfig {
       refuse_rcpt: Vec::new(),
       mail_code: 250,
       fail_data_once: Vec::new(),
+      inject_after_starttls: false,
       acceptor: crate::utils::socket::test_tls_acceptor(),
     }
   }
@@ -198,7 +201,8 @@ async fn run_commands<S: AsyncRead + AsyncWrite + Unpin>(
       "250 fake.test\r\n".to_string()
     } else if lower == "starttls" {
       if offer_starttls {
-        io.get_mut().write_all(b"220 Ready to start TLS\r\n").await.ok()?;
+        let reply: &[u8] = if config.inject_after_starttls { b"220 Ready to start TLS\r\n250 injected\r\n" } else { b"220 Ready to start TLS\r\n" };
+        io.get_mut().write_all(reply).await.ok()?;
         return Some(Upgrade);
       }
       "502 not offered\r\n".to_string()
@@ -711,6 +715,17 @@ async fn test_connection_and_login_failures() {
   let (ok, _) = against(&server, email("mailtos://user:pass@example.com/to@example.org").send(&body)).await;
   assert!(!ok.unwrap());
   assert!(server.mails().is_empty());
+
+  // A response injected in the clear after the STARTTLS reply ends the
+  // session instead of being read as if it came over TLS
+  let server = FakeSmtp::start(ServerConfig { inject_after_starttls: true, ..Default::default() }).await;
+  let (ok, _) = against(&server, email("mailtos://user:pass@example.com/to@example.org").send(&body)).await;
+  assert!(!ok.unwrap());
+  assert!(server.mails().is_empty());
+  // The client gave up before the TLS handshake: no command after STARTTLS
+  let commands: Vec<String> = server.sessions().into_iter().flat_map(|s| s.commands).collect();
+  assert_eq!(commands.iter().skip_while(|c| *c != "STARTTLS").skip(1).count(), 0, "{:?}", commands);
+  assert!(server.sessions().iter().all(|s| s.login.is_none()));
 
   // Nothing listening
   let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

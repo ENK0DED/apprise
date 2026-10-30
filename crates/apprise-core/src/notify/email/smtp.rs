@@ -169,6 +169,12 @@ impl SmtpConnection {
   }
 
   async fn upgrade(&mut self, tls: &tokio_rustls::TlsConnector) -> Result<(), SmtpError> {
+    // Bytes read past the STARTTLS reply came in the clear; treating them as
+    // TLS replies would let a man in the middle inject responses.
+    if !self.buffer.is_empty() {
+      self.close();
+      return err("unexpected data after the STARTTLS reply");
+    }
     let Stream::Plain(tcp) = std::mem::replace(&mut self.stream, Stream::Closed) else {
       return err("connection is not plaintext");
     };
