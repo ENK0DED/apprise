@@ -24,6 +24,12 @@ pub(super) fn match_choice(choices: &[&'static str], value: &str) -> Option<&'st
   match_prefix(choices, &pystr::strip(value).to_lowercase())
 }
 
+/// Upstream `^[A-Z0-9_-]+$` (case-insensitive), the shape of the
+/// integration, webhook and API keys several of these services hand out.
+pub(super) fn is_key(value: &str) -> bool {
+  !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 /// The first line of `body`, stripped (`body.split("\n", 1)[0].strip()`).
 pub(super) fn first_line(body: &str) -> &str {
   pystr::strip(body.split('\n').next().unwrap_or_default())

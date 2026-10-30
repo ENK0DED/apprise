@@ -82,6 +82,8 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(httpsms::HttpSms::static_details());
   collect!(humhub::HumHub::static_details());
   collect!(ifttt::Ifttt::static_details());
+  collect!(ilert::ILert::static_details());
+  collect!(incidentio::IncidentIO::static_details());
   collect!(infobip::Infobip::static_details());
   collect!(irc::Irc::static_details());
   collect!(jellyfin::Jellyfin::static_details());
@@ -170,6 +172,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(spike::Spike::static_details());
   collect!(splunk::Splunk::static_details());
   collect!(spugpush::SpugPush::static_details());
+  collect!(squadcast::Squadcast::static_details());
   collect!(stackfield::Stackfield::static_details());
   collect!(streamlabs::Streamlabs::static_details());
   collect!(synology::Synology::static_details());
@@ -271,6 +274,8 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(httpsms::HttpSms::from_url, "httpsms");
   reg!(humhub::HumHub::from_url, "humhub", "humhubs");
   reg!(ifttt::Ifttt::from_url, "ifttt");
+  reg!(ilert::ILert::from_url, "ilert");
+  reg!(incidentio::IncidentIO::from_url, "incidentio");
   reg!(infobip::Infobip::from_url, "infobip");
   reg!(irc::Irc::from_url, "irc", "ircs");
   reg!(jellyfin::Jellyfin::from_url, "jellyfin", "jellyfins");
@@ -360,6 +365,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(spike::Spike::from_url, "spike");
   reg!(splunk::Splunk::from_url, "splunk", "victorops");
   reg!(spugpush::SpugPush::from_url, "spugpush");
+  reg!(squadcast::Squadcast::from_url, "squadcast");
   reg!(stackfield::Stackfield::from_url, "stackfield");
   reg!(streamlabs::Streamlabs::from_url, "strmlabs");
   reg!(synology::Synology::from_url, "synology", "synologys");
