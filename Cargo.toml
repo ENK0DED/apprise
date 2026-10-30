@@ -68,8 +68,10 @@ webpki-roots = "1"
 # AMQP 1.0 (optional); AMQP 0-9-1 is built in
 fe2o3-amqp = { version = "0.18", default-features = false }
 
-# Desktop notifications (optional)
-notify-rust = { version = "4" }
+# Desktop notifications (optional): D-Bus, icon decoding, Win32
+zbus = { version = "6", default-features = false, features = ["tokio"] }
+png = "0.18"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }

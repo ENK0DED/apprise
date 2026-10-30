@@ -31,6 +31,8 @@ pub mod custom_json;
 pub mod custom_xml;
 pub mod d7networks;
 pub mod dapnet;
+#[cfg(feature = "desktop")]
+pub mod desktop;
 pub mod dingtalk;
 pub mod discord;
 pub mod dot;
@@ -142,10 +144,6 @@ pub mod wxpusher;
 pub mod xbmc;
 pub mod xmpp;
 pub mod zulip;
-
-// Platform-specific plugins
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub mod desktop;
 
 // ── Overflow mode ─────────────────────────────────────────────────────────────
 

@@ -43,6 +43,16 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(clicksend::ClickSend::static_details());
   collect!(d7networks::D7Networks::static_details());
   collect!(dapnet::Dapnet::static_details());
+  #[cfg(all(feature = "desktop", unix))]
+  collect!(desktop::dbus::DBus::static_details());
+  #[cfg(all(feature = "desktop", unix))]
+  collect!(desktop::glib::GLib::static_details());
+  #[cfg(all(feature = "desktop", unix))]
+  collect!(desktop::gnome::Gnome::static_details());
+  #[cfg(all(feature = "desktop", target_os = "macos"))]
+  collect!(desktop::macosx::MacOSX::static_details());
+  #[cfg(all(feature = "desktop", windows))]
+  collect!(desktop::windows::Windows::static_details());
   collect!(dingtalk::DingTalk::static_details());
   collect!(discord::Discord::static_details());
   collect!(dot::Dot::static_details());
@@ -189,6 +199,16 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(clicksend::ClickSend::from_url, "clicksend");
   reg!(d7networks::D7Networks::from_url, "d7sms");
   reg!(dapnet::Dapnet::from_url, "dapnet");
+  #[cfg(all(feature = "desktop", unix))]
+  reg!(desktop::dbus::DBus::from_url, "dbus", "kde", "qt");
+  #[cfg(all(feature = "desktop", unix))]
+  reg!(desktop::glib::GLib::from_url, "glib", "gio");
+  #[cfg(all(feature = "desktop", unix))]
+  reg!(desktop::gnome::Gnome::from_url, "gnome");
+  #[cfg(all(feature = "desktop", target_os = "macos"))]
+  reg!(desktop::macosx::MacOSX::from_url, "macosx");
+  #[cfg(all(feature = "desktop", windows))]
+  reg!(desktop::windows::Windows::from_url, "windows");
   reg!(dingtalk::DingTalk::from_url, "dingtalk");
   reg!(discord::Discord::from_url, "discord");
   reg!(dot::Dot::from_url, "dot");
