@@ -48,6 +48,7 @@ pub mod eight00com;
 pub mod email;
 pub mod emby;
 pub mod enigma2;
+pub mod evolution;
 pub mod exotel;
 pub mod fcm;
 pub mod feishu;

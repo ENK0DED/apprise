@@ -64,6 +64,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(eight00com::Eight00com::static_details());
   collect!(emby::Emby::static_details());
   collect!(enigma2::Enigma2::static_details());
+  collect!(evolution::Evolution::static_details());
   collect!(exotel::Exotel::static_details());
   collect!(fcm::Fcm::static_details());
   collect!(feishu::FeiShu::static_details());
@@ -261,6 +262,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(eight00com::Eight00com::from_url, "eight00com");
   reg!(emby::Emby::from_url, "emby", "embys");
   reg!(enigma2::Enigma2::from_url, "enigma2", "enigma2s");
+  reg!(evolution::Evolution::from_url, "evolution", "evolutions");
   reg!(exotel::Exotel::from_url, "exotel");
   reg!(fcm::Fcm::from_url, "fcm");
   reg!(feishu::FeiShu::from_url, "feishu");
