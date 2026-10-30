@@ -434,16 +434,11 @@ fn name_str(name: &FromName) -> Option<String> {
 #[test]
 fn test_parse_matches_upstream() {
   let cases: Vec<ParseCase> = serde_json::from_str(include_str!("testdata/parse_state.json")).unwrap();
-  // URLs upstream's parse_url() rejects for a trailing "?" with no query
-  const CORE_PARSE_DIFFERENCES: &[&str] = &[];
   let mut failures = Vec::new();
   for case in &cases {
     let parsed = ParsedUrl::parse(&case.url);
     let secure = parsed.as_ref().is_some_and(|p| p.schema == "mailtos" || p.schema == "deltachats");
     let result = parsed.as_ref().and_then(|p| Email::parse(p, secure));
-    if CORE_PARSE_DIFFERENCES.contains(&case.url.as_str()) {
-      continue;
-    }
     let Some(e) = result else {
       if case.ok {
         failures.push(format!("{}: rejected, upstream accepts", case.url));
