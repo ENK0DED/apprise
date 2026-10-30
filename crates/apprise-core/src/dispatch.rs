@@ -315,7 +315,15 @@ async fn run_service(call: &Call<'_>, ctx: &NotifyContext, opts: &DispatchOption
   let wait = resolve_wait(call, opts);
   let total = retry + 1;
   let http = http_options(call, opts);
-  let pieces = prepare_contexts(call.svc, ctx);
+  // A message that cannot be prepared (nothing left to send) fails the
+  // service without an attempt, as upstream.
+  let pieces = match prepare_contexts(call.svc, ctx) {
+    Ok(pieces) => pieces,
+    Err(e) => {
+      log_send_error(name, &e, opts.secure_logging);
+      return service_result(call, total, vec![NotifyAttempt { status: ResultStatus::Failure, elapsed: Duration::ZERO }], Duration::ZERO);
+    }
+  };
   let interval = call.svc.request_rate_per_sec();
   let clock = call.svc.throttle_clock().unwrap_or_default();
 

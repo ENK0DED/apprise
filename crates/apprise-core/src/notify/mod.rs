@@ -308,7 +308,26 @@ impl ServiceDetails {
 /// Every method added to this trait must also be forwarded in
 /// `ConfiguredService` (`notify/options.rs`). `registry::from_url` wraps
 /// every plugin in that type, so an unforwarded method silently falls back
-/// to the trait default instead of the plugin's own implementation.
+/// to the trait default instead of the plugin's own implementation. The
+/// `EveryOverride` test in that file fails until a new method is forwarded.
+///
+/// # What decides each setting
+///
+/// Before `send()` runs, the orchestrator (`prepare.rs`) resolves:
+///
+/// - **Format**: a plugin with one format in
+///   [`notify_formats`](Self::notify_formats) gets `?format=` when the URL
+///   sets it, else that format. A plugin with several gets `?format=` when
+///   it is one of them, else the input format when it is one of them, else
+///   the first listed. [`notify_format_overridable`](Self::notify_format_overridable)
+///   returning false ignores `?format=`.
+/// - **Overflow**: `?overflow=`, else [`overflow_mode`](Self::overflow_mode).
+///   [`overflow_mode_overridable`](Self::overflow_mode_overridable)
+///   returning false ignores `?overflow=`.
+/// - **Emojis**: `?emojis=`, else `NotifyContext::interpret_emojis`.
+/// - **Title**: when [`title_maxlen`](Self::title_maxlen) is 0 the title is
+///   moved into the body (`title\r\nbody`, an HTML `<b>` line, or a
+///   Markdown `#` heading) and `ctx.title` is empty.
 #[async_trait]
 pub trait Notify: Send + Sync {
   /// URL schemes handled by this plugin (e.g., ["discord"])
@@ -329,6 +348,13 @@ pub trait Notify: Send + Sync {
     false
   }
 
+  /// Which of the `total` prepared pieces carries the attachments (upstream
+  /// `_attachment_send_index`). Attachments are sent once, never repeated
+  /// across a split message. Default: the first piece.
+  fn attachment_send_index(&self, _total: usize) -> usize {
+    0
+  }
+
   /// Tags associated with this notification target
   fn tags(&self) -> Vec<String> {
     vec![]
@@ -339,6 +365,25 @@ pub trait Notify: Send + Sync {
   /// to this format before calling send().
   fn notify_format(&self) -> NotifyFormat {
     NotifyFormat::Text
+  }
+
+  /// Every format the plugin can send, the default first (upstream's
+  /// `notify_format` tuple). A multi-format plugin overrides this and keeps
+  /// [`notify_format`](Self::notify_format) returning the first entry.
+  ///
+  /// The orchestrator picks one per send, as upstream `resolve_format` does:
+  /// a single-format plugin always gets its one format (`?format=` replaces
+  /// it); a multi-format plugin gets `?format=` when it is listed, else the
+  /// input format when it is listed, else the first entry. The choice is in
+  /// `ctx.body_format` when `send()` runs.
+  fn notify_formats(&self) -> Vec<NotifyFormat> {
+    vec![self.notify_format()]
+  }
+
+  /// Whether `?format=` may change the format (default true). Return false
+  /// to keep [`notify_formats`](Self::notify_formats) whatever the URL says.
+  fn notify_format_overridable(&self) -> bool {
+    true
   }
 
   /// Maximum body length in characters (default: 32768, matching Python)
@@ -364,8 +409,17 @@ pub trait Notify: Send + Sync {
   }
 
   /// How to handle messages that exceed body_maxlen (default: Upstream).
+  /// `?overflow=` on the URL takes precedence unless
+  /// [`overflow_mode_overridable`](Self::overflow_mode_overridable) is false.
   fn overflow_mode(&self) -> OverflowMode {
     OverflowMode::Upstream
+  }
+
+  /// Whether `?overflow=` may change the overflow mode (default true).
+  /// Return false to pin [`overflow_mode`](Self::overflow_mode), as upstream
+  /// LFG Alarm pins `upstream` so one message never rings twice.
+  fn overflow_mode_overridable(&self) -> bool {
+    true
   }
 
   /// Maximum number of lines in the body (default: 0 = unlimited).
@@ -374,12 +428,35 @@ pub trait Notify: Send + Sync {
     0
   }
 
+  /// Whether the title counts against [`body_maxlen`](Self::body_maxlen)
+  /// (upstream `overflow_amalgamate_title`): the service shows title and
+  /// body together, so `len(title) + len(body)` must fit the body limit.
+  fn overflow_amalgamate_title(&self) -> bool {
+    false
+  }
+
   /// Convert one prepared body chunk into the service's own markup dialect
   /// (upstream `NotifyBase.dialect_convert`). Called after the generic format
   /// conversion. The orchestrator re-applies size limits to the result.
   /// Keep implementations stateless and return unsupported formats unchanged.
+  ///
+  /// For a plugin with a dialect ([`has_dialect`](Self::has_dialect)), the
+  /// orchestrator re-splits (`overflow=split`) or re-truncates
+  /// (`overflow=truncate`) each piece so the *converted* text fits
+  /// [`body_maxlen`](Self::body_maxlen), using
+  /// [`split_dialect_chunk`](crate::conversion::split_dialect_chunk) and
+  /// [`truncate_dialect_chunk`](crate::conversion::truncate_dialect_chunk).
   fn dialect_convert(&self, body: &str, _body_format: &NotifyFormat) -> String {
     body.to_string()
+  }
+
+  /// Whether this plugin overrides [`dialect_convert`](Self::dialect_convert)
+  /// (upstream checks for the override itself). Return true whenever you
+  /// override it: a piece is then re-fitted to the limit even when the
+  /// conversion leaves it unchanged, as upstream does. Without it, a piece
+  /// the conversion leaves unchanged is sent exactly as prepared.
+  fn has_dialect(&self) -> bool {
+    false
   }
 
   /// Common URL options parsed for this instance (`?retry=`, `?format=`, ...).

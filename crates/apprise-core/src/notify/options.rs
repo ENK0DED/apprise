@@ -189,11 +189,20 @@ impl Notify for ConfiguredService {
     // Many plugins only declare support in their details.
     self.inner.attachment_support() || self.inner.details().attachment_support
   }
+  fn attachment_send_index(&self, total: usize) -> usize {
+    self.inner.attachment_send_index(total)
+  }
   fn tags(&self) -> Vec<String> {
     self.inner.tags()
   }
   fn notify_format(&self) -> NotifyFormat {
     self.inner.notify_format()
+  }
+  fn notify_formats(&self) -> Vec<NotifyFormat> {
+    self.inner.notify_formats()
+  }
+  fn notify_format_overridable(&self) -> bool {
+    self.inner.notify_format_overridable()
   }
   fn body_maxlen(&self) -> usize {
     self.inner.body_maxlen()
@@ -207,11 +216,20 @@ impl Notify for ConfiguredService {
   fn overflow_mode(&self) -> OverflowMode {
     self.inner.overflow_mode()
   }
+  fn overflow_mode_overridable(&self) -> bool {
+    self.inner.overflow_mode_overridable()
+  }
   fn body_max_line_count(&self) -> usize {
     self.inner.body_max_line_count()
   }
+  fn overflow_amalgamate_title(&self) -> bool {
+    self.inner.overflow_amalgamate_title()
+  }
   fn dialect_convert(&self, body: &str, body_format: &NotifyFormat) -> String {
     self.inner.dialect_convert(body, body_format)
+  }
+  fn has_dialect(&self) -> bool {
+    self.inner.has_dialect()
   }
   fn service_options(&self) -> Option<&ServiceOptions> {
     Some(&self.options)
@@ -230,6 +248,130 @@ impl Notify for ConfiguredService {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// A plugin that overrides every [`Notify`] method with a non-default value.
+  /// When a method is added to the trait, override it here and compare it in
+  /// [`assert_forwards`]; the test then fails until `ConfiguredService`
+  /// forwards it.
+  struct EveryOverride;
+
+  #[async_trait]
+  impl Notify for EveryOverride {
+    fn schemas(&self) -> &[&str] {
+      &["every"]
+    }
+    fn service_name(&self) -> &str {
+      "Every Override"
+    }
+    fn details(&self) -> ServiceDetails {
+      ServiceDetails {
+        service_name: "Every Override",
+        service_url: None,
+        setup_url: None,
+        protocols: vec!["every"],
+        description: "x",
+        attachment_support: true,
+      }
+    }
+    async fn send(&self, _ctx: &NotifyContext) -> Result<bool, NotifyError> {
+      Ok(false)
+    }
+    fn attachment_support(&self) -> bool {
+      true
+    }
+    fn attachment_send_index(&self, total: usize) -> usize {
+      total.saturating_sub(1)
+    }
+    fn tags(&self) -> Vec<String> {
+      vec!["tag".into()]
+    }
+    fn notify_format(&self) -> NotifyFormat {
+      NotifyFormat::Markdown
+    }
+    fn notify_formats(&self) -> Vec<NotifyFormat> {
+      vec![NotifyFormat::Markdown, NotifyFormat::Html]
+    }
+    fn notify_format_overridable(&self) -> bool {
+      false
+    }
+    fn body_maxlen(&self) -> usize {
+      7
+    }
+    fn title_maxlen(&self) -> usize {
+      3
+    }
+    fn request_rate_per_sec(&self) -> f64 {
+      2.5
+    }
+    fn overflow_mode(&self) -> OverflowMode {
+      OverflowMode::Split
+    }
+    fn overflow_mode_overridable(&self) -> bool {
+      false
+    }
+    fn body_max_line_count(&self) -> usize {
+      4
+    }
+    fn overflow_amalgamate_title(&self) -> bool {
+      true
+    }
+    fn dialect_convert(&self, body: &str, _body_format: &NotifyFormat) -> String {
+      format!("<{}>", body)
+    }
+    fn has_dialect(&self) -> bool {
+      true
+    }
+  }
+
+  /// Every overridable method of `wrapped` must return what `direct` returns.
+  fn assert_forwards(direct: &dyn Notify, wrapped: &dyn Notify) {
+    assert_eq!(wrapped.schemas(), direct.schemas());
+    assert_eq!(wrapped.service_name(), direct.service_name());
+    assert_eq!(wrapped.details().to_json(), direct.details().to_json());
+    assert_eq!(wrapped.attachment_support(), direct.attachment_support());
+    assert_eq!(wrapped.attachment_send_index(5), direct.attachment_send_index(5));
+    assert_eq!(wrapped.tags(), direct.tags());
+    assert_eq!(wrapped.notify_format(), direct.notify_format());
+    assert_eq!(wrapped.notify_formats(), direct.notify_formats());
+    assert_eq!(wrapped.notify_format_overridable(), direct.notify_format_overridable());
+    assert_eq!(wrapped.body_maxlen(), direct.body_maxlen());
+    assert_eq!(wrapped.title_maxlen(), direct.title_maxlen());
+    assert_eq!(wrapped.request_rate_per_sec(), direct.request_rate_per_sec());
+    assert_eq!(wrapped.overflow_mode(), direct.overflow_mode());
+    assert_eq!(wrapped.overflow_mode_overridable(), direct.overflow_mode_overridable());
+    assert_eq!(wrapped.body_max_line_count(), direct.body_max_line_count());
+    assert_eq!(wrapped.overflow_amalgamate_title(), direct.overflow_amalgamate_title());
+    for format in [NotifyFormat::Text, NotifyFormat::Html, NotifyFormat::Markdown] {
+      assert_eq!(wrapped.dialect_convert("**x** & y", &format), direct.dialect_convert("**x** & y", &format));
+    }
+    assert_eq!(wrapped.has_dialect(), direct.has_dialect());
+  }
+
+  #[test]
+  fn test_every_method_is_forwarded() {
+    let wrapped = ConfiguredService::new(Box::new(EveryOverride), ServiceOptions::default());
+    assert_forwards(&EveryOverride, &wrapped);
+    // The wrapper reports its own options; the plugin itself has none.
+    assert!(wrapped.service_options().is_some());
+    assert!(EveryOverride.service_options().is_none());
+    let result = tokio_test::block_on(wrapped.send(&NotifyContext::default()));
+    assert!(!result.unwrap());
+  }
+
+  #[test]
+  fn test_registry_plugins_keep_their_overrides() {
+    // A plugin loaded through the registry must behave like the plugin itself.
+    for url in ["json://localhost/", "tgram://123456789:abcdefghijklmnopqrstuvwxyz0123456789/12345", "gotify://localhost/abcdefghijklmno"] {
+      let parsed = ParsedUrl::parse(url).unwrap();
+      let direct: Box<dyn Notify> = match parsed.schema.as_str() {
+        "json" => Box::new(crate::notify::custom_json::Json::from_url(&parsed).unwrap()),
+        "tgram" => Box::new(crate::notify::telegram::Telegram::from_url(&parsed).unwrap()),
+        _ => Box::new(crate::notify::gotify::Gotify::from_url(&parsed).unwrap()),
+      };
+      let wrapped = crate::notify::registry::from_url(url).unwrap_or_else(|| panic!("{url} loads"));
+      assert_forwards(direct.as_ref(), wrapped.as_ref());
+    }
+  }
 
   fn opts(url: &str) -> Result<ServiceOptions, String> {
     ServiceOptions::from_url(&ParsedUrl::parse(url).unwrap())
