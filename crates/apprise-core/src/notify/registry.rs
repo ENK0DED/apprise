@@ -246,7 +246,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(pushjet::PushJet::from_url, "pjet", "pjets");
   reg!(pushme::PushMe::from_url, "pushme");
   reg!(pushover::Pushover::from_url, "pover");
-  reg!(pushplus::PushPlus::from_url, "pushplus");
+  reg!(pushplus::PushPlus::from_url, "pushplus", "wecom");
   reg!(pushsafer::Pushsafer::from_url, "psafer", "psafers");
   reg!(pushy::Pushy::from_url, "pushy");
   reg!(qq::Qq::from_url, "qq");
