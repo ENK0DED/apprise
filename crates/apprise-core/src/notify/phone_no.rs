@@ -1,12 +1,15 @@
-//! Phone number helpers matching upstream `apprise.utils.parse`.
+//! Phone number helpers matching upstream `apprise.utils.parse`, shared by
+//! the SMS plugins added with the upstream 2.1 sync.
 //!
 //! [`is_phone_no`] mirrors upstream `is_phone_no()` and [`parse_phone_no`]
-//! mirrors `parse_phone_no()` (without prefixes), so SMS plugins accept and
-//! drop exactly the numbers upstream does.
+//! mirrors `parse_phone_no()` (without prefixes), so these plugins accept and
+//! drop exactly the numbers upstream does. The API matches
+//! `utils::phone` from the SMS parity work, so the two can be merged into
+//! one module by switching the imports.
 
 /// A phone number broken apart as upstream `is_phone_no()` returns it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PhoneNo {
+pub(crate) struct PhoneNo {
   /// The country code (whatever is left before the area code).
   pub country: String,
   /// The area code (the 3 digits before the line).
@@ -24,7 +27,7 @@ pub struct PhoneNo {
 /// The entry may only hold digits, whitespace, `(`, `)`, `+` and `-`. Once
 /// stripped down to its digits it must be between `min_len` and 14 digits
 /// long. Upstream SMS plugins use a `min_len` of 10 unless they say otherwise.
-pub fn is_phone_no(phone: &str, min_len: usize) -> Option<PhoneNo> {
+pub(crate) fn is_phone_no(phone: &str, min_len: usize) -> Option<PhoneNo> {
   // Upstream IS_PHONE_NO: ^\+?[0-9\s)(+-]+\s*$
   let rest = phone.strip_prefix('+').unwrap_or(phone);
   if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit() || c.is_whitespace() || matches!(c, '(' | ')' | '+' | '-')) {
@@ -66,7 +69,7 @@ pub fn is_phone_no(phone: &str, min_len: usize) -> Option<PhoneNo> {
 /// Numbers may be separated by commas or whitespace. An entry with nothing
 /// resembling a phone number is kept, split on the usual delimiters, so the
 /// caller can report it as invalid.
-pub fn parse_phone_no<S: AsRef<str>>(entries: &[S]) -> Vec<String> {
+pub(crate) fn parse_phone_no<S: AsRef<str>>(entries: &[S]) -> Vec<String> {
   let mut result = Vec::new();
   for entry in entries {
     let entry = entry.as_ref();

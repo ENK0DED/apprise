@@ -13,9 +13,9 @@ use base64::Engine;
 use serde_json::{Value, json};
 
 use crate::error::NotifyError;
+use crate::notify::phone_no::{is_phone_no, parse_phone_no};
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client, service_base};
 use crate::utils::parse::{ParsedUrl, parse_bool};
-use crate::utils::phone::{is_phone_no, parse_phone_no};
 
 /// Notifyre REST API version.
 const API_VERSION: &str = "20220711";
