@@ -108,7 +108,6 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   #[cfg(feature = "mqtt")]
   collect!(mqtt::Mqtt::static_details());
   collect!(msg91::Msg91::static_details());
-  collect!(msteams::MsTeams::static_details());
   collect!(nextcloud::Nextcloud::static_details());
   collect!(nextcloudtalk::NextcloudTalk::static_details());
   collect!(notica::Notica::static_details());
@@ -127,7 +126,6 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(parseplatform::ParsePlatform::static_details());
   collect!(pinglet::Pinglet::static_details());
   collect!(plivo::Plivo::static_details());
-  collect!(popcorn_notify::PopcornNotify::static_details());
   collect!(postmark::Postmark::static_details());
   collect!(prowl::Prowl::static_details());
   collect!(pushbullet::Pushbullet::static_details());
@@ -299,7 +297,6 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   #[cfg(feature = "mqtt")]
   reg!(mqtt::Mqtt::from_url, "mqtt", "mqtts");
   reg!(msg91::Msg91::from_url, "msg91");
-  reg!(msteams::MsTeams::from_url, "msteams");
   reg!(nextcloud::Nextcloud::from_url, "ncloud", "nclouds");
   reg!(nextcloudtalk::NextcloudTalk::from_url, "nctalk", "nctalks");
   reg!(notica::Notica::from_url, "notica", "noticas");
@@ -319,7 +316,6 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(parseplatform::ParsePlatform::from_url, "parsep", "parseps");
   reg!(pinglet::Pinglet::from_url, "pinglet", "pinglets");
   reg!(plivo::Plivo::from_url, "plivo");
-  reg!(popcorn_notify::PopcornNotify::from_url, "popcorn");
   reg!(postmark::Postmark::from_url, "postmark");
   reg!(prowl::Prowl::from_url, "prowl");
   reg!(pushbullet::Pushbullet::from_url, "pbul");
@@ -550,9 +546,6 @@ pub static NATIVE_URLS: &[NativeUrl] = &[
   NativeUrl { schema: "lark", convert: native::lark },
   NativeUrl { schema: "workflow", convert: native::workflows },
   NativeUrl { schema: "lfg", convert: native::lfgalarm },
-  // Not upstream any more: upstream removed msteams (and its native URL).
-  // Kept, in the form the Rust plugin reads, until the plugin goes too.
-  NativeUrl { schema: "msteams", convert: native::msteams },
 ];
 
 /// The `parse_native_url()` conversions. Each returns the plugin URL that
@@ -838,31 +831,6 @@ mod native {
     Some(converted)
   }
 
-  /// The msteams rule from the last upstream release that had the plugin
-  /// (205bf871), building the URL form `msteams.rs` reads. The `@` inside
-  /// token A is escaped so it stays part of the host.
-  pub fn msteams(url: &str) -> Option<String> {
-    let v3 = pattern!(
-      r"(?i)^https?://(?P<team>[^.]+)(?P<v2a>\.webhook)?\.office\.com/webhook(?P<v2b>b2)?/(?P<token_a>[A-Z0-9-]+@[A-Z0-9-]+)/IncomingWebhook/(?P<token_b>[A-Z0-9]+)/(?P<token_c>[A-Z0-9-]+)/(?P<token_d>V2[A-Z0-9-_]+)/?(?P<params>\?.+)?$"
-    );
-    if let Some(c) = v3.captures(url) {
-      return Some(format!(
-        "msteams://{}@{}/{}/{}/{}/{}",
-        group(&c, "team"),
-        group(&c, "token_a").replace('@', "%40"),
-        group(&c, "token_b"),
-        group(&c, "token_c"),
-        group(&c, "token_d"),
-        group(&c, "params")
-      ));
-    }
-    let c = pattern!(
-      r"(?i)^https?://(?P<team>[^.]+)(?P<v2a>\.webhook)?\.office\.com/webhook(?P<v2b>b2)?/(?P<token_a>[A-Z0-9-]+@[A-Z0-9-]+)/IncomingWebhook/(?P<token_b>[A-Z0-9]+)/(?P<token_c>[A-Z0-9-]+)/?(?P<params>\?.+)?$"
-    )
-    .captures(url)?;
-    Some(format!("msteams://{}/{}/{}/{}", group(&c, "token_a").replace('@', "%40"), group(&c, "token_b"), group(&c, "token_c"), group(&c, "params")))
-  }
-
   pub fn lfgalarm(url: &str) -> Option<String> {
     let c = pattern!(r"(?i)^https?://api\.lfg\.gm/horn/(?P<token>[a-z0-9]{32})/?(?P<params>\?.+)?$").captures(url)?;
     Some(format!("lfg://{}/{}", group(&c, "token"), group(&c, "params")))
@@ -978,7 +946,7 @@ mod tests {
   fn test_every_native_rule_has_a_vector() {
     // Each rule must convert at least one sample, so a typo in a pattern
     // can not hide behind another rule.
-    for native in NATIVE_URLS.iter().filter(|n| n.schema != "msteams") {
+    for native in NATIVE_URLS {
       let hit = NATIVE_VECTORS.iter().any(|(url, _)| (native.convert)(&escape_path_hash(url)).is_some());
       assert!(hit, "no sample URL exercises the {} rule", native.schema);
     }

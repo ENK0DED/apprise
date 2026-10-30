@@ -88,7 +88,6 @@ pub mod mobilemessage;
 #[cfg(feature = "mqtt")]
 pub mod mqtt;
 pub mod msg91;
-pub mod msteams;
 pub mod nextcloud;
 pub mod nextcloudtalk;
 pub mod notica;
@@ -107,7 +106,6 @@ pub mod pagertree;
 pub mod parseplatform;
 pub mod pinglet;
 pub mod plivo;
-pub mod popcorn_notify;
 pub mod postmark;
 pub mod prowl;
 pub mod pushbullet;
