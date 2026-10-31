@@ -811,6 +811,31 @@ mod tests {
     assert_eq!(udh(&submits[4])[5], 2);
   }
 
+  /// YAML `from_phone`, `target_phone` and `targets` replace the URL's
+  /// source and targets, its `?to=` included, as upstream's constructor
+  /// arguments do (upstream: source 15550001111, targets 15553334444 and
+  /// 15559998888, in that order).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_settings_replace_source_and_targets() {
+    let (port, server) = smsc(0).await;
+    let doc = format!(
+      concat!(
+        "urls:\n  - smpp://user:pass@127.0.0.1:{}/15551234567/15557654321?to=15550000000:\n",
+        "      target_phone: '15559998888'\n      targets: ['15553334444']\n      from_phone: '15550001111'\n",
+      ),
+      port
+    );
+    let mut a = crate::Apprise::new();
+    assert_eq!(a.add_config_text(&doc, Some(crate::config::ConfigFormat::Yaml), 0).await.unwrap(), 1);
+    assert!(a.notify(&NotifyContext { body: "Hello".into(), ..Default::default() }).await.is_success());
+    let pdus = server.await.unwrap();
+    let expected = parse(&format!("smpp://user:pass@127.0.0.1:{}/15550001111/15553334444", port)).unwrap();
+    assert_eq!(pdus.len(), 4);
+    assert_eq!(pdus[1], expected.submit_pdu(3, "15553334444", b"Hello", 0, 0));
+    assert_eq!(pdus[2], expected.submit_pdu(4, "15559998888", b"Hello", 0, 0));
+  }
+
   /// A fake SMSC that answers the bind (unless `before_bind`) and then
   /// sends `flood` without end, while reading whatever the client sends.
   /// Connections that do not start with a bind are dropped.

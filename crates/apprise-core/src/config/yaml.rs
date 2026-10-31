@@ -33,6 +33,10 @@
 //! URL part or argument that carries the same value, as upstream's
 //! `_special_token_handler()` maps it (table in `yaml/tokens.rs`). Target
 //! settings add to the URL's own targets, where upstream replaces them.
+//! A setting for a constructor argument no URL argument carries (Gotify's
+//! `token` and `path`, SMPP's `from_phone` and targets) is written at that
+//! argument's place in the URL instead (its host, user or password, or
+//! path segments), replacing what the URL had there.
 //! `tag`/`tags` give the service its tags; a
 //! `?tag=`/`?tags=` on the URL itself stays with the plugin (upstream
 //! c511e1d4, 9b64369c).
@@ -44,7 +48,7 @@ use indexmap::IndexMap;
 
 mod tokens;
 mod value;
-use tokens::{UrlToken, url_token};
+use tokens::{Bound, Place, Segments, UrlPosition, UrlToken, url_position, url_token};
 pub use value::{Mapping, Value, python_float};
 
 use super::template::{PendingService, PlaceholderMap, TemplateSchema, template_in_schema, template_references};
@@ -54,7 +58,7 @@ use super::{
 use crate::asset::AppriseAsset;
 use crate::error::ConfigError;
 use crate::notify::registry::{self, url_schema};
-use crate::utils::parse::{ParsedUrl, parse_list, parse_urls, unquote};
+use crate::utils::parse::{ParsedUrl, parse_list, parse_urls, quote, unquote};
 
 /// Settings written for one service, in YAML order.
 type Tokens = IndexMap<String, Value>;
@@ -132,12 +136,19 @@ fn yaml_scalar(v: &Value) -> String {
 /// add up; a token that stands for several URL values is dropped. Siblings
 /// and children go through this separately, before they are merged.
 ///
+/// A setting for a constructor argument no URL argument carries (Gotify's
+/// `token` and `path`, SMPP's `from_phone`) is kept under [`AT`] and its
+/// argument's name, and [`apply_tokens`] writes it at that argument's
+/// place in the URL.
+///
 /// Settings with one prefix (`+name`, `-name`, `:name`) become one token
 /// named after the prefix, holding a mapping of names to Python's `str()`
 /// of their values: upstream collects them into the one plugin argument
 /// that prefix fills (JSON's `headers`), which replaces the URL's, and a
 /// child's replaces a sibling's.
 fn special_tokens(schema: &str, mut tokens: Tokens) -> Tokens {
+  // Only this function names tokens for a URL position.
+  tokens.retain(|key, _| !key.starts_with(AT));
   if let Some(pass) = tokens.shift_remove("pass")
     && tokens.get("password").is_none_or(Value::is_null)
   {
@@ -159,35 +170,34 @@ fn special_tokens(schema: &str, mut tokens: Tokens) -> Tokens {
   let mut out = Tokens::new();
   let mut lists = BTreeSet::new();
   for (key, value) in tokens {
-    let (name, list) = match url_token(schema, &key) {
-      None => (key, false),
+    // `first`: upstream keeps a list written under the argument's own name
+    // where it is and adds the other settings for it after it.
+    let (name, list, first) = match url_token(schema, &key) {
+      None => (key, false, false),
       Some(UrlToken::UrlOnly) => {
         tracing::warn!("The {}:// {} keyword can only be defined from within a URL; ignoring it.", schema, key);
         continue;
       }
-      Some(UrlToken::Arg(name) | UrlToken::Part(name)) => (name.to_string(), false),
-      Some(UrlToken::List(name)) => (name.to_string(), true),
+      Some(UrlToken::Arg(name) | UrlToken::Part(name)) => (name.to_string(), false, false),
+      Some(UrlToken::List(name)) => (name.to_string(), true, false),
+      Some(UrlToken::At(name)) => {
+        let list = url_position(schema, name).is_some_and(|p| matches!(p.place, Place::Path { kind: Segments::List, .. }));
+        (format!("{AT}{name}"), list, key == name)
+      }
     };
     if list || lists.contains(&name) {
       // A list collects every setting that names it, including one
       // written under the argument's own name
-      let add = |seq: &mut Vec<Value>, value: Value| match value {
-        Value::Sequence(more) => seq.extend(more),
-        other => seq.push(other),
+      let values = match value {
+        Value::Sequence(more) => more,
+        other => vec![other],
       };
-      match out.get_mut(&name) {
-        Some(Value::Sequence(seq)) => add(seq, value),
-        Some(previous) => {
-          let mut seq = vec![std::mem::replace(previous, Value::Null)];
-          add(&mut seq, value);
-          *previous = Value::Sequence(seq);
-        }
-        None => {
-          let mut seq = Vec::new();
-          add(&mut seq, value);
-          out.insert(name.clone(), Value::Sequence(seq));
-        }
-      }
+      let slot = out.entry(name.clone()).or_insert(Value::Sequence(Vec::new()));
+      let seq = match std::mem::replace(slot, Value::Null) {
+        Value::Sequence(seq) => seq,
+        previous => vec![previous],
+      };
+      *slot = Value::Sequence(if first { [values, seq].concat() } else { [seq, values].concat() });
       lists.insert(name);
     } else {
       out.insert(name, value);
@@ -195,6 +205,110 @@ fn special_tokens(schema: &str, mut tokens: Tokens) -> Tokens {
   }
   out
 }
+
+/// Names a setting kept for its constructor argument's place in the URL
+/// ([`special_tokens`]); no YAML key can start with it.
+const AT: &str = "\u{0}at:";
+
+/// Write a setting at the URL place of constructor argument `name`
+/// (upstream passes it to the constructor, over whatever the URL gave): a
+/// URL part, or a run of path segments. The URL arguments that would give
+/// the argument instead are dropped. `Err` as for [`set_url_part`].
+fn apply_position(parsed: &mut ParsedUrl, name: &str, value: &Value) -> Result<(), String> {
+  let Some(UrlPosition { place, overrides }) = url_position(&parsed.schema, name) else { return Ok(()) };
+  let written = match place {
+    Place::Part(part) => set_url_part(parsed, part, value).map(|()| true)?,
+    Place::Path { start, end, kind } => write_segments(parsed, name, start, end, kind, value),
+  };
+  if written {
+    let overridden = |k: &str| overrides.iter().any(|o| k.trim().eq_ignore_ascii_case(o));
+    parsed.qsd.retain(|k, _| !overridden(k));
+    parsed.qsd_order.retain(|k| !overridden(k));
+    rewrite_raw(parsed, matches!(place, Place::Part(_)), &overridden);
+  }
+  Ok(())
+}
+
+/// Write `value` over the path segments from `start` to `end`; false when
+/// the URL has no room there.
+fn write_segments(parsed: &mut ParsedUrl, name: &str, start: Bound, end: Bound, kind: Segments, value: &Value) -> bool {
+  let text = || yaml_text(value).unwrap_or_default();
+  let (new, ends_with_slash): (Vec<String>, bool) = match kind {
+    Segments::One => (Some(text()).filter(|t| !t.is_empty()).into_iter().collect(), false),
+    Segments::Path => {
+      let path = text();
+      (path.split('/').filter(|p| !p.is_empty()).map(str::to_string).collect(), path.ends_with('/'))
+    }
+    Segments::List => {
+      let items: Vec<String> = match value {
+        Value::Sequence(seq) => seq.iter().filter_map(yaml_text).collect(),
+        other => yaml_text(other).into_iter().collect(),
+      };
+      (items.into_iter().filter(|t| !t.is_empty()).collect(), false)
+    }
+  };
+  if kind == Segments::One && new.is_empty() {
+    // Removing the segment would shift the next one into its place.
+    tracing::warn!("The {} setting is empty; ignoring it.", name);
+    return false;
+  }
+  let parts = &mut parsed.path_parts;
+  let n = parts.len();
+  let at = |bound: Bound| match bound {
+    Bound::Start(i) => i as isize,
+    Bound::End(i) => n as isize - i as isize,
+  };
+  let (s, e) = (at(start).max(0) as usize, at(end).clamp(0, n as isize) as usize);
+  if s > e {
+    tracing::warn!("The URL has no place for the {} setting; ignoring it.", name);
+    return false;
+  }
+  // A path written at the end of the URL decides its trailing slash.
+  let slash = if e == n && kind == Segments::Path { ends_with_slash } else { parsed.path.ends_with('/') };
+  parts.splice(s..e, new);
+  let mut path = parts.iter().map(|p| quote(p, PATH_SEGMENT_SAFE)).collect::<Vec<_>>().join("/");
+  if slash && !path.is_empty() {
+    path.push('/');
+  }
+  parsed.path = path;
+  parsed.refresh_path_parts();
+  true
+}
+
+/// Bring `parsed.raw` in line for plugins that read the URL as written
+/// (Telegram finds its bot token there): the URL authority (`part`) or
+/// path is rebuilt, and the overridden arguments are left out.
+fn rewrite_raw(parsed: &mut ParsedUrl, part: bool, overridden: &dyn Fn(&str) -> bool) {
+  let raw = parsed.raw.clone();
+  let Some((schema, rest)) = raw.split_once("://") else { return };
+  let (before, query) = rest.split_once('?').map_or((rest, None), |(b, q)| (b, Some(q)));
+  let (authority, written_path) = before.split_once('/').unwrap_or((before, ""));
+  let authority = if part {
+    let mut out = String::new();
+    if parsed.user.is_some() || parsed.password.is_some() {
+      out.push_str(&parsed.user.as_deref().map(|u| quote(u, "")).unwrap_or_default());
+      if let Some(password) = &parsed.password {
+        out.push(':');
+        out.push_str(&quote(password, ""));
+      }
+      out.push('@');
+    }
+    out.push_str(&parsed.host.as_deref().map(|h| quote(h, ":[]")).unwrap_or_default());
+    if let Some(port) = parsed.port {
+      out.push_str(&format!(":{port}"));
+    }
+    out
+  } else {
+    authority.to_string()
+  };
+  let path = if part { written_path.to_string() } else { parsed.path.clone() };
+  let query: Vec<&str> =
+    query.into_iter().flat_map(|q| q.split(['&', ';'])).filter(|p| !p.is_empty() && !overridden(&unquote(p.split('=').next().unwrap_or("")))).collect();
+  parsed.raw = format!("{schema}://{authority}/{path}{}", if query.is_empty() { String::new() } else { format!("?{}", query.join("&")) });
+}
+
+/// Characters a path segment may hold as they are (RFC 3986 `pchar`).
+const PATH_SEGMENT_SAFE: &str = ":@!$&'()*+,;=";
 
 /// One URL entry, with its settings applied and its tags (groups
 /// included) assigned.
@@ -583,6 +697,10 @@ fn dropped_template(url: &str, parsed: &ParsedUrl, map: Option<&PlaceholderMap>)
 fn apply_tokens(parsed: &mut ParsedUrl, tokens: Tokens, entry: usize, item: usize) -> Result<(), String> {
   for (key, value) in tokens {
     if key == "asset" || key == "schema" {
+      continue;
+    }
+    if let Some(name) = key.strip_prefix(AT) {
+      apply_position(parsed, name, &value)?;
       continue;
     }
     if let (Some(prefix), Value::Mapping(group)) = (URL_ARG_PREFIXES.into_iter().find(|p| key == *p), &value) {
@@ -989,6 +1107,116 @@ urls:
     // The raw arguments follow
     let p = resolved("urls:\n  - json://localhost/?+X-A=1&other=1:\n      +X-B: 2\n").remove(0);
     assert_eq!((p.get("+X-A"), p.get("+X-B"), p.get("other")), (None, Some("2"), Some("1")));
+  }
+
+  #[test]
+  fn test_settings_for_unlisted_arguments_rewrite_the_url() {
+    let one = |doc: &str| resolved(doc).remove(0);
+    // A URL part: Telegram's bot token is the host, also in the URL as
+    // written, which the plugin reads
+    let p = one("urls:\n  - tgram://123456789:abcdefghijklmnopqrstuvwxyz0123456789/12345:\n      bot_token: 987654321:zyxwvutsrqponmlkjihgfedcba9876543210\n");
+    assert_eq!(p.host.as_deref(), Some("987654321:zyxwvutsrqponmlkjihgfedcba9876543210"));
+    assert_eq!(p.raw, "tgram://987654321:zyxwvutsrqponmlkjihgfedcba9876543210/12345");
+    // One segment, counted from the end: Gotify's token follows its path
+    let p = one("urls:\n  - gotify://localhost/a/b/aaaaaaaaaaaaaaa?priority=high:\n      token: bbbbbbbbbbbbbbb\n");
+    assert_eq!((p.path.as_str(), p.raw.as_str()), ("a/b/bbbbbbbbbbbbbbb", "gotify://localhost/a/b/bbbbbbbbbbbbbbb?priority=high"));
+    // A path: the segments before the token, whatever their number
+    for (url, path) in
+      [("gotify://localhost/aaaaaaaaaaaaaaa", "my/sub/aaaaaaaaaaaaaaa"), ("gotify://localhost/x/y/z/aaaaaaaaaaaaaaa/", "my/sub/aaaaaaaaaaaaaaa/")]
+    {
+      assert_eq!(one(&format!("urls:\n  - {url}:\n      path: /my/sub/\n")).path, path, "{url}");
+    }
+    // A path at the end of the URL sets its trailing slash
+    assert_eq!(one("urls:\n  - flowtriq://key@localhost/old/hook/:\n      path: /new/hook\n").path, "new/hook");
+    assert_eq!(one("urls:\n  - flowtriq://key@localhost/old/hook:\n      path: /new/hook/\n").path, "new/hook/");
+    // SMPP: the source is the first segment, the targets the rest; the
+    // settings replace the URL's targets, its own `?to=` and `?from=`
+    // included, and a list under the argument's own name comes first
+    let p = one(concat!(
+      "urls:\n  - smpp://user:pass@localhost/15551234567/15557654321?to=15550000000&from=15556666666&other=1:\n",
+      "      target_phone: '15559998888'\n      targets: ['15553334444']\n      from_phone: '15550001111'\n",
+    ));
+    assert_eq!(p.path_parts, vec!["15550001111", "15553334444", "15559998888"]);
+    assert_eq!((p.get("to"), p.get("from"), p.get("other")), (None, None, Some("1")));
+    assert_eq!(p.raw, "smpp://user:pass@localhost/15550001111/15553334444/15559998888?other=1");
+    // Nextcloud Talk: the rooms; a child setting replaces a sibling one
+    let got = resolved(
+      "urls:\n  - nctalk://user:pass@localhost/roomA/roomB:\n      - target_room_id: roomC\n      - target_room_id: [roomD, roomE]\n    target_room_id: roomF\n",
+    );
+    assert_eq!(got.iter().map(|p| p.path_parts.clone()).collect::<Vec<_>>(), vec![vec!["roomC"], vec!["roomD", "roomE"]]);
+    // A value is one segment, encoded in the path
+    assert_eq!(one("urls:\n  - nctalk://user:pass@localhost/roomA:\n      targets: ['#a b/c']\n").path, "%23a%20b%2Fc");
+    // A URL without room for the setting keeps it as it is, and so does
+    // an empty value for one segment
+    let p = one("urls:\n  - github://token@owner:\n      number: 5\n");
+    assert_eq!((p.path.as_str(), p.raw.as_str()), ("", "github://token@owner"));
+    assert_eq!(one("urls:\n  - gotify://localhost/a/aaaaaaaaaaaaaaa:\n      token: ''\n").path, "a/aaaaaaaaaaaaaaa");
+    // GoAlert tells its path from its keys by their form: the setting stays
+    // an argument, which the plugin reads
+    assert_eq!(one("urls:\n  - goalert://localhost/11111111-2222-3333-4444-555555555555:\n      path: /sub\n").get("path"), Some("/sub"));
+    // No YAML key can pose as one of these settings
+    let p = one("urls:\n  - gotify://localhost/aaaaaaaaaaaaaaa:\n      \"\\0at:token\": bbbbbbbbbbbbbbb\n");
+    assert_eq!(p.path, "aaaaaaaaaaaaaaa");
+  }
+
+  /// Each setting of the round-3 list (`gotify`, `goalert`, `notica`,
+  /// `pinglet` and `flowtriq` `path`, `nctalk` `target_room_id`, with
+  /// Gotify's `token`) sends what upstream sends: its requests, captured
+  /// with `requests` patched, for the same YAML.
+  #[tokio::test]
+  async fn test_settings_for_unlisted_arguments_reach_the_plugins() {
+    use wiremock::matchers::{any, method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string("{}")).mount(&server).await;
+    Mock::given(any()).respond_with(ResponseTemplate::new(200).set_body_string("{}")).mount(&server).await;
+    let at = server.address().to_string();
+    let doc = format!(
+      concat!(
+        "urls:\n",
+        "  - gotify://{at}/aaaaaaaaaaaaaaa:\n      path: /my/sub/\n",
+        "  - gotify://{at}/aaaaaaaaaaaaaaa:\n      token: bbbbbbbbbbbbbbb\n",
+        "  - goalert://{at}/sub/11111111-2222-3333-4444-555555555555:\n      path: /other/sub\n",
+        "  - notica://{at}/a/rrrrrr:\n      path: /my/sub/\n",
+        "  - pinglet://abc123@{at}/prefix/acme/deploys:\n      path: /my/sub/\n",
+        "  - flowtriq://apikey@{at}/old/hook/:\n      path: /new/hook/\n",
+        "  - nctalk://user:pass@{at}/roomA/roomB:\n      target_room_id: roomC\n",
+      ),
+      at = at
+    );
+    let mut a = crate::Apprise::new();
+    assert_eq!(a.add_config_text(&doc, Some(crate::config::ConfigFormat::Yaml), 0).await.unwrap(), 7);
+    let ctx = crate::NotifyContext { title: "title".into(), body: "body".into(), ..Default::default() };
+    a.notify(&ctx).await;
+    let mut seen: Vec<String> = server
+      .received_requests()
+      .await
+      .unwrap()
+      .iter()
+      .filter(|r| r.url.path() != "/")
+      .map(|r| {
+        let key = ["x-gotify-key", "authorization"].iter().find_map(|h| r.headers.get(*h)).map(|v| v.to_str().unwrap().to_string());
+        let query = r.url.query().map(|q| format!("?{q}")).unwrap_or_default();
+        format!("{} {}{} {}", r.method, r.url.path(), query, key.unwrap_or_default())
+      })
+      .collect();
+    seen.sort();
+    let token = |s: &str| format!("Bearer {s}");
+    let mut expected = vec![
+      "POST /my/sub/message aaaaaaaaaaaaaaa".to_string(),
+      "POST /message bbbbbbbbbbbbbbb".into(),
+      format!("POST /other/sub/api/v2/generic/incoming {}", token("11111111-2222-3333-4444-555555555555")),
+      "POST /my/sub/?token=rrrrrr ".into(),
+      format!("POST /my/sub/acme/deploys {}", token("abc123")),
+      "POST /new/hook ".into(),
+    ];
+    expected.sort();
+    // Nextcloud Talk authenticates with the URL's user
+    let talk: Vec<String> = seen.iter().filter(|l| l.contains("/spreed/")).cloned().collect();
+    seen.retain(|l| !l.contains("/spreed/"));
+    assert_eq!(seen, expected);
+    assert_eq!(talk.len(), 1, "{talk:?}");
+    assert!(talk[0].starts_with("POST /ocs/v2.php/apps/spreed/api/v1/chat/roomC "), "{talk:?}");
   }
 
   #[test]
