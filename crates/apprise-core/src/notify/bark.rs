@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::error::NotifyError;
 use crate::notify::{APP_ID, Notify, NotifyContext, ServiceDetails, build_client};
 use crate::types::NotifyFormat;
-use crate::utils::parse::{ParsedUrl, parse_bool, parse_list};
+use crate::utils::parse::{ParsedUrl, parse_bool, parse_list, unquote};
 
 type Aes192Gcm = AesGcm<aes_gcm::aes::Aes192, aes_gcm::aead::consts::U12>;
 
@@ -121,14 +121,15 @@ fn ordered_json(entries: &[(&str, Value)]) -> String {
 impl Bark {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     let host = url.verified_host()?;
-    let qsd = |k: &str| url.get(k).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    // Upstream decodes the option values once more after parsing the URL
+    let qsd = |k: &str| url.get(k).map(str::trim).filter(|v| !v.is_empty()).map(unquote);
 
     let mut targets = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
       targets.push(to.to_string());
     }
 
-    let badge = qsd("badge").and_then(|b| match b.parse::<i64>() {
+    let badge = qsd("badge").and_then(|b| match b.trim().parse::<i64>() {
       Ok(n) if n >= 0 => Some(n as u64),
       _ => {
         tracing::warn!("The specified Bark badge ({}) is not valid", b);
@@ -145,7 +146,7 @@ impl Bark {
       found
     });
 
-    let volume = qsd("volume").and_then(|v| match v.parse::<i64>() {
+    let volume = qsd("volume").and_then(|v| match v.trim().parse::<i64>() {
       Ok(n) if (0..=10).contains(&n) => Some(n as u8),
       _ => {
         tracing::warn!("The specified Bark volume ({}) is not valid. Must be between 0 and 10", v);
@@ -162,8 +163,9 @@ impl Bark {
     });
 
     // Encryption is off unless a key was explicitly given; a '+' in the key
-    // is kept literally, as upstream reads it
-    let cipher = match url.get("key").filter(|k| !k.is_empty()) {
+    // is kept literally, as upstream reads it; it is decoded once more but
+    // not stripped
+    let cipher = match url.get("key").filter(|k| !k.is_empty()).map(unquote) {
       None => None,
       Some(key) => {
         if !key.is_ascii() {
@@ -482,6 +484,34 @@ mod tests {
     assert_eq!(body_json(&requests[1]), expected("k1"));
     // Keys keep upstream's order
     assert!(String::from_utf8_lossy(&requests[0].body).starts_with(r#"{"device_key":"k2","title":"Apprise Notifications","body":"#));
+  }
+
+  #[tokio::test]
+  async fn test_send_decodes_options_twice() {
+    // pycapture.py for bark://localhost/device?group=a%2520b&click=https%253A%252F%252Fexample.com&badge=%2532
+    //   &category=c%2520d&volume=%2535&level=%2563ritical&sound=%2561larm&icon=https%253A%252F%252Fexample.com%252Fi.png
+    let server = MockServer::builder().start().await;
+    Mock::given(method("POST")).and(path("/push")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let addr = server.address();
+    let svc = bark(&format!(
+      "bark://{}:{}/device?group=a%2520b&click=https%253A%252F%252Fexample.com&badge=%2532&category=c%2520d&volume=%2535&level=%2563ritical\
+       &sound=%2561larm&icon=https%253A%252F%252Fexample.com%252Fi.png",
+      addr.ip(),
+      addr.port()
+    ));
+    let ctx = NotifyContext { title: "title".into(), body: "body".into(), ..Default::default() };
+    assert!(svc.send(&ctx).await.unwrap());
+    assert_eq!(
+      body_json(&push_requests(&server).await[0]),
+      json!({
+        "device_key": "device", "title": "title", "body": "body", "icon": "https://example.com/i.png", "sound": "alarm.caf",
+        "url": "https://example.com", "badge": 2, "level": "critical", "category": "c d", "group": "a b", "volume": 5,
+      })
+    );
+
+    // The encryption key is decoded once more too: 0123456789abcde% is 16 characters
+    assert!(from_url("bark://localhost/device?key=0123456789abcde%2525").is_some());
+    assert!(from_url("bark://localhost/device?key=0123456789abcdef%2525").is_none());
   }
 
   #[tokio::test]
