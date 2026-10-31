@@ -58,6 +58,7 @@ use pgp::ser::Serialize;
 use pgp::types::{CompressionAlgorithm, KeyDetails, Password};
 use sha1::{Digest, Sha1};
 
+use crate::asset::AppriseAsset;
 use crate::utils::cwe312::cwe312_loggable;
 use crate::utils::wkd::WkdController;
 
@@ -111,6 +112,9 @@ pub struct PgpController {
   /// Generate a key pair when one is needed and missing (upstream
   /// `AppriseAsset.pgp_autogen`, on by default).
   autogen: bool,
+  /// Follow redirects when a key URL sets no `?redirect=` (the asset's
+  /// `http_redirects`, on by default).
+  http_redirects: bool,
   lookup: Arc<Mutex<HashMap<String, (CachedKey, Instant)>>>,
 }
 
@@ -133,6 +137,7 @@ impl PgpController {
       app_id: app_id.to_string(),
       wkd,
       autogen: true,
+      http_redirects: true,
       lookup: Arc::new(Mutex::new(HashMap::new())),
     }
   }
@@ -142,9 +147,12 @@ impl PgpController {
     Self { path, ..self.clone() }
   }
 
-  /// This controller with another application name for generated keys.
-  pub fn with_app_id(&self, app_id: &str) -> Self {
-    Self { app_id: app_id.to_string(), ..self.clone() }
+  /// This controller for an Apprise using `asset` (upstream gives the
+  /// controller the service's asset): generated keys are named after its
+  /// `app_id` and are only generated when its `pgp_autogen` allows it, and
+  /// key URLs without `?redirect=` follow its `http_redirects`.
+  pub fn with_asset(&self, asset: &AppriseAsset) -> Self {
+    Self { app_id: asset.app_id.clone(), autogen: asset.pgp_autogen, http_redirects: asset.http_redirects, ..self.clone() }
   }
 
   /// The WKD controller, if WKD discovery is on.
@@ -210,9 +218,15 @@ impl PgpController {
 
   async fn source(&self, explicit: Option<&str>, max: usize, discovered: Option<PathBuf>, prefix: &str) -> KeySource {
     if let Some(source) = explicit {
-      return match crate::attachment::load_attachment(source).await {
-        Ok(att) if att.data.len() <= max => KeySource::Found(att.data, format!("{}{}", prefix, source)),
-        Ok(_) => {
+      // The limit applies while reading (upstream sets the key file's
+      // max_file_size)
+      let loaded = match crate::attachment::parse_attachment(source) {
+        Ok(parsed) => parsed.with_max_file_size(max as u64).load_following(self.http_redirects).await,
+        Err(e) => Err(e),
+      };
+      return match loaded {
+        Ok(att) => KeySource::Found(att.data, format!("{}{}", prefix, source)),
+        Err(crate::error::AttachError::TooLarge { .. }) => {
           tracing::warn!("PGP key {} exceeds the {} byte limit", cwe312_loggable(source, true), max);
           KeySource::Inaccessible
         }

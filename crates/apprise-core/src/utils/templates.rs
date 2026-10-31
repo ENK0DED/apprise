@@ -178,16 +178,16 @@ where
 #[derive(Debug, Clone)]
 pub struct TemplateFile {
   source: AttachSource,
-  max_size: usize,
 }
 
 impl TemplateFile {
-  /// Parse a `?template=` value. `None`, after a warning, where upstream's
-  /// `AppriseAttachment.add()` fails (an unsupported schema, an
-  /// unparseable URL); the plugin must then refuse the URL.
+  /// Parse a `?template=` value, which may hold at most `max_size` bytes.
+  /// `None`, after a warning, where upstream's `AppriseAttachment.add()`
+  /// fails (an unsupported schema, an unparseable URL); the plugin must
+  /// then refuse the URL.
   pub fn parse(value: &str, max_size: usize) -> Option<Self> {
     match parse_attachment(value) {
-      Ok(source) => Some(Self { source, max_size }),
+      Ok(source) => Some(Self { source: source.with_max_file_size(max_size as u64) }),
       Err(e) => {
         tracing::warn!("The template specified could not be loaded: {}", e);
         None
@@ -200,13 +200,15 @@ impl TemplateFile {
     self.source.loggable()
   }
 
-  /// Read the template text. A missing or oversized template logs
-  /// "Could not access {service} template ..." and one that cannot be
-  /// read logs "{service} template ... could not be read.", as upstream.
-  pub async fn read(&self, service: &str) -> Option<String> {
-    let loaded = match self.source.load_limited(self.max_size as u64).await {
-      Ok(a) if a.data.len() <= self.max_size => a,
-      Ok(_) | Err(AttachError::NotFound(_)) | Err(AttachError::TooLarge { .. }) | Err(AttachError::Disallowed(_)) => {
+  /// Read the template text for an Apprise using `asset` (its
+  /// `http_redirects` applies unless the template's URL sets `?redirect=`).
+  /// A missing or oversized template logs "Could not access {service}
+  /// template ..." and one that cannot be read logs "{service} template
+  /// ... could not be read.", as upstream.
+  pub async fn read(&self, service: &str, asset: &AppriseAsset) -> Option<String> {
+    let loaded = match self.source.load_for(asset).await {
+      Ok(a) => a,
+      Err(AttachError::NotFound(_)) | Err(AttachError::TooLarge { .. }) | Err(AttachError::Disallowed(_)) => {
         tracing::error!("Could not access {} template {}.", service, self.loggable());
         return None;
       }
@@ -446,13 +448,13 @@ mod tests {
     std::fs::write(&path, "{\"a\": \"{{app_body}}\"}").unwrap();
 
     let file = TemplateFile::parse(path.to_str().unwrap(), 100).unwrap();
-    assert_eq!(file.read("Test").await.as_deref(), Some("{\"a\": \"{{app_body}}\"}"));
+    assert_eq!(file.read("Test", &AppriseAsset::default()).await.as_deref(), Some("{\"a\": \"{{app_body}}\"}"));
 
     // Too large, missing and unreadable templates are refused
-    assert!(TemplateFile::parse(path.to_str().unwrap(), 5).unwrap().read("Test").await.is_none());
-    assert!(TemplateFile::parse(dir.join("missing.json").to_str().unwrap(), 100).unwrap().read("Test").await.is_none());
+    assert!(TemplateFile::parse(path.to_str().unwrap(), 5).unwrap().read("Test", &AppriseAsset::default()).await.is_none());
+    assert!(TemplateFile::parse(dir.join("missing.json").to_str().unwrap(), 100).unwrap().read("Test", &AppriseAsset::default()).await.is_none());
     std::fs::write(&path, [0xff, 0xfe]).unwrap();
-    assert!(file.read("Test").await.is_none());
+    assert!(file.read("Test", &AppriseAsset::default()).await.is_none());
 
     // An unsupported schema cannot be loaded at all
     assert!(TemplateFile::parse("invalid://template", 100).is_none());

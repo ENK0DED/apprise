@@ -680,17 +680,8 @@ fn set_url_part(parsed: &mut ParsedUrl, key: &str, value: &Value) -> Result<(), 
 }
 
 /// Upstream asset keys the Rust asset does not model; accepted silently.
-const UNMODELLED_ASSET_KEYS: &[&str] = &[
-  "default_ascii_chars",
-  "default_extension",
-  "default_html_color",
-  "default_image_size",
-  "encoding",
-  "image_path_mask",
-  "pem_autogen",
-  "pgp_autogen",
-  "storage_mode",
-];
+const UNMODELLED_ASSET_KEYS: &[&str] =
+  &["default_ascii_chars", "default_extension", "default_html_color", "default_image_size", "encoding", "image_path_mask", "storage_mode"];
 
 /// Apply an `asset:` section on top of the current asset.
 fn parse_asset(tokens: &Mapping, base: &AppriseAsset) -> AppriseAsset {
@@ -736,7 +727,7 @@ fn parse_asset(tokens: &Mapping, base: &AppriseAsset) -> AppriseAsset {
     };
 
     match key {
-      "secure_logging" | "async_mode" | "abort_on_chain_failure" | "http_redirects" | "interpret_escapes" => {
+      "secure_logging" | "async_mode" | "abort_on_chain_failure" | "http_redirects" | "interpret_escapes" | "pgp_autogen" | "pem_autogen" => {
         let value = match v {
           Value::Bool(b) => *b,
           Value::String(_) | Value::Null => config_bool(text.as_deref().unwrap_or_default()),
@@ -750,9 +741,18 @@ fn parse_asset(tokens: &Mapping, base: &AppriseAsset) -> AppriseAsset {
           "async_mode" => asset.async_mode = value,
           "abort_on_chain_failure" => asset.abort_on_chain_failure = value,
           "http_redirects" => asset.http_redirects = value,
+          "pgp_autogen" => asset.pgp_autogen = value,
+          "pem_autogen" => asset.pem_autogen = value,
           _ => asset.interpret_escapes = value,
         }
       }
+      // Upstream only replaces a value the asset already holds, and this
+      // one is unset unless the asset was given one (the CLI's -j)
+      "interpret_emojis" if asset.interpret_emojis.is_some() => match v {
+        Value::Bool(b) => asset.interpret_emojis = Some(*b),
+        Value::String(_) | Value::Null => asset.interpret_emojis = Some(config_bool(text.as_deref().unwrap_or_default())),
+        _ => tracing::warn!("Invalid asset value to \"{}\".", key),
+      },
       "app_id" | "app_desc" | "app_url" | "theme" | "image_url_mask" | "image_url_logo" => {
         let Some(text) = text else {
           tracing::warn!("Invalid asset value to \"{}\".", key);
@@ -1080,13 +1080,18 @@ urls:
     assert!(parse("urls:\n  - json://localhost\n").asset.is_none());
 
     // Delivery settings the dispatcher reads
-    let out =
-      parse("asset:\n  async_mode: no\n  http_redirects: false\n  abort_on_chain_failure: yes\n  interpret_escapes: 'yes'\nurls:\n  - json://localhost\n");
+    let out = parse(
+      "asset:\n  async_mode: no\n  http_redirects: false\n  abort_on_chain_failure: yes\n  interpret_escapes: 'yes'\n  pem_autogen: no\n  pgp_autogen: 'off'\nurls:\n  - json://localhost\n",
+    );
     let asset = out.asset.unwrap();
     assert!(!asset.async_mode);
     assert!(!asset.http_redirects);
     assert!(asset.abort_on_chain_failure);
     assert!(asset.interpret_escapes);
+    assert!(!asset.pem_autogen);
+    assert!(!asset.pgp_autogen);
+    let asset = parse("asset:\n  pem_autogen: no\nurls:\n  - json://localhost\n").asset.unwrap();
+    assert!(!asset.pem_autogen && asset.pgp_autogen);
   }
 
   // Each case checked against upstream's ConfigBase.config_parse_yaml().
@@ -1111,6 +1116,23 @@ urls:
     let opts = LoadOptions { asset: base, ..Default::default() };
     let out = parse_yaml("asset:\n  tz: invalid\n  app_id: x\nurls: []\n", &opts).unwrap();
     assert_eq!(out.asset.unwrap().timezone, Some(Timezone::utc()));
+  }
+
+  /// Upstream only sets an asset key that already holds a boolean or text:
+  /// `interpret_emojis` starts unset, so it is an invalid key unless the
+  /// asset was given a value first (the CLI's `--interpret-emojis`).
+  #[test]
+  fn test_asset_interpret_emojis_needs_a_value_to_replace() {
+    let emojis = |base: Option<bool>, value: &str| {
+      let opts = LoadOptions { asset: AppriseAsset { interpret_emojis: base, ..Default::default() }, ..Default::default() };
+      parse_yaml(&format!("asset:\n  interpret_emojis: {value}\nurls: []\n"), &opts).unwrap().asset.unwrap().interpret_emojis
+    };
+    assert_eq!(emojis(None, "yes"), None);
+    assert_eq!(emojis(None, "no"), None);
+    assert_eq!(emojis(Some(true), "no"), Some(false));
+    assert_eq!(emojis(Some(true), "'yes'"), Some(true));
+    assert_eq!(emojis(Some(false), "on"), Some(true));
+    assert_eq!(emojis(Some(true), "[x]"), Some(true));
   }
 
   // Each case checked against upstream (PyYAML's YAML 1.1 scalars).

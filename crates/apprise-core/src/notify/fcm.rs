@@ -330,9 +330,9 @@ impl Fcm {
 
   /// An OAuth2 access token for the key file (`NotifyFCM.access_token`),
   /// or `None` when it could not be obtained.
-  async fn access_token(&self, client: &reqwest::Client) -> Option<String> {
+  async fn access_token(&self, client: &reqwest::Client, ctx: &NotifyContext) -> Option<String> {
     let source = self.keyfile.as_deref()?;
-    let Some((data, _)) = read_source(source, MAX_KEYFILE_SIZE).await else {
+    let Some((data, _)) = read_source(source, MAX_KEYFILE_SIZE, &ctx.asset).await else {
       tracing::error!("Could not access FCM keyfile.");
       return None;
     };
@@ -468,7 +468,7 @@ impl Notify for Fcm {
     let base = service_base("https://fcm.googleapis.com");
     let (url, authorization) = match self.mode {
       FcmMode::OAuth2 => {
-        let Some(token) = self.access_token(&client).await else { return Ok(false) };
+        let Some(token) = self.access_token(&client, ctx).await else { return Ok(false) };
         (format!("{}/v1/projects/{}/messages:send", base, self.project.as_deref().unwrap_or_default()), format!("Bearer {}", token))
       }
       FcmMode::Legacy => (format!("{}/fcm/send", base), format!("key={}", self.apikey.as_deref().unwrap_or_default())),

@@ -350,7 +350,7 @@ impl Slack {
   /// The Block Kit content `?template=` builds (upstream `gen_payload()`).
   /// `None` (already logged) when it cannot be used.
   async fn gen_payload(&self, template: &TemplateFile, ctx: &NotifyContext) -> Option<Value> {
-    let text = template.read("Slack").await?;
+    let text = template.read("Slack", &ctx.asset).await?;
     let image_url = if self.include_image { ctx.image_url(NotifyImageSize::Xy72) } else { None };
     let tokens = app_tokens(&self.tokens, &ctx.asset, &ctx.notify_type, &ctx.title, &ctx.body, image_url.as_deref());
 

@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 
-use super::{CommonOptions, MAX_FILE_SIZE, UNKNOWN_MIMETYPE, basename, final_name, guess_mime, parse_query};
+use super::{CommonOptions, MAX_FILE_SIZE, UNKNOWN_MIMETYPE, basename, exceeds, final_name, guess_mime, parse_query};
+use crate::asset::AppriseAsset;
 use crate::error::AttachError;
-use crate::notify::{APP_ID, Attachment, ClientDefaults, HttpOptions, client_builder, current_http_options, with_http_options};
+use crate::notify::{APP_ID, Attachment, ClientDefaults, HttpOptions, client_builder, with_http_options};
 use crate::utils::cwe312::cwe312_loggable;
 use crate::utils::parse::parse_bool;
 
@@ -23,6 +24,9 @@ pub struct HttpSource {
   pub name: Option<String>,
   pub mime: Option<String>,
   pub http: HttpOptions,
+  /// The largest download accepted, in bytes (upstream `max_file_size`);
+  /// `0` disables the check.
+  pub max_file_size: u64,
   /// The source with secrets masked, for logs.
   pub display: String,
 }
@@ -64,24 +68,30 @@ impl HttpSource {
     } else {
       url.query_pairs_mut().clear().extend_pairs(forward);
     }
-    Ok(Self { url, user, password, headers, name: opts.name, mime: opts.mime, http, display: shown })
+    Ok(Self { url, user, password, headers, name: opts.name, mime: opts.mime, http, max_file_size: MAX_FILE_SIZE, display: shown })
   }
 
-  /// Download the content, refusing anything over [`MAX_FILE_SIZE`].
+  /// Download the content, refusing anything over
+  /// [`max_file_size`](Self::max_file_size) before reading past it.
+  /// Redirects are followed unless the URL says `?redirect=no`.
   pub async fn load(&self) -> Result<Attachment, AttachError> {
-    self.load_limited(MAX_FILE_SIZE).await
+    self.load_following(true).await
   }
 
-  /// Download the content, refusing anything over `limit` bytes (or
-  /// [`MAX_FILE_SIZE`], if smaller) before reading past it.
-  ///
-  /// Redirects follow the URL's `?redirect=`, else the caller's
-  /// [`with_http_options`] (the asset's `http_redirects`, as upstream
-  /// `URLBase.redirects`), else they are followed.
-  pub async fn load_limited(&self, limit: u64) -> Result<Attachment, AttachError> {
+  /// [`load`](Self::load) for an Apprise using `asset`: without
+  /// `?redirect=`, redirects follow its `http_redirects` (upstream
+  /// `URLBase.redirects`).
+  pub async fn load_for(&self, asset: &AppriseAsset) -> Result<Attachment, AttachError> {
+    self.load_following(asset.http_redirects).await
+  }
+
+  /// [`load`](Self::load), following redirects by default when `redirects`.
+  /// Only this source's own settings apply, never those of a service being
+  /// sent.
+  pub(crate) async fn load_following(&self, redirects: bool) -> Result<Attachment, AttachError> {
     let mut http = self.http.clone();
-    http.redirect = http.redirect.or(current_http_options().redirect);
-    with_http_options(http, self.fetch(limit.min(MAX_FILE_SIZE))).await
+    http.redirect = Some(http.redirect.unwrap_or(redirects));
+    with_http_options(http, self.fetch(self.max_file_size)).await
   }
 
   async fn fetch(&self, limit: u64) -> Result<Attachment, AttachError> {
@@ -113,7 +123,7 @@ impl HttpSource {
       tracing::error!("HTTP response exceeds allowable maximum file length ({}KB): {}", limit / 1024, self.display);
       AttachError::TooLarge { source_url: self.display.clone(), limit }
     };
-    if response.content_length().is_some_and(|len| len > limit) {
+    if response.content_length().is_some_and(|len| exceeds(len, limit)) {
       return Err(too_large());
     }
     let header = |name: reqwest::header::HeaderName| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -121,7 +131,7 @@ impl HttpSource {
     let disposition = header(reqwest::header::CONTENT_DISPOSITION).and_then(|d| disposition_filename(&d));
     let mut data = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(fail)? {
-      if (data.len() + chunk.len()) as u64 > limit {
+      if exceeds((data.len() + chunk.len()) as u64, limit) {
         return Err(too_large());
       }
       data.extend_from_slice(&chunk);

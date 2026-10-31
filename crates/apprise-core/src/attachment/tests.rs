@@ -117,14 +117,14 @@ fn test_names_lose_control_characters() {
 }
 
 #[tokio::test]
-async fn test_load_limited_refuses_more_than_asked() {
+async fn test_source_limit_refuses_more_than_asked() {
   let server = MockServer::start().await;
   Mock::given(method("GET")).and(path("/key.pem")).respond_with(ResponseTemplate::new(200).set_body_string("k".repeat(9000))).mount(&server).await;
-  let source = http::HttpSource::from_url(&format!("{}/key.pem", server.uri())).unwrap();
-  assert!(matches!(source.load_limited(8000).await, Err(AttachError::TooLarge { limit: 8000, .. })));
-  assert_eq!(source.load_limited(9000).await.unwrap().data.len(), 9000);
+  let source = parse_attachment(&format!("{}/key.pem", server.uri())).unwrap();
+  assert!(matches!(source.clone().with_max_file_size(8000).load().await, Err(AttachError::TooLarge { limit: 8000, .. })));
+  assert_eq!(source.with_max_file_size(9000).load().await.unwrap().data.len(), 9000);
   // Key files go through the same limit
-  assert!(crate::utils::keyfile::read_source(&format!("{}/key.pem", server.uri()), 8000).await.is_none());
+  assert!(crate::utils::keyfile::read_source(&format!("{}/key.pem", server.uri()), 8000, &crate::AppriseAsset::default()).await.is_none());
 }
 
 #[tokio::test]
@@ -149,12 +149,181 @@ async fn test_http_attachment_redirects_follow_the_asset_default() {
   let gets = |p: &str| requests.iter().filter(|r| r.method.as_str() == "GET" && r.url.path() == p).count();
   assert_eq!((gets("/start"), gets("/target")), (3, 2));
 
-  // A load inside a send (templates, key files) takes the default from the
-  // service's settings the same way
+  // A load for an asset takes its default the same way, whatever the
+  // service being sent says
   let source = parse_attachment(&format!("{}/start", server.uri())).unwrap();
-  let refused = HttpOptions { redirect: Some(false), ..Default::default() };
-  assert!(with_http_options(refused.clone(), source.load()).await.is_err());
-  assert_eq!(source.load().await.unwrap().data, b"attached");
+  let (follow, refuse) = (AppriseAsset::default(), AppriseAsset { http_redirects: false, ..Default::default() });
+  let service = |redirect| HttpOptions { redirect: Some(redirect), ..Default::default() };
+  assert!(with_http_options(service(true), source.load_for(&refuse)).await.is_err());
+  assert_eq!(with_http_options(service(false), source.load_for(&follow)).await.unwrap().data, b"attached");
+  assert_eq!(with_http_options(service(false), source.load()).await.unwrap().data, b"attached");
   let source = parse_attachment(&format!("{}/start?redirect=yes", server.uri())).unwrap();
-  assert_eq!(with_http_options(refused, source.load()).await.unwrap().data, b"attached");
+  assert_eq!(source.load_for(&refuse).await.unwrap().data, b"attached");
+}
+
+/// Templates, key files and PGP keys read during a send follow the asset's
+/// `http_redirects` unless their own URL says `?redirect=`; the service
+/// URL's `?redirect=` does not apply to them (`u4_redirects.py` against
+/// upstream, which gives each of them the asset).
+#[tokio::test]
+async fn test_loads_during_a_send_follow_the_asset() {
+  use crate::notify::{NotifyContext, with_test_base};
+  use crate::{Apprise, AppriseAsset};
+  let server = MockServer::start().await;
+  Mock::given(method("GET")).and(path("/moved")).respond_with(ResponseTemplate::new(302).insert_header("Location", "/target")).mount(&server).await;
+  Mock::given(method("GET")).and(path("/target")).respond_with(ResponseTemplate::new(200).set_body_string("{\"text\": \"{{app_body}}\"}")).mount(&server).await;
+  let fetched = || async {
+    let requests = server.received_requests().await.unwrap();
+    let followed = requests.iter().any(|r| r.method.as_str() == "GET" && r.url.path() == "/target");
+    server.reset().await;
+    Mock::given(method("GET")).and(path("/moved")).respond_with(ResponseTemplate::new(302).insert_header("Location", "/target")).mount(&server).await;
+    Mock::given(method("GET"))
+      .and(path("/target"))
+      .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\": \"{{app_body}}\"}"))
+      .mount(&server)
+      .await;
+    followed
+  };
+  let host = server.address().to_string();
+  // Builds a service URL from its extra arguments and the template URL
+  type Url = Box<dyn Fn(&str, &str) -> String>;
+  let services: [(&str, Url); 6] = [
+    ("slack", Box::new(|svc, tpl| format!("slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/#chan?template={tpl}{svc}"))),
+    ("discord", Box::new(|svc, tpl| format!("discord://AAAA/BBBB/?template={tpl}{svc}"))),
+    ("workflows", Box::new(move |svc, tpl| format!("workflow://{host}/workflow1a/signature/?template={tpl}{svc}"))),
+    ("telegram", Box::new(|svc, tpl| format!("tgram://123456789:abcdefg_hijklmnop/12345/?template={tpl}{svc}"))),
+    ("vapid", Box::new(|svc, tpl| format!("vapid://user@example.com/user@example.com?keyfile={tpl}{svc}"))),
+    ("fcm", Box::new(|svc, tpl| format!("fcm://project/device?keyfile={tpl}{svc}"))),
+  ];
+  let ctx = NotifyContext { title: "t".into(), body: "body".into(), ..Default::default() };
+  // (asset http_redirects, service URL, template URL, followed)
+  let cases = [(true, "&redirect=no", "", true), (false, "&redirect=yes", "", false), (false, "", "?redirect=yes", true)];
+  for (name, url) in &services {
+    for (http_redirects, svc, tpl, followed) in cases {
+      let template = urlencoding::encode(&format!("{}/moved{tpl}", server.uri())).into_owned();
+      let mut a = Apprise::with_asset(AppriseAsset { http_redirects, ..Default::default() });
+      assert!(a.add(&url(svc, &template)), "{name}");
+      let _ = with_test_base(server.uri(), a.notify(&ctx)).await;
+      assert_eq!(fetched().await, followed, "{name}: http_redirects={http_redirects} service={svc:?} template={tpl:?}");
+    }
+  }
+
+  // PGP keys (email pgppub=/pgpprv=), loaded inside the service's settings
+  #[cfg(feature = "pgp")]
+  for (http_redirects, svc, tpl, followed) in cases {
+    use crate::notify::{HttpOptions, with_http_options};
+    let asset = AppriseAsset { http_redirects, ..Default::default() };
+    let key = format!("{}/moved{tpl}", server.uri());
+    let pgp = crate::utils::pgp::PgpController::new(Some(&key), Some(&key), Some("me@example.com"), "Apprise", None).with_asset(&asset);
+    let service = HttpOptions { redirect: Some(svc.is_empty() || svc.ends_with("yes")), ..Default::default() };
+    let _ = with_http_options(service, async { (pgp.public_key(&[], Some(false)).await.is_some(), pgp.private_key().await.is_some()) }).await;
+    assert_eq!(fetched().await, followed, "pgp: http_redirects={http_redirects} service={svc:?} template={tpl:?}");
+  }
+}
+
+/// Serves `size` bytes at `/big` without a Content-Length (the body ends
+/// when the connection closes), so the limit must apply while reading.
+async fn unsized_server(size: usize) -> String {
+  use tokio::io::{AsyncReadExt, AsyncWriteExt};
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let addr = listener.local_addr().unwrap();
+  tokio::spawn(async move {
+    while let Ok((mut stream, _)) = listener.accept().await {
+      tokio::spawn(async move {
+        let mut request = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+          match stream.read(&mut buf).await {
+            Ok(0) | Err(_) => return,
+            Ok(n) => request.extend_from_slice(&buf[..n]),
+          }
+        }
+        // Anything else (stray requests from other local processes) is a 404
+        let response = if request.starts_with(b"GET /big ") {
+          [b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".as_slice(), &vec![b'x'; size]].concat()
+        } else {
+          b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+        };
+        let _ = stream.write_all(&response).await;
+      });
+    }
+  });
+  format!("http://{addr}/big")
+}
+
+/// Each source keeps its own limit (upstream `attach[0].max_file_size`),
+/// `0` meaning none, for a file, a download with and without a
+/// Content-Length, and bytes in memory (`u3_size.py` against upstream).
+#[tokio::test]
+async fn test_each_source_has_its_own_limit() {
+  let dir = tempfile::tempdir().unwrap();
+  let server = MockServer::start().await;
+  Mock::given(method("GET")).and(path("/big2048")).respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'x'; 2048])).mount(&server).await;
+  let sources = [
+    parse_attachment(&write_tmp(&dir, "big.bin", &[b'x'; 2048])).unwrap(),
+    parse_attachment(&format!("{}/big2048", server.uri())).unwrap(),
+    parse_attachment(&unsized_server(2048).await).unwrap(),
+    memory::MemorySource::new("big.bin", vec![b'x'; 2048], "").into(),
+  ];
+  for source in sources {
+    assert_eq!(source.max_file_size(), MAX_FILE_SIZE);
+    for (limit, fits) in [(1024, false), (2047, false), (2048, true), (0, true), (4096, true)] {
+      let loaded = source.clone().with_max_file_size(limit).load().await;
+      match loaded {
+        Ok(att) => assert!(fits && att.data.len() == 2048, "{} limit={limit}", source.loggable()),
+        Err(AttachError::TooLarge { limit: l, .. }) => assert!(!fits && l == limit, "{} limit={limit}", source.loggable()),
+        Err(e) => panic!("{} limit={limit}: {e}", source.loggable()),
+      }
+    }
+  }
+}
+
+/// Through Apprise, an attachment over its limit fails the services that
+/// take attachments and the others still send the message, as upstream;
+/// `memory://` names an empty memory attachment, which never loads.
+#[tokio::test]
+async fn test_attachment_over_its_limit_fails_only_services_with_attachments() {
+  use crate::notify::NotifyContext;
+  let dir = tempfile::tempdir().unwrap();
+  let server = MockServer::start().await;
+  Mock::given(method("GET")).and(path("/big2048")).respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'x'; 2048])).mount(&server).await;
+  Mock::given(method("POST")).and(path("/")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+  Mock::given(method("POST")).and(path("/message")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+  let mut a = crate::Apprise::new();
+  a.add(&format!("json://{}/", server.address()));
+  a.add(&format!("gotify://{}/abcdefghijklmno", server.address()));
+  let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+  let posts = || async {
+    let requests = server.received_requests().await.unwrap();
+    let count = |p: &str| requests.iter().filter(|r| r.method.as_str() == "POST" && r.url.path() == p).count();
+    (count("/"), count("/message"))
+  };
+
+  let sources = [
+    parse_attachment(&write_tmp(&dir, "big.bin", &[b'x'; 2048])).unwrap(),
+    parse_attachment(&format!("{}/big2048", server.uri())).unwrap(),
+    parse_attachment(&unsized_server(2048).await).unwrap(),
+    memory::MemorySource::new("big.bin", vec![b'x'; 2048], "").into(),
+  ];
+  let mut sent = (0, 0);
+  for source in &sources {
+    let r = a.notify_sources(&ctx, &crate::TagFilter::All, std::slice::from_ref(&source.clone().with_max_file_size(1024))).await;
+    assert_eq!(r.status, crate::ResultStatus::Partial, "{}", source.loggable());
+    sent.1 += 1;
+    assert_eq!(posts().await, sent, "{}", source.loggable());
+    let r = a.notify_sources(&ctx, &crate::TagFilter::All, std::slice::from_ref(&source.clone().with_max_file_size(0))).await;
+    assert!(r.is_success(), "{}", source.loggable());
+    sent = (sent.0 + 1, sent.1 + 1);
+    assert_eq!(posts().await, sent, "{}", source.loggable());
+  }
+
+  let r = a.notify_with_attachments(&ctx, &["memory://x.txt".into()]).await;
+  assert_eq!(r.status, crate::ResultStatus::Partial);
+  assert_eq!(posts().await, (sent.0, sent.1 + 1));
+
+  // A hosted instance accepts web content only
+  a.set_location(ContentLocation::Hosted);
+  let memory: AttachSource = memory::MemorySource::text("x").into();
+  assert_eq!(a.notify_sources(&ctx, &crate::TagFilter::All, &[memory]).await.status, crate::ResultStatus::Failure);
+  assert_eq!(posts().await, (sent.0, sent.1 + 1));
 }

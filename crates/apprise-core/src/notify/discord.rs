@@ -88,8 +88,9 @@ pub struct Discord {
   format_override: Option<NotifyFormat>,
   /// `?thread=` or `?url=` forced Markdown whatever `?format=` says.
   markdown_implied: bool,
-  /// `?emojis=no`: escape `:name:` so Discord shows it as text.
-  escape_emojis: bool,
+  /// `?emojis=`. Turned off here or by the asset, `:name:` is escaped so
+  /// Discord shows it as text.
+  emojis: Option<bool>,
   limits: Limits,
   clock_skew: Duration,
   ratelimit: Mutex<RateLimit>,
@@ -170,7 +171,7 @@ impl Discord {
       batch: qsd_bool(url, "batch", true),
       format_override,
       markdown_implied,
-      escape_emojis: url.get("emojis").map(parse_bool) == Some(false),
+      emojis: url.get("emojis").map(parse_bool),
       limits: LIMITS,
       clock_skew: CLOCK_SKEW,
       ratelimit: Mutex::new(RateLimit { remaining: 1.0, reset: SystemTime::now() }),
@@ -194,7 +195,7 @@ impl Discord {
   /// `None` (already logged) when it cannot be used.
   async fn gen_payload(&self, template: &TemplateFile, ctx: &NotifyContext, title: &str, image_url: Option<&str>) -> Option<Map<String, Value>> {
     let name = self.flavor.service_name;
-    let text = template.read(name).await?;
+    let text = template.read(name, &ctx.asset).await?;
 
     let mut tokens = app_tokens(&self.tokens, &ctx.asset, &ctx.notify_type, title, &ctx.body, image_url);
     // Embeds want the colour as a decimal integer
@@ -597,7 +598,10 @@ impl Notify for Discord {
     0.0
   }
   fn dialect_convert(&self, body: &str, _body_format: &NotifyFormat) -> String {
-    if self.escape_emojis { escape_emoji_names(body) } else { body.to_string() }
+    // Upstream escapes when interpret_emojis is False: left unset, Discord
+    // draws emoji as it always has
+    let setting = crate::prepare::preparing_emojis().unwrap_or(self.emojis);
+    if setting == Some(false) { escape_emoji_names(body) } else { body.to_string() }
   }
   fn has_dialect(&self) -> bool {
     true
@@ -611,7 +615,8 @@ impl Notify for Discord {
     let body = ctx.body.as_str();
     // The title skips dialect_convert(), so protect it here too, unless the
     // content has no declared format and skipped it on purpose
-    let title = if self.escape_emojis && !ctx.body_passthrough { escape_emoji_names(&ctx.title) } else { ctx.title.clone() };
+    let escape = crate::prepare::emoji_setting(ctx.asset.interpret_emojis, ctx.interpret_emojis, self.emojis) == Some(false);
+    let title = if escape && !ctx.body_passthrough { escape_emoji_names(&ctx.title) } else { ctx.title.clone() };
     // Embeds only when Markdown was asked for; Discord renders Markdown
     // sent as regular content on its own
     let use_embeds = self.format_override == Some(NotifyFormat::Markdown);
@@ -917,10 +922,9 @@ mod tests {
       assert_eq!(discord(&format!("discord://{quoted}@AAAA/BBBB/")).user.as_deref(), Some(name));
     }
 
-    // Only ?emojis=no turns escaping on
-    assert!(discord("discord://AAAA/BBBB/?emojis=no").escape_emojis);
-    assert!(!discord("discord://AAAA/BBBB/?emojis=yes").escape_emojis);
-    assert!(!discord("discord://AAAA/BBBB/").escape_emojis);
+    assert_eq!(discord("discord://AAAA/BBBB/?emojis=no").emojis, Some(false));
+    assert_eq!(discord("discord://AAAA/BBBB/?emojis=yes").emojis, Some(true));
+    assert_eq!(discord("discord://AAAA/BBBB/").emojis, None);
     assert!(discord("discord://AAAA/BBBB/").has_dialect());
   }
 
@@ -1450,6 +1454,30 @@ mod tests {
     assert!(contents.len() > 1);
     assert!(contents.iter().all(|c| c.chars().count() <= 2000));
     assert_eq!(contents.concat().replace("\\:", ":"), body);
+  }
+
+  /// The asset's `interpret_emojis` decides with `?emojis=` (upstream
+  /// `u2_emojis.py`): turned off, Discord escapes names as with
+  /// `?emojis=no`, and a URL cannot turn them back on.
+  #[tokio::test]
+  async fn test_asset_emojis() {
+    let server = mock(200).await;
+    let (escaped, converted, kept) = ("T \\:fire:\r\nB \\:smile: 10:30", "T 🔥\r\nB 😄 10:30", "T :fire:\r\nB :smile: 10:30");
+    for (asset, query, want) in [
+      (None, "", kept),
+      (None, "?emojis=no", escaped),
+      (Some(true), "", converted),
+      (Some(true), "?emojis=no", escaped),
+      (Some(false), "", escaped),
+      (Some(false), "?emojis=yes", escaped),
+    ] {
+      server.reset().await;
+      Mock::given(method("POST")).and(path(HOOK)).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+      let mut a = crate::Apprise::with_asset(crate::AppriseAsset { interpret_emojis: asset, ..Default::default() });
+      assert!(a.add(&format!("discord://AAAA/BBBB/{query}")));
+      assert!(with_test_base(server.uri(), a.notify(&ctx("T :fire:", "B :smile: 10:30"))).await.is_success());
+      assert_eq!(json_of(&posts(&server).await[0])["content"], want, "asset={asset:?} {query}");
+    }
   }
 
   /// A retry only posts what did not arrive.

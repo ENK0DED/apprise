@@ -5,12 +5,18 @@
 use base64::Engine;
 use std::path::PathBuf;
 
-/// Read `source`, refusing anything larger than `max_size` bytes. Returns
-/// the content and, for a local file, its path.
-pub async fn read_source(source: &str, max_size: usize) -> Option<(Vec<u8>, Option<PathBuf>)> {
+use crate::asset::AppriseAsset;
+
+/// Read `source` for an Apprise using `asset`, refusing anything larger
+/// than `max_size` bytes. A URL without `?redirect=` follows the asset's
+/// `http_redirects`, as upstream's attachment does. Returns the content
+/// and, for a local file, its path.
+pub async fn read_source(source: &str, max_size: usize, asset: &AppriseAsset) -> Option<(Vec<u8>, Option<PathBuf>)> {
   if source.starts_with("http://") || source.starts_with("https://") {
     // The limit applies while downloading, not after.
-    let attachment = match crate::attachment::http::HttpSource::from_url(source).ok()?.load_limited(max_size as u64).await {
+    let mut http = crate::attachment::http::HttpSource::from_url(source).ok()?;
+    http.max_file_size = max_size as u64;
+    let attachment = match http.load_for(asset).await {
       Ok(attachment) => attachment,
       Err(crate::error::AttachError::TooLarge { .. }) => {
         tracing::warn!("Remote file exceeds the {} byte limit", max_size);
@@ -73,9 +79,10 @@ mod tests {
     let path = dir.path().join("key.json");
     std::fs::write(&path, b"12345").unwrap();
     let p = path.to_string_lossy().into_owned();
-    assert_eq!(read_source(&p, 5).await.unwrap(), (b"12345".to_vec(), Some(path.clone())));
-    assert_eq!(read_source(&format!("file://{}", p), 5).await.unwrap().0, b"12345");
-    assert!(read_source(&p, 4).await.is_none());
-    assert!(read_source("/invalid/path", 5).await.is_none());
+    let asset = AppriseAsset::default();
+    assert_eq!(read_source(&p, 5, &asset).await.unwrap(), (b"12345".to_vec(), Some(path.clone())));
+    assert_eq!(read_source(&format!("file://{}", p), 5, &asset).await.unwrap().0, b"12345");
+    assert!(read_source(&p, 4, &asset).await.is_none());
+    assert!(read_source("/invalid/path", 5, &asset).await.is_none());
   }
 }

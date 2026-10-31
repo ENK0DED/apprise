@@ -447,7 +447,7 @@ impl Telegram {
     let template = match url.get("template").filter(|t| !t.is_empty()) {
       None => None,
       Some(t) => match parse_attachment(&unquote(t)) {
-        Ok(source) => Some(source),
+        Ok(source) => Some(source.with_max_file_size(TELEGRAM_TEMPLATE_MAX_BYTES as u64)),
         Err(_) => {
           tracing::warn!("The Telegram Rich Message template could not be loaded.");
           return None;
@@ -821,7 +821,7 @@ impl Telegram {
   /// Build the Rich Message from the template (upstream `_gen_rich_payload`).
   async fn rich_payload(&self, ctx: &NotifyContext) -> Option<Value> {
     let source = self.template.as_ref()?;
-    let loaded = source.load_limited(TELEGRAM_TEMPLATE_MAX_BYTES as u64).await.ok().filter(|a| a.data.len() <= TELEGRAM_TEMPLATE_MAX_BYTES);
+    let loaded = source.load_for(&ctx.asset).await.ok();
     let Some(template) = loaded else {
       tracing::warn!("Could not access Telegram Rich Message template {}.", source.loggable());
       return None;

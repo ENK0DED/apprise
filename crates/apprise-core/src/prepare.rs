@@ -5,7 +5,8 @@
 //!
 //! 1. Pick the format this send renders as (`?format=`, the plugin's
 //!    declared formats and the input format).
-//! 2. Interpret backslash escapes and `:emoji:` shortcodes (`?emojis=`).
+//! 2. Interpret backslash escapes and `:emoji:` shortcodes (the asset's
+//!    `interpret_emojis` and `?emojis=`).
 //! 3. Convert the body (and a title blended into the body) to that format,
 //!    unless the caller gave no input format (`body_passthrough`).
 //! 4. Fold the title into the body when the service has no title field,
@@ -97,17 +98,51 @@ fn resolve_format(svc: &dyn Notify, input: Option<&NotifyFormat>) -> NotifyForma
   formats.remove(0)
 }
 
+/// Upstream `NotifyBase.interpret_emojis` for one service: `Some(true)`
+/// converts `:emoji:` names, `Some(false)` turns them off (Discord then
+/// escapes them so they show as text) and `None` leaves them alone.
+///
+/// `asset` is the asset's `interpret_emojis`, `call` the call's
+/// `NotifyContext::interpret_emojis` and `url` the URL's `?emojis=`. A call
+/// that asks for emojis acts as an asset that turns them on, unless the
+/// asset turned them off. A URL decides unless the asset is off.
+pub(crate) fn emoji_setting(asset: Option<bool>, call: bool, url: Option<bool>) -> Option<bool> {
+  let default = match asset {
+    Some(false) => Some(false),
+    _ if call => Some(true),
+    other => other,
+  };
+  match url {
+    Some(url) => Some(default != Some(false) && url),
+    None => default,
+  }
+}
+
+tokio::task_local! {
+  static EMOJIS: Option<bool>;
+}
+
+/// The [`emoji_setting`] of the service being prepared, for a plugin's
+/// `dialect_convert()`; `None` outside a preparation.
+pub(crate) fn preparing_emojis() -> Option<Option<bool>> {
+  EMOJIS.try_with(|e| *e).ok()
+}
+
 /// Prepare the contexts to hand `svc.send()` for one notification.
 ///
 /// Returns an error, without any piece to send, when nothing is left to
 /// deliver: an empty body with no attachment, or attachments only for a
 /// service that cannot send them. Upstream fails the service in both cases.
 pub(crate) fn prepare_contexts(svc: &dyn Notify, ctx: &NotifyContext) -> Result<Vec<NotifyContext>, NotifyError> {
+  let emojis = emoji_setting(ctx.asset.interpret_emojis, ctx.interpret_emojis, svc.service_options().and_then(|o| o.emojis));
+  EMOJIS.sync_scope(emojis, || prepare_with_emojis(svc, ctx, emojis == Some(true)))
+}
+
+fn prepare_with_emojis(svc: &dyn Notify, ctx: &NotifyContext, emojis: bool) -> Result<Vec<NotifyContext>, NotifyError> {
   let opts = svc.service_options();
   // Content with no declared format passes through unconverted.
   let passthrough = ctx.body_passthrough;
   let target = resolve_format(svc, (!passthrough).then_some(&ctx.body_format));
-  let emojis = opts.and_then(|o| o.emojis).unwrap_or(ctx.interpret_emojis);
 
   let mut title = ctx.title.clone();
   let mut body = ctx.body.clone();

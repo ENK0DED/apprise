@@ -492,11 +492,24 @@ impl Apprise {
     self.notify_attached(ctx, sources, &self.tag_filter).await
   }
 
+  /// [`notify_tagged`](Self::notify_tagged) with attachment sources that
+  /// are already parsed (upstream `notify(attach=AppriseAttachment)`), so
+  /// each can carry its own size limit
+  /// ([`AttachSource::set_max_file_size`](attachment::AttachSource::set_max_file_size))
+  /// or be bytes in memory ([`attachment::memory::MemorySource`]). A source
+  /// this instance's location does not allow fails the whole call; one that
+  /// does not load fails only the services that take attachments.
+  pub async fn notify_sources(&self, ctx: &NotifyContext, filter: &TagFilter, sources: &[attachment::AttachSource]) -> SendResult {
+    if !self.entries.is_empty() && sources.iter().any(|s| s.allowed_at(self.location).is_err()) {
+      tracing::warn!("Could not prepare the notification: One or more attachments could not be added.");
+      return SendResult::new(ResultStatus::Failure, Vec::new(), std::time::Duration::ZERO);
+    }
+    self.notify_loaded(ctx, sources, filter).await
+  }
+
   async fn notify_attached(&self, ctx: &NotifyContext, sources: &[String], filter: &TagFilter) -> SendResult {
-    let mut opts = self.dispatch_options();
-    let mut ctx = ctx.clone();
+    let mut parsed = Vec::with_capacity(sources.len());
     if !self.entries.is_empty() {
-      let mut parsed = Vec::with_capacity(sources.len());
       for source in sources {
         match attachment::parse_attachment_from(source, self.location) {
           Ok(p) => parsed.push(p),
@@ -506,17 +519,26 @@ impl Apprise {
           }
         }
       }
-      // A URL without `?redirect=` follows the asset (upstream `URLBase.redirects`).
-      let http = notify::HttpOptions { redirect: Some(self.asset.http_redirects), ..Default::default() };
-      for source in parsed {
+    }
+    self.notify_loaded(ctx, &parsed, filter).await
+  }
+
+  /// Load `sources` and notify; a source that does not load is reported
+  /// to the services that take attachments.
+  async fn notify_loaded(&self, ctx: &NotifyContext, sources: &[attachment::AttachSource], filter: &TagFilter) -> SendResult {
+    let mut opts = self.dispatch_options();
+    let mut loaded = Vec::new();
+    if !self.entries.is_empty() {
+      for source in sources {
         tracing::debug!("Loading attachment: {}", source.loggable());
-        match notify::with_http_options(http.clone(), source.load()).await {
-          Ok(att) => ctx.attachments.push(att),
+        // A URL without `?redirect=` follows the asset (upstream `URLBase.redirects`).
+        match source.load_for(&self.asset).await {
+          Ok(att) => loaded.push(att),
           Err(_) => opts.attachment_errors.push(source.loggable().to_string()),
         }
       }
     }
-    self.dispatch(&ctx, &opts, filter).await
+    self.dispatch_with(ctx, loaded, opts, filter).await
   }
 
   /// Where this instance runs, which limits where attachments may come
@@ -553,7 +575,26 @@ impl Apprise {
   }
 
   async fn dispatch(&self, ctx: &NotifyContext, opts: &dispatch::DispatchOptions, filter: &TagFilter) -> SendResult {
+    self.dispatch_with(ctx, Vec::new(), opts.clone(), filter).await
+  }
+
+  /// Notify with `loaded` (attachments read from their sources, within
+  /// their own limits) added to the caller's own `ctx.attachments`.
+  async fn dispatch_with(&self, ctx: &NotifyContext, loaded: Vec<Attachment>, mut opts: dispatch::DispatchOptions, filter: &TagFilter) -> SendResult {
     let mut ctx = ctx.clone();
+    // The caller's own attachments are memory attachments with the default
+    // limit (upstream `AttachMemory.max_file_size`); one over it fails the
+    // services that take attachments.
+    ctx.attachments.retain(|a| {
+      let fits = !attachment::exceeds(a.data.len() as u64, attachment::MAX_FILE_SIZE);
+      if !fits {
+        let source = attachment::memory::loggable(a);
+        tracing::error!("Content exceeds allowable maximum memory size ({}KB): {}", attachment::MAX_FILE_SIZE / 1024, source);
+        opts.attachment_errors.push(source);
+      }
+      fits
+    });
+    ctx.attachments.extend(loaded);
     ctx.asset = self.asset.clone();
     ctx.interpret_escapes |= self.asset.interpret_escapes;
     // A call that gives no input format, or leaves it at its default, takes
@@ -578,7 +619,7 @@ impl Apprise {
         Selected::Unresolved(entry) => pending.push(entry),
       }
     }
-    let result = dispatch::notify(&services, filter, &ctx, opts).await;
+    let result = dispatch::notify(&services, filter, &ctx, &opts).await;
     Self::with_unresolved(result, &pending)
   }
 
