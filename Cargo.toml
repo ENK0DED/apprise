@@ -17,7 +17,9 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: floats must read back exactly (the persistent store
+# hashes their Python repr; the default parser can be one ULP off).
+serde_json = { version = "1", features = ["float_roundtrip"] }
 # YAML configuration: pure Rust, no unsafe code (serde_yaml is archived)
 serde-saphyr = { version = "2", default-features = false, features = ["deserialize"] }
 
