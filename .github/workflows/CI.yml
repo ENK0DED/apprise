@@ -33,7 +33,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # The man page is dated by the last commit of its source
           fetch-depth: 0
@@ -47,6 +47,8 @@ jobs:
         run: bun install
       - name: Oxlint
         run: bun lint
+      - name: Type check
+        run: bun run typecheck
       - name: Cargo fmt
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -72,11 +74,11 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -104,13 +106,13 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -135,7 +137,7 @@ jobs:
       run:
         working-directory: .
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Build
         run: docker build -t apprise:ci .
       - name: Run
@@ -178,7 +180,7 @@ jobs:
     name: stable - ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup bun
         uses: oven-sh/setup-bun@v2
       - name: Install
@@ -187,7 +189,7 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.settings.target }}
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -247,7 +249,7 @@ jobs:
             architecture: x64
     runs-on: ${{ matrix.settings.host }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup bun
         uses: oven-sh/setup-bun@v2
       - name: Install dependencies
@@ -277,7 +279,7 @@ jobs:
           - aarch64-unknown-linux-musl
     runs-on: ${{ contains(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup bun
         uses: oven-sh/setup-bun@v2
       - name: Output docker params
@@ -308,11 +310,7 @@ jobs:
         run: ls -R .
         shell: bash
       - name: Test bindings
-        uses: addnab/docker-run-action@v3
-        with:
-          image: ${{ steps.docker.outputs.IMAGE }}
-          options: -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/apprise-napi --platform ${{ steps.docker.outputs.PLATFORM }}
-          run: bun test
+        run: docker run --rm -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }}/crates/apprise-napi --platform ${{ steps.docker.outputs.PLATFORM }} ${{ steps.docker.outputs.IMAGE }} bun test
 
   publish:
     name: Publish
@@ -327,11 +325,11 @@ jobs:
       - test-macos-windows-binding
       - test-linux-binding
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup bun
         uses: oven-sh/setup-bun@v2
       - name: Setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Install dependencies
@@ -364,19 +362,19 @@ jobs:
               if (!pkg.files.some((f) => f.path.endsWith('.node'))) { console.error(pkg.name + ' has no binary'); process.exit(1); }
               if (!pkg.files.some((f) => f.path === 'LICENSE')) { console.error(pkg.name + ' has no LICENSE'); process.exit(1); }")
           done
+      # Trusted publishing authenticates with the workflow's OIDC token instead of an npm token, needs npm 11.5.1 or later and adds provenance by itself
+      - name: Update npm
+        run: npm install -g npm@latest
       - name: Publish
         run: |
           if git log -1 --pretty=%B | grep "^v\?[0-9]\+\.[0-9]\+\.[0-9]\+$";
           then
-            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
-            bunx npm publish --access public
+            npm publish --access public
           elif git log -1 --pretty=%B | grep "^v\?[0-9]\+\.[0-9]\+\.[0-9]\+";
           then
-            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
-            bunx npm publish --tag next --access public
+            npm publish --tag next --access public
           else
             echo "Not a release, skipping publish"
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

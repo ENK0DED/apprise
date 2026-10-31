@@ -7,7 +7,7 @@
   "types": "index.d.ts",
   "repository": {
     "type": "git",
-    "url": "https://github.com/enk0ded/apprise"
+    "url": "git+https://github.com/ENK0DED/apprise.git"
   },
   "license": "BSD-2-Clause",
   "keywords": [
@@ -60,6 +60,7 @@
     "lint": "oxlint .",
     "prepublishOnly": "napi prepublish -t npm",
     "preversion": "napi build --all-features --esm --platform && git add .",
+    "typecheck": "tsc -p . && tsc -p __test__",
     "version": "napi version"
   },
   "devDependencies": {

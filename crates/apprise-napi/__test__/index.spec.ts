@@ -47,7 +47,7 @@ test('Apprise class details returns service info', async () => {
   a.add('json://localhost');
   const details = a.details();
   expect(details.length).toBe(1);
-  expect(details[0].name).toBe('JSON');
+  expect(details[0]?.name).toBe('JSON');
 });
 
 test('Apprise class clear removes all services', async () => {
