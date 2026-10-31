@@ -7,7 +7,8 @@
 //! package builds them ([`mime`]); `?pgp=sign|encrypt` adds PGP/MIME
 //! (RFC 3156) with keys from `pgppub=`/`pgpprv=`, the service's storage
 //! directory, or WKD (`?wkd=yes`), and `?inline=yes` shows image
-//! attachments inline (RFC 2387).
+//! attachments inline (RFC 2387). PGP needs the `pgp` feature; without it
+//! a PGP mode fails the send, as upstream does without PGPy.
 
 mod message;
 pub(crate) mod mime;
@@ -29,7 +30,9 @@ use crate::notify::{Notify, NotifyContext, ServiceDetails};
 use crate::types::NotifyFormat;
 use crate::utils::email::{EmailAddress, formataddr, is_email, is_space, parse_emails};
 use crate::utils::parse::{ParsedUrl, parse_bool_or};
+#[cfg(feature = "pgp")]
 use crate::utils::pgp::PgpController;
+#[cfg(feature = "pgp")]
 use crate::utils::wkd::WkdController;
 
 /// Upstream `NotifyEmail.socket_connect_timeout` (seconds).
@@ -102,6 +105,7 @@ pub struct Email {
   /// The URL's `+name=value` headers.
   headers: IndexMap<String, String>,
   pgp_mode: PgpMode,
+  #[cfg(feature = "pgp")]
   pgp: PgpController,
   inline: bool,
   tz: Option<crate::utils::time::Timezone>,
@@ -138,7 +142,9 @@ impl Email {
     }
     let pgp_raw = url.get("pgp").filter(|v| !v.is_empty());
     let use_wkd = url.get("wkd").filter(|v| !v.is_empty()).is_some_and(|v| parse_bool_or(v, false));
+    #[cfg(feature = "pgp")]
     let pgp_key = url.get("pgppub").filter(|v| !v.is_empty()).map(str::to_string);
+    #[cfg(feature = "pgp")]
     let pgp_privkey = url.get("pgpprv").filter(|v| !v.is_empty()).map(str::to_string);
     let inline = url.get("inline").is_some_and(|v| parse_bool_or(v, false));
     targets.extend(url.path_parts.iter().cloned());
@@ -287,8 +293,15 @@ impl Email {
       },
     };
     let verify_certificate = url.verify_certificate();
-    let wkd = use_wkd.then(|| WkdController::new(verify_certificate));
-    let pgp = PgpController::new(pgp_key.as_deref(), pgp_privkey.as_deref(), Some(&from_addr.1), "Apprise", wkd);
+    #[cfg(feature = "pgp")]
+    let pgp = {
+      let wkd = use_wkd.then(|| WkdController::new(verify_certificate));
+      PgpController::new(pgp_key.as_deref(), pgp_privkey.as_deref(), Some(&from_addr.1), "Apprise", wkd)
+    };
+    #[cfg(not(feature = "pgp"))]
+    if pgp_mode != PgpMode::None {
+      tracing::warn!("PGP Support is not available on this installation; ask admin to build Apprise with the pgp feature");
+    }
 
     let headers: IndexMap<String, String> = url.qsd_add.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let timeout = url.get("cto").and_then(|v| v.trim().parse::<f64>().ok()).filter(|t| t.is_finite() && *t > 0.0).unwrap_or(SOCKET_CONNECT_TIMEOUT);
@@ -310,6 +323,7 @@ impl Email {
       names,
       headers,
       pgp_mode,
+      #[cfg(feature = "pgp")]
       pgp,
       inline,
       tz: url.get("tz").and_then(crate::utils::time::zoneinfo),
@@ -380,8 +394,11 @@ impl Email {
     headers.extend(protocol.headers.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     let headers: Vec<(String, String)> = headers.into_iter().collect();
 
-    let store_path = crate::storage::with_service_store(|s| s.path().map(std::path::Path::to_path_buf)).flatten();
-    let pgp = self.pgp.with_path(store_path).with_app_id(&ctx.asset.app_id);
+    #[cfg(feature = "pgp")]
+    let pgp = {
+      let store_path = crate::storage::with_service_store(|s| s.path().map(std::path::Path::to_path_buf)).flatten();
+      self.pgp.with_path(store_path).with_app_id(&ctx.asset.app_id)
+    };
     let title = protocol.subject.unwrap_or_else(|| ctx.title.clone());
     // A subject is one header line (RFC 5322 section 2.2.3)
     let subject = title.split(is_space).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
@@ -401,6 +418,7 @@ impl Email {
       attachments: &ctx.attachments,
       headers: &headers,
       names: &self.names,
+      #[cfg(feature = "pgp")]
       pgp: (self.pgp_mode != PgpMode::None).then_some(&pgp),
       pgp_mode: self.pgp_mode,
       inline: self.inline,
@@ -432,6 +450,7 @@ impl Email {
       }
     }
     conn.quit().await;
+    #[cfg(feature = "pgp")]
     pgp.prune();
     Ok(!has_error)
   }

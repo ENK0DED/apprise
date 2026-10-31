@@ -61,7 +61,11 @@ tracing-subscriber.workspace = true
 default = ["mqtt", "amqp", "email", "yaml", "images", "simplepush-encryption", "matrix-e2ee"]
 mqtt = []
 amqp = ["dep:fe2o3-amqp"]
-email = ["dep:pgp", "dep:rand_core06"]
+# mailto://, mailtos:// and deltachat:// (SMTP)
+email = []
+# PGP/MIME signing and encryption for email (?pgp=, ?wkd=, rPGP); without
+# it a PGP mode fails the send, as upstream does without PGPy
+pgp = ["email", "dep:pgp", "dep:rand_core06"]
 yaml = ["dep:serde_yaml"]
 desktop = ["dep:png", "dep:zbus", "dep:windows-sys"]
 blink1 = ["dep:hidapi"]

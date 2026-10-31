@@ -909,10 +909,13 @@ fn test_pgp_mode_prefixes() {
   }
   // wkd=yes implies encrypt unless pgp= says otherwise
   assert_eq!(email("mailto://user:pass@example.com?wkd=yes").pgp_mode, PgpMode::Encrypt);
-  assert!(email("mailto://user:pass@example.com?wkd=yes").pgp.wkd().is_some());
   assert_eq!(email("mailto://user:pass@example.com?wkd=yes&pgp=no").pgp_mode, PgpMode::None);
   assert_eq!(email("mailto://user:pass@example.com?wkd=yes&pgp=sign").pgp_mode, PgpMode::Sign);
-  assert!(email("mailto://user:pass@example.com?wkd=no").pgp.wkd().is_none());
+  #[cfg(feature = "pgp")]
+  {
+    assert!(email("mailto://user:pass@example.com?wkd=yes").pgp.wkd().is_some());
+    assert!(email("mailto://user:pass@example.com?wkd=no").pgp.wkd().is_none());
+  }
 }
 
 #[test]
@@ -923,14 +926,86 @@ fn test_timeout_follows_cto() {
 
 // ── PGP/MIME ──────────────────────────────────────────────────────────────────
 
+/// Collects formatted log lines.
+#[cfg(not(feature = "pgp"))]
+#[derive(Clone, Default)]
+struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+#[cfg(not(feature = "pgp"))]
+impl std::io::Write for LogBuffer {
+  fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+    self.0.lock().unwrap().extend_from_slice(buf);
+    Ok(buf.len())
+  }
+  fn flush(&mut self) -> std::io::Result<()> {
+    Ok(())
+  }
+}
+
+/// What `fut` logs at debug level and above, with its output.
+#[cfg(not(feature = "pgp"))]
+async fn logged<F: std::future::Future>(fut: F) -> (F::Output, String) {
+  let buffer = LogBuffer::default();
+  let writer = buffer.clone();
+  let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).with_ansi(false).with_writer(move || writer.clone()).finish();
+  let _guard = tracing::subscriber::set_default(subscriber);
+  let out = fut.await;
+  (out, String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap())
+}
+
+/// Without the pgp feature a PGP mode still parses, with a warning, and
+/// fails the send before any message goes out, as upstream behaves without
+/// PGPy (`NotifyEmail.__init__` and `prepare_emails`).
+#[cfg(not(feature = "pgp"))]
+#[tokio::test]
+async fn test_pgp_mode_without_pgp_support_fails() {
+  const PARSE_WARNING: &str = "PGP Support is not available on this installation; ask admin to build Apprise with the pgp feature";
+  const SEND_ERROR: &str = "PGP Support unavailable; build Apprise with the pgp feature";
+  let (e, logs) = logged(async { email("mailto://user:pass@nuxref.com") }).await;
+  assert_eq!(e.pgp_mode, PgpMode::None);
+  assert!(!logs.contains(PARSE_WARNING), "{}", logs);
+  let server = FakeSmtp::start(ServerConfig::default()).await;
+  let (ok, _) = against(&server, e.send(&ctx("t", "plain", NotifyFormat::Text))).await;
+  assert!(ok.unwrap());
+  assert_eq!(server.mails().len(), 1);
+
+  for (url, mode) in [
+    ("mailto://user:pass@nuxref.com/other@example.org?pgp=sign", PgpMode::Sign),
+    ("mailto://user:pass@nuxref.com/other@example.org?pgp=encrypt&pgppub=/nonexistent/pub.asc", PgpMode::Encrypt),
+    ("mailto://user:pass@nuxref.com/other@example.org?wkd=yes", PgpMode::Encrypt),
+  ] {
+    let (e, logs) = logged(async { email(url) }).await;
+    assert_eq!(e.pgp_mode, mode, "{}", url);
+    assert!(logs.contains(&format!("WARN apprise_core::notify::email: {}", PARSE_WARNING)), "{}: {}", url, logs);
+    let server = FakeSmtp::start(ServerConfig::default()).await;
+    let ((ok, requested), logs) = logged(against(&server, e.send(&ctx("t", "secret", NotifyFormat::Text)))).await;
+    assert!(!ok.unwrap(), "{}", url);
+    assert!(logs.contains(&format!("WARN apprise_core::notify::email::message: {}", SEND_ERROR)), "{}: {}", url, logs);
+    // As upstream, the SMTP session was opened, but nothing was sent
+    assert_eq!(requested.len(), 1, "{}", url);
+    assert!(server.mails().is_empty(), "{}", url);
+  }
+
+  // Delta Chat inherits the behaviour
+  let server = FakeSmtp::start(ServerConfig::default()).await;
+  let (ok, _) = against(&server, notify_url("deltachat://user:pass@smtp.example.com/friend@example.org?pgp=encrypt", &ctx("t", "b", NotifyFormat::Text))).await;
+  assert!(!ok);
+  assert!(server.mails().is_empty());
+}
+
+#[cfg(feature = "pgp")]
 use pgp::composed::{Deserializable, DetachedSignature, Message, SignedSecretKey};
 
+#[cfg(feature = "pgp")]
 pub(crate) const VALID_PRV: &str = include_str!("../../utils/pgp/testdata/valid-prv.asc");
 /// A key pair made by upstream's own `ApprisePGPController.keygen()`
 /// (PGPy): RSA signing primary key and RSA encryption subkey.
+#[cfg(feature = "pgp")]
 pub(crate) const PGPY_PRV: &str = include_str!("../../utils/pgp/testdata/pgpy-prv.asc");
+#[cfg(feature = "pgp")]
 pub(crate) const PGPY_PUB: &str = include_str!("../../utils/pgp/testdata/pgpy-pub.asc");
 
+#[cfg(feature = "pgp")]
 fn write_key(dir: &tempfile::TempDir, name: &str, data: &str) -> String {
   let path = dir.path().join(name);
   std::fs::write(&path, data).unwrap();
@@ -939,6 +1014,7 @@ fn write_key(dir: &tempfile::TempDir, name: &str, data: &str) -> String {
 
 /// The part of `text` between the first boundary pair of the top-level
 /// multipart, and the parts after it.
+#[cfg(feature = "pgp")]
 fn top_parts(text: &str) -> Vec<String> {
   let ctype = text.lines().find(|l| l.starts_with("Content-Type: multipart/")).unwrap();
   let boundary = ctype.split("boundary=\"").nth(1).unwrap().trim_end_matches('"');
@@ -951,6 +1027,7 @@ fn top_parts(text: &str) -> Vec<String> {
   parts.into_iter().map(|p| p.strip_prefix('\n').unwrap_or(&p).strip_suffix('\n').unwrap_or(&p).to_string()).collect()
 }
 
+#[cfg(feature = "pgp")]
 fn decrypt(armored_part: &str, key: &SignedSecretKey) -> String {
   let armored = armored_part.split_once("\n\n").unwrap().1;
   let (message, _) = Message::from_string(armored).unwrap();
@@ -962,6 +1039,7 @@ fn decrypt(armored_part: &str, key: &SignedSecretKey) -> String {
 /// pgp=sign: RFC 3156 multipart/signed whose detached signature verifies
 /// over the CRLF form of the signed part (upstream
 /// test_plugin_email_pgp_sign_crlf_roundtrip / _wire_content_crlf).
+#[cfg(feature = "pgp")]
 #[tokio::test]
 async fn test_pgp_sign() {
   let dir = tempfile::tempdir().unwrap();
@@ -995,6 +1073,7 @@ async fn test_pgp_sign() {
 
 /// pgp=encrypt with pgppub=: multipart/encrypted whose ciphertext opens with
 /// the recipient's private key and holds From/To/Subject and the body.
+#[cfg(feature = "pgp")]
 #[tokio::test]
 async fn test_pgp_encrypt() {
   let dir = tempfile::tempdir().unwrap();
@@ -1018,6 +1097,7 @@ async fn test_pgp_encrypt() {
 
 /// Upstream test_plugin_email_pgp_encrypt_external_recipient_no_autogen and
 /// test_plugin_email_pgp_sign_no_privkey_fails.
+#[cfg(feature = "pgp")]
 #[tokio::test]
 async fn test_pgp_without_keys_fails() {
   let server = FakeSmtp::start(ServerConfig::default()).await;
@@ -1034,6 +1114,7 @@ async fn test_pgp_without_keys_fails() {
 
 /// pgp=sign with WKD (upstream test_plugin_email_pgp_sign_opportunistic_encrypt):
 /// signed and encrypted when WKD has the recipient's key, signed otherwise.
+#[cfg(feature = "pgp")]
 #[tokio::test]
 async fn test_pgp_sign_encrypts_with_wkd_key() {
   use wiremock::matchers::{method, path_regex};
@@ -1069,6 +1150,7 @@ async fn test_pgp_sign_encrypts_with_wkd_key() {
 /// (upstream test_plugin_email_pgp_encrypt_self_send_autogens_key); the
 /// generated key is Autocrypt-shaped, so the header is added, once, and a
 /// custom Autocrypt header is dropped (test_plugin_email_autocrypt_deduplication).
+#[cfg(feature = "pgp")]
 #[tokio::test]
 async fn test_pgp_encrypt_self_send_generates_keys() {
   let store = tempfile::tempdir().unwrap();
@@ -1101,6 +1183,7 @@ async fn test_pgp_encrypt_self_send_generates_keys() {
   assert!(inner.contains("self body"));
 }
 
+#[cfg(feature = "pgp")]
 fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
   let mut out = Vec::new();
   for entry in std::fs::read_dir(dir).unwrap().flatten() {
@@ -1114,6 +1197,7 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// encrypted messages, an Autocrypt header) to `$APPRISE_PGP_DUMP`, so
 /// GnuPG or PGPy can check it independently:
 /// `APPRISE_PGP_DUMP=/tmp/out cargo test -p apprise-core --lib dump_pgp_artifacts -- --ignored`
+#[cfg(feature = "pgp")]
 #[tokio::test]
 #[ignore]
 async fn dump_pgp_artifacts() {

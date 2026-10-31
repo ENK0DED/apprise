@@ -9,6 +9,7 @@ use super::{FromName, PgpMode};
 use crate::notify::Attachment;
 use crate::types::NotifyFormat;
 use crate::utils::email::formataddr;
+#[cfg(feature = "pgp")]
 use crate::utils::pgp::PgpController;
 use crate::utils::time::Timezone;
 
@@ -46,6 +47,7 @@ pub(crate) struct MessageSpec<'a> {
   pub headers: &'a [(String, String)],
   /// Display names by address.
   pub names: &'a std::collections::HashMap<String, FromName>,
+  #[cfg(feature = "pgp")]
   pub pgp: Option<&'a PgpController>,
   pub pgp_mode: PgpMode,
   pub inline: bool,
@@ -101,6 +103,13 @@ fn make_msgid(domain: &str) -> String {
 
 /// Build the message for one `To` recipient.
 pub(crate) async fn prepare_email(spec: &MessageSpec<'_>, to_name: Option<&str>, to_addr: &str) -> Result<EmailMessage, PrepareError> {
+  #[cfg(not(feature = "pgp"))]
+  if spec.pgp_mode != PgpMode::None {
+    let msg = "PGP Support unavailable; build Apprise with the pgp feature";
+    tracing::warn!("{}", msg);
+    return Err(PrepareError(msg.to_string()));
+  }
+
   let cc: Vec<&String> = spec.cc.iter().filter(|a| !spec.bcc.contains(a) && a.as_str() != to_addr).collect();
   let bcc: Vec<&String> = spec.bcc.iter().filter(|a| a.as_str() != to_addr).collect();
   let reply_to: Vec<&String> = spec.reply_to.iter().filter(|a| a.as_str() != to_addr).collect();
@@ -187,6 +196,44 @@ pub(crate) async fn prepare_email(spec: &MessageSpec<'_>, to_name: Option<&str>,
   }
 
   // A custom Autocrypt header is dropped when the controller supplies one
+  #[cfg(feature = "pgp")]
+  let (mut base, autocrypt_added) = secure(spec, base, to_addr).await?;
+  #[cfg(not(feature = "pgp"))]
+  let autocrypt_added = false;
+
+  // Header names are case-insensitive: keep the first Autocrypt only
+  let mut autocrypt_seen = autocrypt_added;
+  for (name, value) in spec.headers {
+    if name.trim().eq_ignore_ascii_case("autocrypt") {
+      if autocrypt_seen {
+        continue;
+      }
+      autocrypt_seen = true;
+    }
+    base.add_header_utf8(name, value);
+  }
+  base.add_header_utf8("Subject", spec.subject);
+  base.add_header("From", &from_hdr);
+  base.add_header("To", &address(to_name, to_addr)?);
+  base.add_header("Message-ID", &make_msgid(spec.smtp_host));
+  base.add_header("Date", &format_date(spec.tz));
+  if !cc_hdr.is_empty() {
+    base.add_header("Cc", &cc_hdr.join(","));
+  }
+  if !reply_hdr.is_empty() {
+    base.add_header("Reply-To", &reply_hdr.join(","));
+  }
+
+  let mut to_addrs = vec![to_addr.to_string()];
+  to_addrs.extend(cc.into_iter().cloned());
+  to_addrs.extend(bcc.into_iter().cloned());
+  Ok(EmailMessage { recipient: to_addr.to_string(), to_addrs, body: base.as_string() })
+}
+
+/// Sign or encrypt `base` for `to_addr` as the PGP mode asks; also whether
+/// an Autocrypt header was added.
+#[cfg(feature = "pgp")]
+async fn secure(spec: &MessageSpec<'_>, mut base: Part, to_addr: &str) -> Result<(Part, bool), PrepareError> {
   let mut autocrypt_added = false;
   match (spec.pgp, spec.pgp_mode) {
     (Some(pgp), PgpMode::Sign) => {
@@ -240,37 +287,11 @@ pub(crate) async fn prepare_email(spec: &MessageSpec<'_>, to_name: Option<&str>,
     }
     _ => {}
   }
-
-  // Header names are case-insensitive: keep the first Autocrypt only
-  let mut autocrypt_seen = autocrypt_added;
-  for (name, value) in spec.headers {
-    if name.trim().eq_ignore_ascii_case("autocrypt") {
-      if autocrypt_seen {
-        continue;
-      }
-      autocrypt_seen = true;
-    }
-    base.add_header_utf8(name, value);
-  }
-  base.add_header_utf8("Subject", spec.subject);
-  base.add_header("From", &from_hdr);
-  base.add_header("To", &address(to_name, to_addr)?);
-  base.add_header("Message-ID", &make_msgid(spec.smtp_host));
-  base.add_header("Date", &format_date(spec.tz));
-  if !cc_hdr.is_empty() {
-    base.add_header("Cc", &cc_hdr.join(","));
-  }
-  if !reply_hdr.is_empty() {
-    base.add_header("Reply-To", &reply_hdr.join(","));
-  }
-
-  let mut to_addrs = vec![to_addr.to_string()];
-  to_addrs.extend(cc.into_iter().cloned());
-  to_addrs.extend(bcc.into_iter().cloned());
-  Ok(EmailMessage { recipient: to_addr.to_string(), to_addrs, body: base.as_string() })
+  Ok((base, autocrypt_added))
 }
 
 /// The RFC 3156 version part: `MIMEText("Version: 1")` retyped.
+#[cfg(feature = "pgp")]
 fn version_part() -> Part {
   let mut part = Part::text_ascii("Version: 1", "plain");
   part.set_type("application/pgp-encrypted");
@@ -278,6 +299,7 @@ fn version_part() -> Part {
 }
 
 /// A `multipart/encrypted` container around armored ciphertext.
+#[cfg(feature = "pgp")]
 fn encrypted_container(encrypted: &str) -> Part {
   let mut container = Part::multipart("encrypted", &[("protocol", "application/pgp-encrypted")]);
   container.attach(version_part());

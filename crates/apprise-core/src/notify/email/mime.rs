@@ -50,6 +50,8 @@ impl Part {
   }
 
   /// `MIMEText(text, subtype)` for ASCII text: a `us-ascii`, `7bit` part.
+  // Only PGP/MIME builds these parts
+  #[cfg_attr(not(feature = "pgp"), allow(dead_code))]
   pub fn text_ascii(text: &str, subtype: &str) -> Self {
     let mut part = Self::leaf(&format!("text/{}; charset=\"us-ascii\"", subtype));
     part.push("Content-Transfer-Encoding", "7bit");
@@ -66,6 +68,7 @@ impl Part {
   }
 
   /// `MIMEBase(maintype, subtype)` with `payload` set as is.
+  #[cfg_attr(not(feature = "pgp"), allow(dead_code))]
   pub fn base(content_type: &str, payload: &str) -> Self {
     let mut part = Self::leaf(content_type);
     part.body = Body::Leaf(payload.to_string());
