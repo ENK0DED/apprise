@@ -156,12 +156,10 @@ static LINK_RES: LazyLock<[(Regex, LinkKind); 3]> = LazyLock::new(|| {
 /// `\\` became `\` and `\d` or `\1` failed the send, and it also replaced
 /// copies in other cases (`<!here>` after `<!Here>` became `<!Here>`).
 ///
-/// Fails where upstream raises on a CR `*` LF, which its formatting
-/// pattern matches but its map has no entry for.
-fn escape_passthrough_markdown(body: &str) -> Result<String, String> {
-  if body.contains("\r*\n") {
-    return Err(r"KeyError: '\r*\n'".into());
-  }
+/// Also unlike upstream, a CR `*` LF is sent as written. Upstream's
+/// `_re_formatting_map` key `r"\r\*\n"` never equals the text its pattern
+/// matches, so the lookup raised `KeyError` and the send failed.
+fn escape_passthrough_markdown(body: &str) -> String {
   let mut body = escape_html(body);
   for (re, kind) in LINK_RES.iter() {
     let found: Vec<(String, String, String)> =
@@ -178,7 +176,7 @@ fn escape_passthrough_markdown(body: &str) -> Result<String, String> {
       body = body.replace(&whole, &link);
     }
   }
-  Ok(body)
+  body
 }
 
 pub struct Slack {
@@ -484,14 +482,14 @@ impl Slack {
   }
 
   /// The message for webhook and bot modes, without its channel. `None`
-  /// when the template failed; an error where upstream raises.
-  async fn message_payload(&self, ctx: &NotifyContext) -> Result<Option<Value>, NotifyError> {
+  /// when the template failed.
+  async fn message_payload(&self, ctx: &NotifyContext) -> Option<Value> {
     let image_url = if self.include_image { ctx.image_url(NotifyImageSize::Xy72) } else { None };
     let color = ctx.asset.color(&ctx.notify_type);
 
     if self.use_blocks {
       if let Some(template) = &self.template {
-        return Ok(self.gen_payload(template, ctx).await.map(|p| json!({ "attachments": [p] })));
+        return Some(json!({ "attachments": [self.gen_payload(template, ctx).await?] }));
       }
       let slack_format = if ctx.body_format == NotifyFormat::Markdown { "mrkdwn" } else { "plain_text" };
       let mut blocks = vec![json!({ "type": "section", "text": { "type": slack_format, "text": ctx.body } })];
@@ -509,16 +507,12 @@ impl Slack {
         blocks.push(json!({ "type": "context", "elements": elements }));
       }
       payload["attachments"] = json!([{ "blocks": blocks, "color": color }]);
-      return Ok(Some(payload));
+      return Some(payload);
     }
 
     // The legacy attachment format; the title skips dialect_convert().
     // Declared input is already escaped; only escape passthrough Markdown.
-    let text = if ctx.body_format == NotifyFormat::Markdown && ctx.body_passthrough {
-      escape_passthrough_markdown(&ctx.body).map_err(NotifyError::Other)?
-    } else {
-      ctx.body.clone()
-    };
+    let text = if ctx.body_format == NotifyFormat::Markdown && ctx.body_passthrough { escape_passthrough_markdown(&ctx.body) } else { ctx.body.clone() };
     let mut attachment = json!({ "title": escape_html(&ctx.title), "text": text, "color": color });
     let mut payload = json!({ "mrkdwn": ctx.body_format == NotifyFormat::Markdown });
     if let Some(image) = &image_url {
@@ -534,7 +528,7 @@ impl Slack {
       }
     }
     payload["attachments"] = json!([attachment]);
-    Ok(Some(payload))
+    Some(payload)
   }
 }
 
@@ -748,7 +742,7 @@ impl Notify for Slack {
       return Ok(sent);
     }
 
-    let Some(mut payload) = self.message_payload(ctx).await? else { return Ok(false) };
+    let Some(mut payload) = self.message_payload(ctx).await else { return Ok(false) };
 
     if !ctx.attachments.is_empty() && matches!(self.mode, Mode::Webhook | Mode::WebhookGov) {
       tracing::warn!("Slack Webhooks do not support attachments.");
@@ -1115,42 +1109,38 @@ mod tests {
 
   /// Markdown with no declared format over the legacy API, as upstream
   /// sends it for `notify(body_format=None)`: escaped, with Slack links
-  /// turned back into links. Upstream raises on a CR `*` LF; nothing is
-  /// sent then. Unlike upstream, links go in as written.
+  /// turned back into links. Unlike upstream, links and a CR `*` LF go in
+  /// as written.
   #[tokio::test]
   async fn test_passthrough_markdown_legacy_text() {
     let linked = "<!channel> hi <!here|Here Now> &lt;@U123|bob&gt; <@U9> see <https://x.com/a?b=1&c=2|the site> and <mailto://u@x.com>";
-    let cases: [(&str, &str, Option<&str>); 9] = [
-      ("", "a < b & c > d", Some("a &lt; b &amp; c &gt; d")),
-      ("", linked, Some("<!channel> hi <!here|Here Now> &amp;lt;<@U123|bob&amp;gt; &lt;@U9> see <https://x.com/a?b=1&c=2|the site> and <mailto://u<@x.com>")),
+    let cases: [(&str, &str, &str); 9] = [
+      ("", "a < b & c > d", "a &lt; b &amp; c &gt; d"),
+      ("", linked, "<!channel> hi <!here|Here Now> &amp;lt;<@U123|bob&amp;gt; &lt;@U9> see <https://x.com/a?b=1&c=2|the site> and <mailto://u<@x.com>"),
       // Each link replaces exact copies of itself only; upstream also
       // replaced the other case, sending "<!Here> and <!Here>"
-      ("", "<!Here> and <!here> or <!Here>", Some("<!Here> and <!here> or <!Here>")),
+      ("", "<!Here> and <!here> or <!Here>", "<!Here> and <!here> or <!Here>"),
       // Backslashes stay as written; upstream read the link as a re.sub()
       // template, sending "x <@u\n> y" and "x <@uA> y", and failing here
-      ("", r"x <@u\\n> y", Some(r"x <@u\\n> y")),
-      ("", r"x <@u\101> y", Some(r"x <@u\101> y")),
-      ("", r"x <!chan\d|a\1\g> y", Some(r"x <!chan\d|a\1\g> y")),
-      ("", "a\r*\nb", None),
+      ("", r"x <@u\\n> y", r"x <@u\\n> y"),
+      ("", r"x <@u\101> y", r"x <@u\101> y"),
+      ("", r"x <!chan\d|a\1\g> y", r"x <!chan\d|a\1\g> y"),
+      // Upstream raises KeyError on a CR "*" LF and sends nothing
+      ("", "a\r*\nb <!x> &", "a\r*\nb <!x> &amp;"),
       // Plain text targets and blocks take the body as written
-      ("&format=text", linked, Some(linked)),
-      ("&blocks=yes", "a < b <!here>", Some("a < b <!here>")),
+      ("&format=text", linked, linked),
+      ("&blocks=yes", "a < b <!here>", "a < b <!here>"),
     ];
     for (query, body, sent) in cases {
       let server = hook("ok").await;
       let mut a = crate::Apprise::new();
       assert!(a.add(&format!("{WEBHOOK}/?footer=no{query}")));
       let c = NotifyContext { body_passthrough: true, ..ctx("T <&>", body, NotifyFormat::Text) };
-      let ok = with_test_base(server.uri(), a.notify(&c)).await.is_success();
-      let requests = requests_to(&server, HOOK).await;
-      assert_eq!(ok, sent.is_some(), "{body:?}");
-      let text = requests
-        .first()
-        .map(json_of)
-        .map(|p| if query == "&blocks=yes" { p["attachments"][0]["blocks"][1]["text"]["text"].clone() } else { p["attachments"][0]["text"].clone() });
-      assert_eq!(text, sent.map(|s| json!(s)), "{body:?}");
-      if sent.is_some() && query.is_empty() {
-        let payload = json_of(&requests[0]);
+      assert!(with_test_base(server.uri(), a.notify(&c)).await.is_success(), "{body:?}");
+      let payload = json_of(&requests_to(&server, HOOK).await[0]);
+      let text = if query == "&blocks=yes" { &payload["attachments"][0]["blocks"][1]["text"]["text"] } else { &payload["attachments"][0]["text"] };
+      assert_eq!(text, &json!(sent), "{body:?}");
+      if query.is_empty() {
         assert_eq!((&payload["mrkdwn"], &payload["attachments"][0]["title"]), (&json!(true), &json!("T &lt;&amp;&gt;")));
       }
     }
@@ -1168,10 +1158,10 @@ mod tests {
     );
   }
 
-  /// The legacy text for random passthrough bodies, including the ones
-  /// that fail, from upstream's code with the port's fix applied (see
-  /// `testdata/gen_slack_passthrough.py`). `upstream` is what upstream
-  /// itself sent where that differs.
+  /// The legacy text for random passthrough bodies, from upstream's code
+  /// with the port's fixes applied (see `testdata/gen_slack_passthrough.py`).
+  /// `upstream` is what upstream itself sent where that differs (null when
+  /// it failed).
   #[test]
   fn test_passthrough_markdown_vectors() {
     let cases: Vec<Value> = serde_json::from_str(include_str!("testdata/slack_passthrough.json")).unwrap();
@@ -1180,7 +1170,7 @@ mod tests {
     for case in &cases {
       // Preparation strips trailing space from the body first
       let body = pystr::rstrip(case["body"].as_str().unwrap());
-      assert_eq!(escape_passthrough_markdown(body).ok().as_deref(), case["text"].as_str(), "{body:?}");
+      assert_eq!(escape_passthrough_markdown(body), case["text"].as_str().unwrap(), "{body:?}");
     }
   }
 

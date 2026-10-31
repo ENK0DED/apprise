@@ -1000,6 +1000,26 @@
 "text": "K<HTTP://&>u123\txu123httpſ://&amp;LT;!*"
 },
 {
+"body": "a\r*\nb",
+"text": "a\r*\nb",
+"upstream": null
+},
+{
+"body": "x\r\r*\n\n*\r*\ny",
+"text": "x\r\r*\n\n*\r*\ny",
+"upstream": null
+},
+{
+"body": "<!here>\r*\n<@U1|x> & <https://x.com/?a=1&b=2|site>",
+"text": "<!here>\r*\n<@U1|x> &amp; <https://x.com/?a=1&b=2|site>",
+"upstream": null
+},
+{
+"body": "&lt;!chan&gt;\r*\n\\d <@U\\1>",
+"text": "&amp;lt;!chan&amp;gt;\r*\n\\d <@U\\1>",
+"upstream": null
+},
+{
 "body": "maİlto://&\\&\\12here\t&amp;\\g<0>u123http://>Khttpſ://",
 "text": "<maİlto://&\\&\\12here\t&amp;\\g&lt;0&gt;u123http://>Khttpſ://",
 "upstream": null
@@ -1478,26 +1498,6 @@
 "body": "DeschereHTTP://http://a:@b=1ς\\0 | g<0>&LT;=",
 "text": "Deschere<HTTP://http://a:<@b=1ς\\0|g&lt;0>&amp;LT;=",
 "upstream": "Deschere<HTTP://http://a:<@b=1ς\u0000|g&lt;0>&amp;LT;="
-},
-{
-"body": "<@Desc@\\g\\\\U123U123<0>&amp;&amp;Here\\12",
-"text": "<@Desc@\\g\\\\U123U123&lt;0>&amp;amp;&amp;amp;Here\\12",
-"upstream": null
-},
-{
-"body": "*ςx.com@\\0\\&<0>:\\101\\&Here<@X",
-"text": "*ςx.com<@\\0\\&amp;&lt;0>:\\101\\&amp;Here&lt;@X",
-"upstream": "*ςx.com<@\u0000\\&amp;&lt;0>:\\101\\&amp;Here&lt;@X"
-},
-{
-"body": "mailto://\\&lt;@\\&\\n\\7\\\\chana<0>a<@\\0\\\\",
-"text": "<mailto://\\&lt;<@\\&\\n\\7\\\\chana&lt;0>a&lt;@\\0\\\\",
-"upstream": null
-},
-{
-"body": "maİlto://\\101here\\12\tu123 \\101<0><!HTTP://",
-"text": "<maİlto://\\101here\\12\tu123 \\101&lt;0>&lt;!HTTP://",
-"upstream": null
 },
 {
 "body": "?x.com | \\101\\12 | =\\12",

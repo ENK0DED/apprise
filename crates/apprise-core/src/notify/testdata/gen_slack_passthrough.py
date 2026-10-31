@@ -9,18 +9,24 @@ Sends COUNT random bodies (default 30000) through upstream's
 channel, user and URL links back into links.
 
 Each body is sent twice: through upstream as it is, then with the port's
-deliberate fix applied to upstream's code, which is what `text` records.
-Upstream's `re.sub(re.escape(match), link, body, flags=re.IGNORECASE)`
-reads the link as a replacement template (backslashes are escapes, `\\d`
-or `\\1` fail the send) and also replaces copies in other cases. The port
-puts the link in as written and replaces exact copies only.
+deliberate fixes applied to upstream's code, which is what `text` records:
+
+- Upstream's `re.sub(re.escape(match), link, body, flags=re.IGNORECASE)`
+  reads the link as a replacement template (backslashes are escapes, `\\d`
+  or `\\1` fail the send) and also replaces copies in other cases. The
+  port puts the link in as written and replaces exact copies only.
+- Upstream's `_re_formatting_map` key `r"\\r\\*\\n"` never equals the CR `*`
+  LF its pattern matches, so the lookup raises `KeyError`. The port has
+  no such rule and sends CR `*` LF as written.
+
+The fixed bodies in `CR_STAR_LF` go first: random ones rarely have those
+three characters in a row.
 
 Writes a sample for `notify/slack.rs` as `[{"body", "text"}]`, plus
 `"upstream"` where upstream sent something else: 250 bodies that had
-links restored, 100 where upstream differs, up to 20 that both fail on
-(they raise) and 50 that were only escaped. `text` and `upstream` are the
-attachment text posted, or null when the notification failed. Requests
-are patched; nothing leaves the machine.
+links restored, 100 where upstream differs and 50 that were only escaped.
+`text` and `upstream` are the attachment text posted; `upstream` is null
+where upstream failed. Requests are patched; nothing leaves the machine.
 """
 
 import json
@@ -39,6 +45,13 @@ FRAGMENTS = [
     "\u03c2", "\u2003", "a", "A", "x", "X", "here", "HERE", "Here", "channel",
     "chan", "U123", "u123", "x.com", "/", "?", "=", ":", "b=1", "desc", "Desc",
     " | ",
+]
+
+CR_STAR_LF = [
+    "a\r*\nb",
+    "x\r\r*\n\n*\r*\ny",
+    "<!here>\r*\n<@U1|x> & <https://x.com/?a=1&b=2|site>",
+    "&lt;!chan&gt;\r*\n\\d <@U\\1>",
 ]
 
 
@@ -78,11 +91,20 @@ def main():
     # No pause between requests
     apprise.URLBase.throttle = lambda self, *a, **k: None
 
-    a = apprise.Apprise()
-    assert a.add("slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/"
-                 "?format=markdown&footer=no&image=no")
+    url = ("slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/"
+           "?format=markdown&footer=no&image=no")
+    upstream_a = apprise.Apprise()
+    assert upstream_a.add(url)
+    # Each instance compiles its formatting pattern from the class map;
+    # the lookups agree, as the dropped key never matched anything
+    cls = slack.NotifySlack
+    cls._re_formatting_map = {
+        k: v for k, v in cls._re_formatting_map.items() if k != r"\r\*\n"}
+    assert list(cls._re_formatting_map) == ["&", "<", ">"]
+    fixed_a = apprise.Apprise()
+    assert fixed_a.add(url)
 
-    def send(body, module_re):
+    def send(body, a, module_re):
         slack.re = module_re
         posted.clear()
         if not a.notify(body=body, title="", body_format=None):
@@ -97,28 +119,31 @@ def main():
         return body.replace("&", "&amp;").replace("<", "&lt;") \
             .replace(">", "&gt;")
 
-    groups = {"linked": [], "differs": [], "failed": [], "escaped": []}
+    def bodies():
+        yield from CR_STAR_LF
+        for _ in range(count):
+            yield "".join(rnd.choice(FRAGMENTS)
+                          for _ in range(rnd.randint(1, 14)))
+
+    groups = {"linked": [], "differs": [], "escaped": []}
     seen = set()
-    for _ in range(count):
-        body = "".join(rnd.choice(FRAGMENTS)
-                       for _ in range(rnd.randint(1, 14)))
+    for body in bodies():
         if not body.strip() or body in seen:
             continue
         seen.add(body)
-        upstream = send(body, re)
-        text = send(body, LiteralRe())
+        upstream = send(body, upstream_a, re)
+        text = send(body, fixed_a, LiteralRe())
+        assert text is not None, f"the port sends every body: {body!r}"
         case = {"body": body, "text": text}
         if upstream != text:
             case["upstream"] = upstream
             group = "differs"
-        elif text is None:
-            group = "failed"
         else:
             group = "escaped" if text == escaped(body) else "linked"
         groups[group].append(case)
 
     sample = (groups["linked"][:250] + groups["differs"][:100]
-              + groups["failed"][:20] + groups["escaped"][:50])
+              + groups["escaped"][:50])
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(sample, fh, ensure_ascii=False, indent=0)
         fh.write("\n")
