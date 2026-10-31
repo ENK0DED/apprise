@@ -134,18 +134,65 @@ fn test_tampered_entries_are_dropped() {
 // Values and hashes produced by upstream for the same entries.
 #[test]
 fn test_cache_format_matches_upstream() {
-  let co = CacheObject { value: json!("value"), class_name: "str".into(), expires: None, persistent: true };
+  let stored = |v: Value| Stored::from(&v);
+  let co = CacheObject { value: stored(json!("value")), class_name: "str".into(), expires: None, persistent: true };
   assert_eq!(co.describe(), "str:+:value expires: never");
-  let co = CacheObject { value: json!({"a": [1, 2.5, null, true], "b": "it's"}), class_name: "dict".into(), expires: None, persistent: true };
+  let co = CacheObject { value: stored(json!({"a": [1, 2.5, null, true], "b": "it's"})), class_name: "dict".into(), expires: None, persistent: true };
   assert_eq!(co.describe(), "dict:+:{'a': [1, 2.5, None, True], 'b': \"it's\"} expires: never");
-  let co = CacheObject { value: json!(3.0), class_name: "float".into(), expires: Some(Utc.timestamp_micros(1_800_000_000_123_456).unwrap()), persistent: true };
+  let co = CacheObject {
+    value: stored(json!(3.0)),
+    class_name: "float".into(),
+    expires: Some(Utc.timestamp_micros(1_800_000_000_123_456).unwrap()),
+    persistent: true,
+  };
   assert_eq!(co.describe(), "float:+:3.0 expires: 2027-01-15T08:00:00.123456");
-  assert_eq!(co.to_json()["x"], json!(1_800_000_000.123456));
+  assert_eq!(serde_json::to_value(co.to_entry()).unwrap()["x"], json!(1_800_000_000.123456));
   assert_eq!(co.hash(), "2a487e");
-  let co = CacheObject { value: json!("value"), class_name: "str".into(), expires: None, persistent: true };
+  let co = CacheObject { value: stored(json!("value")), class_name: "str".into(), expires: None, persistent: true };
   assert_eq!(co.hash(), "79fe7c");
-  let back = CacheObject::from_json(&co.to_json()).unwrap();
+  assert_eq!(serde_json::to_string(&co.to_entry()).unwrap(), r#"{"v":"value","x":null,"c":"str","!":"79fe7c"}"#);
+  let back = CacheObject::from_json(&serde_json::from_str(&serde_json::to_string(&co.to_entry()).unwrap()).unwrap()).unwrap();
   assert_eq!(back, co);
+  // A repeated member keeps its first place and its last value, as a
+  // Python dict does
+  let parsed: Stored = serde_json::from_str(r#"{"b":1,"a":2,"b":3}"#).unwrap();
+  assert_eq!(py_repr(&parsed), "{'b': 3, 'a': 2}");
+}
+
+// Upstream hashes a dictionary in insertion order. This is the cache file
+// upstream wrote for `set('obj', {'z': 1, 'a': 2})`, a nested dictionary
+// and a string.
+const UPSTREAM_DICT_CACHE: &str = concat!(
+  r#"{"obj":{"v":{"z":1,"a":2},"x":null,"c":"dict","!":"ba263c"},"#,
+  r#""nested":{"v":{"outer":{"y":[1,{"b":true,"a":null}],"x":1.5},"k":"v"},"x":null,"c":"dict","!":"ee1674"},"#,
+  r#""token":{"v":"secret","x":null,"c":"str","!":"8c9b0b"}}"#
+);
+
+#[test]
+fn test_upstream_dictionaries_keep_their_key_order() {
+  let tmp = tempfile::tempdir().unwrap();
+  let ns = tmp.path().join("test");
+  for dir in [ns.clone(), ns.join("tmp"), ns.join("var")] {
+    fs::create_dir_all(dir).unwrap();
+  }
+  let staged = write_temp(&ns.join("tmp"), UPSTREAM_DICT_CACHE.as_bytes(), true).unwrap();
+  fs::rename(staged, ns.join("cache.psdata")).unwrap();
+
+  let mut store = PersistentStore::new(Some(tmp.path()), "test", StorageMode::Auto).unwrap();
+  assert_eq!(store.get("obj"), Some(json!({"z": 1, "a": 2})));
+  assert_eq!(store.get("nested"), Some(json!({"outer": {"y": [1, {"b": true, "a": null}], "x": 1.5}, "k": "v"})));
+  assert_eq!(store.get("token"), Some(json!("secret")));
+
+  // Rewriting the cache keeps the order, so the hash still verifies (here
+  // and for upstream).
+  assert!(store.set("more", json!({"b": 1, "a": 2}), None, true));
+  assert!(store.flush());
+  let written = String::from_utf8(read_gzip(&ns.join("cache.psdata")).unwrap()).unwrap();
+  assert!(written.contains(r#""v":{"z":1,"a":2}"#), "{written}");
+  assert!(written.contains(r#""v":{"outer":{"y":[1,{"b":true,"a":null}],"x":1.5},"k":"v"}"#), "{written}");
+  let mut store = PersistentStore::new(Some(tmp.path()), "test", StorageMode::Auto).unwrap();
+  assert_eq!(store.keys(), vec!["more", "nested", "obj", "token"]);
+  assert_eq!(store.get("obj"), Some(json!({"z": 1, "a": 2})));
 }
 
 #[test]
