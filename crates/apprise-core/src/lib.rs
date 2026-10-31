@@ -36,6 +36,8 @@ mod prepare;
 pub mod result;
 pub mod storage;
 pub mod tag;
+#[cfg(test)]
+mod test_logs;
 pub mod types;
 pub mod utils;
 

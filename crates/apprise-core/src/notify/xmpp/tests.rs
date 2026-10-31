@@ -657,32 +657,12 @@ fn test_loggable_hides_sasl_payloads() {
 /// but never the payload.
 #[tokio::test]
 async fn test_trace_log_hides_plain_payload() {
-  #[derive(Clone, Default)]
-  struct Buffer(Arc<Mutex<Vec<u8>>>);
-  impl std::io::Write for Buffer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-      self.0.lock().unwrap().extend_from_slice(buf);
-      Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-      Ok(())
-    }
-  }
-  let buffer = Buffer::default();
-  let writer = buffer.clone();
-  let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::TRACE).with_ansi(false).with_writer(move || writer.clone()).finish();
-  let _guard = tracing::subscriber::set_default(subscriber);
-  // Callsite interest is cached process-wide: one registered by a test on
-  // another thread while this subscriber was being set may still be cached
-  // as disabled, which drops the trace events this test looks for
-  tracing::callsite::rebuild_interest_cache();
-
   let (port, server) = xmpp_server(ServerConfig { mechanisms: vec!["PLAIN"], ..Default::default() }).await;
   let svc = from_url(&format!("xmpps://me:secret@127.0.0.1:{}/a?verify=no", port)).unwrap();
-  assert!(svc.send(&ctx("", "Body")).await.unwrap());
+  let (sent, logs) = crate::test_logs::capture(tracing::Level::TRACE, svc.send(&ctx("", "Body"))).await;
+  assert!(sent.unwrap());
   assert_eq!(server.await.unwrap().plain, b"\0me\0secret");
 
-  let logs = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
   assert!(logs.contains(&format!("XMPP SEND: <auth xmlns='{}' mechanism='PLAIN'>[16 bytes]</auth>", NS_SASL)), "{}", logs);
   assert!(!logs.contains("AG1lAHNlY3JldA=="), "{}", logs);
   assert!(!logs.contains("secret"), "{}", logs);

@@ -1185,28 +1185,8 @@ mod tests {
   }
 
   /// Collects formatted log lines.
-  #[derive(Clone, Default)]
-  struct LogBuffer(Arc<Mutex<Vec<u8>>>);
-
-  impl std::io::Write for LogBuffer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-      self.0.lock().unwrap().extend_from_slice(buf);
-      Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-      Ok(())
-    }
-  }
-
   async fn logs_of(a: &Apprise) -> String {
-    let buffer = LogBuffer::default();
-    let writer = buffer.clone();
-    let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).with_ansi(false).with_writer(move || writer.clone()).finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-    // Interest may still be cached as disabled by a test on another thread
-    tracing::callsite::rebuild_interest_cache();
-    a.notify(&ctx()).await;
-    String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap()
+    crate::test_logs::capture(tracing::Level::DEBUG, a.notify(&ctx())).await.1
   }
 
   #[tokio::test]

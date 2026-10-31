@@ -954,32 +954,10 @@ fn test_timeout_follows_cto() {
 // ── PGP/MIME ──────────────────────────────────────────────────────────────────
 
 /// Collects formatted log lines.
-#[cfg(not(feature = "pgp"))]
-#[derive(Clone, Default)]
-struct LogBuffer(Arc<Mutex<Vec<u8>>>);
-
-#[cfg(not(feature = "pgp"))]
-impl std::io::Write for LogBuffer {
-  fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-    self.0.lock().unwrap().extend_from_slice(buf);
-    Ok(buf.len())
-  }
-  fn flush(&mut self) -> std::io::Result<()> {
-    Ok(())
-  }
-}
-
 /// What `fut` logs at debug level and above, with its output.
 #[cfg(not(feature = "pgp"))]
 async fn logged<F: std::future::Future>(fut: F) -> (F::Output, String) {
-  let buffer = LogBuffer::default();
-  let writer = buffer.clone();
-  let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).with_ansi(false).with_writer(move || writer.clone()).finish();
-  let _guard = tracing::subscriber::set_default(subscriber);
-  // Interest may still be cached as disabled by a test on another thread
-  tracing::callsite::rebuild_interest_cache();
-  let out = fut.await;
-  (out, String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap())
+  crate::test_logs::capture(tracing::Level::DEBUG, fut).await
 }
 
 /// Without the pgp feature a PGP mode still parses, with a warning, and
