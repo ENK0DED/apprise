@@ -348,6 +348,31 @@ fn test_disk_prune_uses_default_expiry() {
   assert!(tmp.path().join("new").exists());
 }
 
+/// An expiry reaching back past the earliest time the clock can hold
+/// matches no file. Upstream raises `OverflowError` from about 739,000
+/// days; the port panicked.
+#[test]
+fn test_disk_prune_past_the_clock_range_matches_nothing() {
+  let tmp = tempfile::tempdir().unwrap();
+  let mut store = PersistentStore::new(Some(tmp.path()), "old", StorageMode::Flush).unwrap();
+  assert_eq!(store.write(b"data", None, true), Ok(true));
+  let data_file = store.path().unwrap().join("var").join("default.psdata");
+  fs::File::options().append(true).open(&data_file).unwrap().set_modified(std::time::UNIX_EPOCH).unwrap();
+  // 150,000,000,000,000 days, then the largest expiry there is
+  for expires in [150_000_000_000_000 * 86_400, u64::MAX] {
+    for action in [false, true] {
+      let results = PersistentStore::disk_prune(tmp.path(), None, Some(expires), action);
+      assert_eq!(results.keys().collect::<Vec<_>>(), vec!["old"]);
+      assert!(results["old"].is_empty(), "{expires} {action}");
+      assert!(data_file.exists());
+    }
+  }
+  // A long but representable expiry still finds it
+  let results = PersistentStore::disk_prune(tmp.path(), None, Some(50 * 365 * 86_400), true);
+  assert!(results["old"].iter().any(|r| r.removed && r.path == data_file));
+  assert!(!data_file.exists());
+}
+
 #[test]
 fn test_disk_scan() {
   let tmp = tempfile::tempdir().unwrap();
