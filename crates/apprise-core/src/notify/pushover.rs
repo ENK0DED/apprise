@@ -508,8 +508,9 @@ impl Notify for Pushover {
         base.push((name, value));
       }
     }
-    // Markdown arrives here already turned into Pushover's HTML
-    if matches!(ctx.body_format, NotifyFormat::Html | NotifyFormat::Markdown) {
+    // Declared Markdown arrives here already turned into Pushover's HTML;
+    // Markdown with no declared format is sent untouched
+    if ctx.body_format == NotifyFormat::Html || (ctx.body_format == NotifyFormat::Markdown && !ctx.body_passthrough) {
       base.push(("html", "1".into()));
     }
     if self.priority == PRIORITY_EMERGENCY {
@@ -880,6 +881,29 @@ mod tests {
     assert!(apprise.add(&format!("pover://{}@{}?format=html", u30(), a30())));
     assert!(with_test_base(server.uri(), apprise.notify(&ctx("T", "<hr/>", NotifyFormat::Html))).await.is_success());
     assert_eq!(field(&form(&requests_to(&server, "POST", MESSAGES).await[0]), "message").as_deref(), Some("&lt;hr/&gt;"));
+  }
+
+  #[tokio::test]
+  async fn test_passthrough_markdown_is_not_flagged_as_html() {
+    // What upstream sends for notify(body_format=None), then "markdown"
+    let body = "**b** <i>x</i> & y";
+    for (query, passthrough, message, html) in [
+      ("", true, body, None),
+      ("", false, "<b>b</b> <i>x</i> &amp; y", Some("1")),
+      ("?format=markdown", true, body, None),
+      ("?format=markdown", false, "<b>b</b> <i>x</i> &amp; y", Some("1")),
+      ("?format=html", true, body, Some("1")),
+      ("?format=text", true, body, None),
+    ] {
+      let server = messages_server(200).await;
+      let mut apprise = crate::Apprise::new();
+      assert!(apprise.add(&format!("pover://{}@{}{query}", u30(), a30())));
+      let format = if passthrough { NotifyFormat::Text } else { NotifyFormat::Markdown };
+      let c = NotifyContext { body_passthrough: passthrough, ..ctx("T", body, format) };
+      assert!(with_test_base(server.uri(), apprise.notify(&c)).await.is_success());
+      let sent = form(&requests_to(&server, "POST", MESSAGES).await[0]);
+      assert_eq!((field(&sent, "message").as_deref(), field(&sent, "html").as_deref()), (Some(message), html), "{query} passthrough={passthrough}");
+    }
   }
 
   #[tokio::test]
