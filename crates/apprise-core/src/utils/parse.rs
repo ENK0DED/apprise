@@ -43,6 +43,9 @@ pub struct ParsedUrl {
   /// Decoded host. A port that is not a number stays part of the host
   /// (`tgram://123:abc` has host `123:abc`). `None` when empty.
   pub host: Option<String>,
+  /// The host as the URL wrote it, before decoding; [`Self::verified_host`]
+  /// checks this form, as upstream's `verify_host` does.
+  pub host_encoded: Option<String>,
   /// Port, from the authority or a `?port=` override.
   pub port: Option<u16>,
   /// Percent-encoded path without its leading slash (upstream `fullpath`
@@ -199,6 +202,7 @@ impl ParsedUrl {
       schema,
       user: nonempty(user),
       password: nonempty(password),
+      host_encoded: Some(host.clone()).filter(|h| !h.is_empty()),
       host: nonempty(Some(host)),
       port,
       path: fullpath.strip_prefix('/').unwrap_or(&fullpath).to_string(),
@@ -217,7 +221,14 @@ impl ParsedUrl {
   /// a valid hostname or IP address, or `None`. IPv6 addresses come back in
   /// square brackets.
   pub fn verified_host(&self) -> Option<String> {
-    verify_hostname(self.host.as_deref()?, true, true, true)
+    let host = self.host.as_deref()?;
+    // Upstream checks the host as written, before decoding it, so an
+    // escaped character (`local%68ost`) is refused. A host set after
+    // parsing (from YAML keys, say) has no written form to check.
+    if let Some(written) = self.host_encoded.as_deref().filter(|w| unquote(w) == host) {
+      verify_hostname(written, true, true, true)?;
+    }
+    verify_hostname(host, true, true, true)
   }
 
   /// The encoded path with its leading slash, `/` when the URL has none
@@ -1150,6 +1161,21 @@ mod tests {
     assert_eq!(p.host.as_deref(), Some("[2001:db8::1]"));
     assert_eq!(p.port, Some(8080));
     assert_eq!(p.verified_host().as_deref(), Some("[2001:db8::1]"));
+  }
+
+  #[test]
+  fn test_verified_host_checks_the_written_host() {
+    // Upstream's verify_host runs before decoding: an escape is refused
+    // even when it decodes to a valid name, but an IPv6 zone keeps its %
+    for url in ["gotify://local%68ost/token", "json://%31%32%37.0.0.1/"] {
+      assert!(ParsedUrl::parse(url).unwrap().verified_host().is_none(), "{}", url);
+    }
+    assert_eq!(ParsedUrl::parse("json://localhost/").unwrap().verified_host().as_deref(), Some("localhost"));
+    assert!(ParsedUrl::parse("json://[fe80::1%25eth0]/").unwrap().verified_host().is_some());
+    // A host set after parsing has no written form to check
+    let mut p = ParsedUrl::parse("json://local%68ost/").unwrap();
+    p.host = Some("example.com".into());
+    assert_eq!(p.verified_host().as_deref(), Some("example.com"));
   }
 
   #[test]
