@@ -63,7 +63,7 @@ Visit upstream's [Official Documentation](https://appriseit.com/getting-started/
 
 The section identifies all of the services supported by this library. [Check out the upstream documentation for more information on the supported modules here](https://appriseit.com/services/).
 
-A few services depend on [Cargo features](#cargo-features). The default build includes AMQP (`amqp`), MQTT (`mqtt`), Email and Delta Chat (`email`), and Matrix and Simplepush end-to-end encryption (`matrix-e2ee`, `simplepush-encryption`). The [desktop notifications](#desktop-notifications) need the `desktop` feature and Blink(1) needs the `blink1` feature; both are off by default.
+A few services depend on [Cargo features](#cargo-features). The default build includes MQTT (`mqtt`), Email and Delta Chat (`email`), and Matrix and Simplepush end-to-end encryption (`matrix-e2ee`, `simplepush-encryption`); AMQP 0-9-1 is always built in. PGP/MIME email (`pgp`), AMQP 1.0 (`amqp`), the [desktop notifications](#desktop-notifications) (`desktop`) and Blink(1) (`blink1`) are off by default.
 
 ## Productivity Based Notifications
 
@@ -261,7 +261,7 @@ These need the `desktop` feature, which is off by default. `dbus://`, `qt://`, `
 
 ## Email Notifications
 
-Email (and Delta Chat) needs the `email` feature, which is on by default and includes PGP/MIME signing and encryption.
+Email (and Delta Chat) needs the `email` feature, which is on by default. PGP/MIME signing and encryption (`?pgp=sign`, `?pgp=encrypt`, `?wkd=yes`) also needs the `pgp` feature, which is off by default; without it such a URL loads with a warning and its notifications fail, as upstream Apprise does without PGPy.
 
 | Service ID | Default Port | Example Syntax |
 | ---------- | ------------ | -------------- |
@@ -293,7 +293,7 @@ cd apprise
 cargo install --path crates/apprise-cli
 
 # The same with optional features added (see Cargo Features below)
-cargo install --path crates/apprise-cli --features desktop,blink1
+cargo install --path crates/apprise-cli --features pgp,desktop
 ```
 
 To build without installing, run `cargo build --release -p apprise-cli`; the binary is `target/release/apprise`. The release profile optimises for size, and TLS comes from rustls, so the binary needs no OpenSSL or Python.
@@ -332,21 +332,22 @@ bun run build        # release build; use build:debug for a quicker debug build
 bun test
 ```
 
-The package has the default features; the desktop and Blink(1) services are not included. See [Node.js API](#nodejs-api) for how to use it.
+The package is built with every feature the binding has, which includes PGP/MIME email and AMQP 1.0; the desktop and Blink(1) services are not included. See [Node.js API](#nodejs-api) for how to use it.
 
 ## Cargo Features
 
-`apprise-core` has the features below, and the CLI forwards each of them under the same name. The size column is how much each one adds to the x86-64 Linux release binary of the CLI, which is about 10.5 MB with the default features and 7.3 MB with none of them. Sizes vary by platform.
+`apprise-core` has the features below, and the CLI forwards each of them under the same name. The size column is how much each one adds to the x86-64 Linux release binary of the CLI, which is about 8.2 MB with the default features, 9.7 MB with `pgp` added and 7.4 MB with no features at all. Sizes vary by platform.
 
 | Feature | Default | What it enables | Release size |
 | ------- | ------- | --------------- | ------------ |
-| `email` | on | `mailto://`, `mailtos://` (SMTP) and `deltachat://`, with PGP/MIME signing and encryption through rPGP | about 1.8 MB |
+| `email` | on | `mailto://`, `mailtos://` (SMTP) and `deltachat://` | about 98 KB |
 | `yaml` | on | YAML configuration files (TEXT configuration always works) | about 202 KB |
 | `mqtt` | on | `mqtt://` and `mqtts://` (a built-in client; no extra crates) | about 29 KB |
-| `amqp` | on | `amqp://` and `amqps://`: AMQP 0-9-1 is built in, AMQP 1.0 comes from fe2o3-amqp | about 590 KB |
 | `images` | on | Bundles the default theme's PNG icons, which Telegram (`?image=yes`) uploads and desktop notifications show | about 176 KB (only the icon sizes in use are kept; all of them are 286 KB) |
 | `simplepush-encryption` | on | Simplepush end-to-end encryption (`spush://password@...`); without it, encrypted Simplepush URLs cannot send | about 57 KB |
 | `matrix-e2ee` | on | Matrix end-to-end encryption (Olm/Megolm, SAS device verification, encrypted attachments); without it, nothing is sent to encrypted rooms | about 280 KB |
+| `pgp` | off | PGP/MIME signing and encryption for email and Delta Chat through rPGP (`?pgp=`, `pgppub=`, `pgpprv=`, `?wkd=yes`); turns on `email`. Without it a PGP mode loads with a warning and its notifications fail | about 1.5 MB |
+| `amqp` | off | AMQP 1.0 (`?version=1.0`) through fe2o3-amqp. `amqp://` and `amqps://` over AMQP 0-9-1 are always built in; without the feature a `?version=1.0` URL does not load | about 540 KB |
 | `desktop` | off | The [desktop notifications](#desktop-notifications) for the platform you build on | about 587 KB |
 | `blink1` | off | `blink1://` USB LED notifications through hidapi; without it, `blink1://` URLs load but cannot send | about 58 KB |
 
