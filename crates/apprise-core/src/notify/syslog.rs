@@ -1,3 +1,7 @@
+// The local logger only exists on Unix; elsewhere from_url() refuses the URL
+// and the rest goes unused.
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
+
 use crate::error::NotifyError;
 use crate::notify::rsyslog::{facility_name, resolve_facility, severity};
 use crate::notify::{Notify, NotifyContext, ServiceDetails};
