@@ -36,7 +36,7 @@ use crate::notify::registry::url_schema;
 use crate::utils::cwe312::cwe312_url;
 use crate::utils::parse::{ParsedUrl, parse_list, unquote};
 
-pub use template::PendingService;
+pub use template::{PendingService, TemplateEntry};
 
 /// Largest configuration read, as upstream (128KB).
 pub const MAX_BUFFER_SIZE: usize = 131072;

@@ -3,6 +3,7 @@ mod help;
 mod logging;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use apprise_core::storage::{PersistentStore, StoreState};
 use apprise_core::utils::cwe312::{cwe312_loggable, privacy_url};
@@ -383,9 +384,9 @@ fn dry_run_listing(apprise: &Apprise) -> ResultStatus {
   let mut listed = 0usize;
   for svc in apprise.find() {
     listed += 1;
-    println!("{:>4}. {}", listed, fit(&shown_url(svc), columns.saturating_sub(8), columns.saturating_sub(9)));
-    println!("{:>10}: {}", "uid", apprise.url_id(svc).unwrap_or_else(|| "- n/a -".to_string()));
-    let tags = sorted_tags(svc);
+    println!("{:>4}. {}", listed, fit(&shown_url(&*svc), columns.saturating_sub(8), columns.saturating_sub(9)));
+    println!("{:>10}: {}", "uid", apprise.url_id(&*svc).unwrap_or_else(|| "- n/a -".to_string()));
+    let tags = sorted_tags(&*svc);
     if !tags.is_empty() {
       println!("{:>10}: {}", "tags", tags.join(", "));
     }
@@ -445,9 +446,9 @@ fn storage(
   let uid_filters: Vec<String> = rest.iter().filter(|f| apprise_core::attachment::schema_of(f).is_none()).map(|f| f.to_lowercase()).collect();
 
   // The loaded services' namespaces, in load order.
+  let services: Vec<Arc<dyn Notify>> = if tagged { apprise.find().collect() } else { apprise.services().collect() };
   let mut uids: Vec<(String, Vec<&dyn Notify>, StoreState, u64)> = Vec::new();
-  let services: Vec<&dyn Notify> = if tagged { apprise.find().collect() } else { apprise.services().collect() };
-  for svc in services {
+  for svc in services.iter().map(|s| s.as_ref()) {
     let Some(id) = apprise.url_id(svc) else { continue };
     if !uid_filters.is_empty() && !uid_filters.iter().any(|u| id.starts_with(u.as_str())) {
       tracing::trace!("Storage: plugin uid '{}' excluded by filter {:?}", id, uid_filters);

@@ -651,7 +651,7 @@ mod tests {
   fn apprise(services: Vec<Box<dyn Notify>>) -> Apprise {
     let mut a = Apprise::new();
     for svc in services {
-      a.services.push(svc.into());
+      a.entries.push(crate::Entry::Service(svc.into()));
     }
     a
   }
@@ -1046,12 +1046,12 @@ mod tests {
     assert!(a.notify(&ctx()).await.is_success());
     assert!(a.notify(&ctx()).await.is_success());
     a.flush_stores();
-    let id = a.url_id(a.services[0].as_ref()).unwrap();
+    let id = a.url_id(a.services().next().unwrap()).unwrap();
     assert_eq!(id.len(), 8);
     let mut store = crate::storage::PersistentStore::new(Some(tmp.path()), &id, crate::types::StorageMode::Auto).unwrap();
     assert_eq!(store.get("sent"), Some(serde_json::json!(2)));
     // store=no keeps the second service in memory only.
-    let other = a.url_id(a.services[1].as_ref()).unwrap();
+    let other = a.url_id(a.services().nth(1).unwrap()).unwrap();
     assert!(!tmp.path().join(other).exists());
   }
 

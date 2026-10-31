@@ -37,6 +37,9 @@ pub const MAX_RESOLVED_URL_LEN: usize = 8192;
 /// How many random prefixes to try before giving up.
 const PLACEHOLDER_ATTEMPTS: usize = 8;
 
+/// How many services built from one entry are kept for reuse.
+pub const MAX_RESOLVE_CACHE: usize = 32;
+
 /// A template problem; the message never contains a value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateError {
@@ -489,16 +492,31 @@ impl PendingService {
   /// environment). Returns `None`, after logging why, when a value is
   /// missing or the service rejects the filled-in URL.
   pub fn resolve(&self, overrides: &HashMap<String, String>, environ: &dyn Fn(&str) -> Option<String>) -> Option<Box<dyn Notify>> {
-    let values = match resolve_values(&self.placeholders.schema, overrides, &self.names, environ) {
-      Ok(v) => v,
+    match self.values(overrides, environ) {
+      Ok(values) => self.build(&values),
       Err(e) => {
-        tracing::error!("Template variable '{}' is not available; {}:// was skipped", e.variable.as_deref().unwrap_or("?"), self.schema());
-        tracing::warn!("A {}:// entry was skipped; it is waiting on a configuration value", self.schema());
-        return None;
+        self.log_missing(&e);
+        None
       }
-    };
+    }
+  }
 
-    let parsed = self.placeholders.substitute(&self.parsed, &values);
+  /// The value of every variable this entry uses: from the caller, then
+  /// the configuration default, then the environment.
+  pub fn values(&self, overrides: &HashMap<String, String>, environ: &dyn Fn(&str) -> Option<String>) -> Result<HashMap<String, String>, TemplateError> {
+    resolve_values(&self.placeholders.schema, overrides, &self.names, environ)
+  }
+
+  /// Say that the entry is skipped for want of a value (never the value).
+  pub fn log_missing(&self, e: &TemplateError) {
+    tracing::error!("Template variable '{}' is not available; {}:// was skipped", e.variable.as_deref().unwrap_or("?"), self.schema());
+    tracing::warn!("A {}:// entry was skipped; it is waiting on a configuration value", self.schema());
+  }
+
+  /// Build the service from [`values`](Self::values). Returns `None`,
+  /// after logging why, when the service rejects the filled-in URL.
+  pub fn build(&self, values: &HashMap<String, String>) -> Option<Box<dyn Notify>> {
+    let parsed = self.placeholders.substitute(&self.parsed, values);
     let length = parsed.schema.len()
       + 3
       + [&parsed.user, &parsed.password, &parsed.host].iter().map(|f| f.as_ref().map_or(0, |s| s.len() + 1)).sum::<usize>()
@@ -515,6 +533,72 @@ impl PendingService {
     }
     service
   }
+}
+
+/// A template entry as an `Apprise` instance keeps it: built again from
+/// whatever values are current each time it is used, handing back the same
+/// service as last time for the same values so what it remembers between
+/// notifications is kept (upstream `NotifyTemplate.resolve()`).
+pub struct TemplateEntry {
+  pub pending: PendingService,
+  /// What each set of values built (`None` when the service refused the
+  /// URL), by a hash of the values, most recently used last.
+  built: std::sync::Mutex<Vec<(String, Option<Arc<dyn Notify>>)>>,
+}
+
+impl std::fmt::Debug for TemplateEntry {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("TemplateEntry").field("pending", &self.pending).finish_non_exhaustive()
+  }
+}
+
+impl TemplateEntry {
+  pub fn new(pending: PendingService) -> Self {
+    Self { pending, built: Default::default() }
+  }
+
+  /// The service the current values build, or `None` when a value is
+  /// missing (logged when `log` is set) or the service refuses the URL.
+  pub fn build(&self, overrides: &HashMap<String, String>, environ: &dyn Fn(&str) -> Option<String>, log: bool) -> Option<Arc<dyn Notify>> {
+    let values = match self.pending.values(overrides, environ) {
+      Ok(values) => values,
+      Err(e) => {
+        if log {
+          self.pending.log_missing(&e);
+        }
+        return None;
+      }
+    };
+    let key = values_key(&values);
+    let mut built = self.built.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(index) = built.iter().position(|(k, _)| *k == key) {
+      let entry = built.remove(index);
+      let service = entry.1.clone();
+      built.push(entry);
+      return service;
+    }
+    let service: Option<Arc<dyn Notify>> = self.pending.build(&values).map(Arc::from);
+    built.push((key, service.clone()));
+    if built.len() > MAX_RESOLVE_CACHE {
+      built.remove(0);
+    }
+    service
+  }
+}
+
+/// A hash of names and values, so the cache never holds a secret.
+fn values_key(values: &HashMap<String, String>) -> String {
+  use sha2::{Digest, Sha256};
+  let mut names: Vec<&String> = values.keys().collect();
+  names.sort();
+  let mut hasher = Sha256::new();
+  for name in names {
+    hasher.update(name.as_bytes());
+    hasher.update([0]);
+    hasher.update(values[name].as_bytes());
+    hasher.update([0]);
+  }
+  hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]
