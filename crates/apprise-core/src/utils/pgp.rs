@@ -34,17 +34,22 @@
 //! pair. It signs detached (RFC 3156 `multipart/signed`), encrypts
 //! (SEIPD v1, compressed literal data, as PGPy does) and builds Autocrypt
 //! headers. The OpenPGP work is done by rPGP.
+//!
+//! rPGP's readers and writers are generic, and every reader or writer type
+//! adds another copy of its parsers or serializers to the binary. So all
+//! OpenPGP data is parsed from a byte slice (armor is decoded first) and
+//! serialized into a `Vec<u8>` (armor is added afterwards).
 
 use std::collections::HashMap;
-use std::io::Cursor;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
+use pgp::armor::{BlockType, Dearmor};
 use pgp::composed::{
-  ArmorOptions, Deserializable, DetachedSignature, EncryptionCaps, KeyType, MessageBuilder, PublicOrSecret, SecretKeyParamsBuilder, SignedPublicKey,
-  SignedSecretKey, SubkeyParamsBuilder,
+  DetachedSignature, EncryptionCaps, KeyType, MessageBuilder, PublicOrSecret, SecretKeyParamsBuilder, SignedPublicKey, SignedSecretKey, SubkeyParamsBuilder,
 };
 use pgp::crypto::hash::HashAlgorithm;
 use pgp::crypto::sym::SymmetricKeyAlgorithm;
@@ -297,7 +302,7 @@ impl PgpController {
       tracing::debug!("PGP signing failed; key may lack Sign capability");
       return None;
     };
-    match signature.and_then(|s| s.to_armored_string(ArmorOptions::default())) {
+    match signature.and_then(|s| s.to_bytes()).and_then(|packets| armored(BlockType::Signature, &packets)) {
       Ok(armored) => Some((armored, format!("pgp-{}", hash_name(hash)))),
       Err(e) => {
         tracing::debug!("PGP signing failed: {}", e);
@@ -432,7 +437,7 @@ impl PgpController {
     let key = key?;
     // Validate what is advertised: the exported public key, parsed again
     let exported = key.to_public_key().to_bytes().ok()?;
-    let Ok(reparsed) = SignedPublicKey::from_bytes(Cursor::new(&exported)) else {
+    let Some(PublicOrSecret::Public(reparsed)) = parse_key(&exported) else {
       tracing::debug!("Unable to re-parse our own exported PGP key");
       return None;
     };
@@ -490,8 +495,52 @@ fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
 
 /// The first key in armored or binary OpenPGP data (PGPy `from_blob`).
 fn parse_key(data: &[u8]) -> Option<PublicOrSecret> {
-  let (mut keys, _) = PublicOrSecret::from_reader_many(Cursor::new(data)).ok()?;
-  keys.next()?.ok()
+  // rPGP's own test: binary OpenPGP data starts with a byte whose high bit
+  // is set
+  let dearmored;
+  let packets = if data.first()? & 0x80 != 0 {
+    data
+  } else {
+    dearmored = dearmor_key(data)?;
+    &dearmored
+  };
+  PublicOrSecret::from_bytes_many(packets).ok()?.next()?.ok()
+}
+
+/// The packets of the first ASCII-armored key block in `data`, decoded as
+/// rPGP's `PublicOrSecret::from_armor_many_buf` does.
+fn dearmor_key(data: &[u8]) -> Option<Vec<u8>> {
+  let mut dearmor = Dearmor::new(data);
+  dearmor.read_header().ok()?;
+  if !matches!(dearmor.typ, Some(BlockType::PublicKey | BlockType::PrivateKey | BlockType::File)) {
+    return None;
+  }
+  let mut packets = Vec::new();
+  dearmor.read_to_end(&mut packets).ok()?;
+  Some(packets)
+}
+
+/// Serialized packets passed through as they are, so that armoring them
+/// reuses one writer.
+struct Packets<'a>(&'a [u8]);
+
+impl pgp::ser::Serialize for Packets<'_> {
+  fn to_writer<W: std::io::Write>(&self, writer: &mut W) -> pgp::errors::Result<()> {
+    writer.write_all(self.0)?;
+    Ok(())
+  }
+
+  fn write_len(&self) -> usize {
+    self.0.len()
+  }
+}
+
+/// `packets` ASCII-armored as `typ`: what rPGP's `to_armored_string()`
+/// writes with the default options (no headers, with a checksum).
+fn armored(typ: BlockType, packets: &[u8]) -> pgp::errors::Result<String> {
+  let mut out = Vec::new();
+  pgp::armor::write(&Packets(packets), typ, &mut out, None, true)?;
+  Ok(String::from_utf8(out).expect("ascii armor is utf8"))
 }
 
 /// A new key pair, armored (public, secret).
@@ -510,8 +559,8 @@ fn generate_key(uid: &str) -> Option<(String, String)> {
     .preferred_compression_algorithms(vec![CompressionAlgorithm::ZLIB].into())
     .subkeys(vec![subkey.build().ok()?]);
   let secret = params.build().ok()?.generate(rand_core06::OsRng).ok()?;
-  let public = secret.to_public_key().to_armored_string(ArmorOptions::default()).ok()?;
-  let secret = secret.to_armored_string(ArmorOptions::default()).ok()?;
+  let public = armored(BlockType::PublicKey, &secret.to_public_key().to_bytes().ok()?).ok()?;
+  let secret = armored(BlockType::PrivateKey, &secret.to_bytes().ok()?).ok()?;
   Some((public, secret))
 }
 
@@ -621,7 +670,7 @@ fn encrypt_to(key: &SignedPublicKey, message: &[u8]) -> Option<String> {
       return None;
     }
   };
-  match result.and_then(|_| builder.to_armored_string(rng, ArmorOptions::default())) {
+  match result.and_then(|_| builder.to_vec(rng)).and_then(|packets| armored(BlockType::Message, &packets)) {
     Ok(armored) => Some(armored),
     Err(e) => {
       tracing::debug!("PGP Public Key Corruption; encryption not possible: {}", e);

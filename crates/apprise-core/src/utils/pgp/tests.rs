@@ -1,4 +1,4 @@
-use pgp::composed::{Deserializable, Message};
+use pgp::composed::{ArmorOptions, Deserializable, Message};
 use pgp::crypto::ecc_curve::ECCCurve;
 
 use super::*;
@@ -34,7 +34,7 @@ fn ed25519_key(user_ids: &[&str], with_subkey: bool, passphrase: Option<&str>) -
   params.build().unwrap().generate(rand_core06::OsRng).unwrap()
 }
 
-fn armored(key: &SignedSecretKey) -> String {
+fn armored_key(key: &SignedSecretKey) -> String {
   key.to_armored_string(ArmorOptions::default()).unwrap()
 }
 
@@ -76,7 +76,7 @@ async fn test_private_key_loading() {
   let key = c.private_key().await.expect("fixture loads");
   // Cached by source: a changed file is not parsed again until it expires
   let other = ed25519_key(&["O <o@example.com>"], true, None);
-  std::fs::write(&path, armored(&other)).unwrap();
+  std::fs::write(&path, armored_key(&other)).unwrap();
   assert_eq!(c.private_key().await.unwrap().fingerprint(), key.fingerprint());
   c.cache().values_mut().for_each(|(_, expires)| *expires = Instant::now() - Duration::from_secs(1));
   assert_eq!(c.private_key().await.unwrap().fingerprint(), other.fingerprint());
@@ -93,7 +93,7 @@ async fn test_private_key_loading() {
   assert!(PgpController::new(None, Some(&public), None, "Apprise", None).private_key().await.is_none());
   let garbage = write(&dir, "garbage.asc", "not a key");
   assert!(PgpController::new(None, Some(&garbage), None, "Apprise", None).private_key().await.is_none());
-  let protected = write(&dir, "protected.asc", &armored(&ed25519_key(&["P <p@example.com>"], true, Some("secret"))));
+  let protected = write(&dir, "protected.asc", &armored_key(&ed25519_key(&["P <p@example.com>"], true, Some("secret"))));
   assert!(PgpController::new(None, Some(&protected), None, "Apprise", None).private_key().await.is_none());
 
   // An explicit private key larger than 32000 bytes is refused
@@ -121,7 +121,7 @@ async fn test_sign() {
   let mut params = SecretKeyParamsBuilder::default();
   params.key_type(KeyType::Ed25519Legacy).can_certify(true).can_sign(false).primary_user_id("A <a@example.com>".to_string());
   let cert_only = params.build().unwrap().generate(rand_core06::OsRng).unwrap();
-  let path = write(&dir, "cert-only.asc", &armored(&cert_only));
+  let path = write(&dir, "cert-only.asc", &armored_key(&cert_only));
   assert!(PgpController::new(None, Some(&path), None, "Apprise", None).sign(b"x").await.is_none());
 }
 
@@ -194,7 +194,7 @@ async fn test_keygen_and_autocrypt() {
   assert!(keydata.split("\r\n ").all(|l| l.len() <= AUTOCRYPT_FOLD_WIDTH));
   assert!(keydata.split("\r\n ").take(2).all(|l| l.len() == AUTOCRYPT_FOLD_WIDTH));
   let raw = base64::engine::general_purpose::STANDARD.decode(keydata.replace("\r\n ", "")).unwrap();
-  let advertised = SignedPublicKey::from_bytes(Cursor::new(raw)).unwrap();
+  let advertised = SignedPublicKey::from_bytes(std::io::Cursor::new(raw)).unwrap();
   assert!(has_encryption_subkey(&advertised));
   let generated = c.private_key().await.unwrap();
   assert_eq!(advertised.fingerprint(), generated.fingerprint());
@@ -239,13 +239,13 @@ async fn test_autocrypt_needs_our_own_suitable_key() {
   let fixture = write(&dir, "valid.asc", VALID_PRV);
   assert!(PgpController::new(None, Some(&fixture), Some("test@example.com"), "Apprise", None).autocrypt_header().await.is_none());
   // Two user IDs
-  let two = write(&dir, "two.asc", &armored(&ed25519_key(&["A <a@example.com>", "B <b@example.com>"], true, None)));
+  let two = write(&dir, "two.asc", &armored_key(&ed25519_key(&["A <a@example.com>", "B <b@example.com>"], true, None)));
   assert!(PgpController::new(None, Some(&two), Some("a@example.com"), "Apprise", None).autocrypt_header().await.is_none());
   // One user ID and one encryption subkey: accepted
-  let one = write(&dir, "one.asc", &armored(&ed25519_key(&["A <a@example.com>"], true, None)));
+  let one = write(&dir, "one.asc", &armored_key(&ed25519_key(&["A <a@example.com>"], true, None)));
   assert!(PgpController::new(None, Some(&one), Some("a@example.com"), "Apprise", None).autocrypt_header().await.is_some());
   // No subkey at all
-  let none = write(&dir, "none.asc", &armored(&ed25519_key(&["A <a@example.com>"], false, None)));
+  let none = write(&dir, "none.asc", &armored_key(&ed25519_key(&["A <a@example.com>"], false, None)));
   assert!(PgpController::new(None, Some(&none), Some("a@example.com"), "Apprise", None).autocrypt_header().await.is_none());
 }
 
@@ -290,4 +290,121 @@ fn test_upstream_fixtures_parse() {
   // Binary keys too
   let binary = SignedPublicKey::from_string(PGPY_PUB).unwrap().0.to_bytes().unwrap();
   assert!(matches!(parse_key(&binary), Some(PublicOrSecret::Public(_))));
+}
+
+/// The first key as rPGP's reader-based parser finds it (what
+/// [`parse_key`] did before it decoded armor itself): secret or not, and the
+/// key's packets.
+fn parse_key_reader(data: &[u8]) -> Option<(bool, Vec<u8>)> {
+  let (mut keys, _) = PublicOrSecret::from_reader_many(std::io::Cursor::new(data)).ok()?;
+  key_packets(keys.next()?.ok()?)
+}
+
+fn key_packets(key: PublicOrSecret) -> Option<(bool, Vec<u8>)> {
+  match key {
+    PublicOrSecret::Public(k) => Some((false, k.to_bytes().ok()?)),
+    PublicOrSecret::Secret(k) => Some((true, k.to_bytes().ok()?)),
+  }
+}
+
+/// Parsing from a byte slice (armor decoded first) finds the same key as
+/// rPGP's reader-based parser, armored or binary, malformed or not.
+#[test]
+fn test_parse_key_matches_rpgp_reader() {
+  let binary = SignedPublicKey::from_string(PGPY_PUB).unwrap().0.to_bytes().unwrap();
+  let mut two_binary = binary.clone();
+  two_binary.extend(SignedPublicKey::from_string(VALID_PUB).unwrap().0.to_bytes().unwrap());
+  let with_headers = VALID_PUB.replacen("BLOCK-----\n", "BLOCK-----\nComment: hello\nVersion: 1\n", 1);
+  let crlf = VALID_PRV.replace('\n', "\r\n");
+  let no_checksum: String = VALID_PUB.lines().filter(|l| !l.starts_with('=')).map(|l| format!("{}\n", l)).collect();
+  let bad_checksum = VALID_PUB.replace("=ZY2q", "=AAAA");
+  let no_footer = VALID_PUB.replace("-----END PGP PUBLIC KEY BLOCK-----", "");
+  let wrong_footer = VALID_PUB.replace("-----END PGP PUBLIC KEY BLOCK-----", "-----END PGP MESSAGE-----");
+  let truncated = &VALID_PUB[..VALID_PUB.len() / 2];
+  let message = VALID_PUB.replace("PUBLIC KEY BLOCK", "MESSAGE");
+  let file = VALID_PUB.replace("PUBLIC KEY BLOCK", "ARMORED FILE");
+  let leading = format!("Some text first\n\n{}", VALID_PUB);
+  let trailing = format!("{}trailing text\n", VALID_PUB);
+  let two_armored = format!("{}{}", PGPY_PUB, VALID_PUB);
+  let cases: Vec<(&str, &[u8])> = vec![
+    ("valid-pub", VALID_PUB.as_bytes()),
+    ("valid-prv", VALID_PRV.as_bytes()),
+    ("pgpy-pub", PGPY_PUB.as_bytes()),
+    ("pgpy-prv", PGPY_PRV.as_bytes()),
+    ("corrupt-pub", CORRUPT_PUB.as_bytes()),
+    ("binary", &binary),
+    ("two binary keys", &two_binary),
+    ("truncated binary", &binary[..binary.len() / 2]),
+    ("armor headers", with_headers.as_bytes()),
+    ("crlf", crlf.as_bytes()),
+    ("no checksum", no_checksum.as_bytes()),
+    ("bad checksum", bad_checksum.as_bytes()),
+    ("no footer", no_footer.as_bytes()),
+    ("wrong footer", wrong_footer.as_bytes()),
+    ("truncated armor", truncated.as_bytes()),
+    ("message block", message.as_bytes()),
+    ("file block", file.as_bytes()),
+    ("text before the block", leading.as_bytes()),
+    ("text after the block", trailing.as_bytes()),
+    ("two armored keys", two_armored.as_bytes()),
+    ("empty", b""),
+    ("garbage", b"not a key at all"),
+    ("binary garbage", &[0x99, 0x00, 0x01, 0x02]),
+  ];
+  for (name, data) in cases {
+    let expected = parse_key_reader(data);
+    assert_eq!(parse_key(data).and_then(key_packets), expected, "{}", name);
+  }
+}
+
+/// A reproducible RNG, so two encryptions can be compared byte for byte.
+struct CountingRng(u64);
+
+impl rand_core06::RngCore for CountingRng {
+  fn next_u32(&mut self) -> u32 {
+    self.next_u64() as u32
+  }
+  fn next_u64(&mut self) -> u64 {
+    self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    self.0
+  }
+  fn fill_bytes(&mut self, dest: &mut [u8]) {
+    for chunk in dest.chunks_mut(8) {
+      let n = chunk.len();
+      chunk.copy_from_slice(&self.next_u64().to_le_bytes()[..n]);
+    }
+  }
+  fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core06::Error> {
+    self.fill_bytes(dest);
+    Ok(())
+  }
+}
+
+impl rand_core06::CryptoRng for CountingRng {}
+
+/// Armoring packets serialized into a `Vec` gives exactly what rPGP's own
+/// `to_armored_string()` writes, for keys, signatures and messages.
+#[test]
+fn test_armor_matches_rpgp() {
+  let (secret, _) = SignedSecretKey::from_string(PGPY_PRV).unwrap();
+  let public = secret.to_public_key();
+  assert_eq!(armored(BlockType::PrivateKey, &secret.to_bytes().unwrap()).unwrap(), secret.to_armored_string(ArmorOptions::default()).unwrap());
+  assert_eq!(armored(BlockType::PublicKey, &public.to_bytes().unwrap()).unwrap(), public.to_armored_string(ArmorOptions::default()).unwrap());
+  let signature = DetachedSignature::sign_binary_data(CountingRng(1), &secret.primary_key, &Password::empty(), HashAlgorithm::Sha256, &b"data"[..]).unwrap();
+  assert_eq!(armored(BlockType::Signature, &signature.to_bytes().unwrap()).unwrap(), signature.to_armored_string(ArmorOptions::default()).unwrap());
+
+  // A message as encrypt_to() builds it, larger than one 512 KiB partial
+  // chunk, written both ways from the same random numbers
+  let message: Vec<u8> = (0..600 * 1024u32).map(|i| (i % 251) as u8).collect();
+  let build = |seed: u64| {
+    let mut rng = CountingRng(seed);
+    let mut builder = MessageBuilder::from_bytes("", message.clone()).seipd_v1(&mut rng, preferred_cipher(&public));
+    builder.compression(CompressionAlgorithm::ZIP);
+    builder.encrypt_to_key(&mut rng, &public.public_subkeys[0].key).unwrap();
+    (builder, rng)
+  };
+  let (builder, rng) = build(7);
+  let ours = armored(BlockType::Message, &builder.to_vec(rng).unwrap()).unwrap();
+  let (builder, rng) = build(7);
+  assert_eq!(ours, builder.to_armored_string(rng, ArmorOptions::default()).unwrap());
 }
