@@ -73,7 +73,10 @@ impl RocketChat {
     let (parsed, mut webhook, mut password) = match split_webhook(&url.raw) {
       Some((stripped, hook)) => {
         let p = ParsedUrl::parse(&stripped)?;
-        (p, Some(unquote(&hook)), Some(hook))
+        // It doubles as the password for basic logins, which upstream
+        // decodes once like every password (`pass%2Fword` is `pass/word`)
+        let hook = unquote(&hook);
+        (p, Some(hook.clone()), Some(hook))
       }
       None => (url.clone(), None, url.password.clone()),
     };
@@ -398,9 +401,9 @@ mod tests {
     let r = rc("rockets://user:web/token@localhost:8080/@user/?mode=webhook");
     assert_eq!((r.mode, r.user.as_deref(), r.port, r.webhook.as_deref()), (Mode::Webhook, Some("user"), Some(8080), Some("web/token")));
 
-    // An explicit basic mode keeps the slash-containing password
+    // An explicit basic mode keeps the slash-containing password, decoded
     let r = rc("rockets://user:pass%2Fwithslash@localhost/#channel/?mode=basic");
-    assert_eq!((r.mode, r.password.as_deref(), r.avatar), (Mode::Basic, Some("pass%2Fwithslash"), false));
+    assert_eq!((r.mode, r.password.as_deref(), r.avatar), (Mode::Basic, Some("pass/withslash"), false));
 
     let r = rc(&format!("rockets://user:{}@localhost/#channel", "t".repeat(40)));
     assert_eq!((r.mode, r.avatar), (Mode::Token, true));
@@ -454,6 +457,24 @@ mod tests {
         json!({"text": "**hello**", "avatar": ICON, "roomId": "room"}),
       ]
     );
+  }
+
+  #[tokio::test]
+  async fn test_basic_login_decodes_slash_password() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/api/v1/login"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "success", "data": {"authToken": "AT", "userId": "UID"}})))
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/api/v1/chat.postMessage")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api/v1/logout")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+
+    let r = rc(&format!("rocket://user:pass%2Fwithslash@localhost:{}/room?mode=basic", server.address().port()));
+    assert!(r.send(&ctx()).await.unwrap());
+    let login = &requests_to(&server, "POST", "/api/v1/login").await[0];
+    let form: Vec<(String, String)> = url::form_urlencoded::parse(&login.body).into_owned().collect();
+    assert_eq!(form, vec![("username".to_string(), "user".to_string()), ("password".to_string(), "pass/withslash".to_string())]);
   }
 
   #[tokio::test]
