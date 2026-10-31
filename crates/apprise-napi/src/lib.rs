@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use apprise_core::{Apprise, NotifyContext, NotifyFormat, NotifyType, ServiceDetails, TagFilter};
+use apprise_core::{Apprise as CoreApprise, NotifyContext, NotifyFormat, NotifyType, ServiceDetails, TagFilter};
 use napi_derive::napi;
 
 // ── Data types for JS interop ────────────────────────────────────────────────
@@ -151,7 +151,7 @@ pub async fn send(options: SendOptions) -> napi::Result<SendResult> {
     options.interpret_escapes,
     options.interpret_emojis,
   )?;
-  let mut apprise = Apprise::new();
+  let mut apprise = CoreApprise::new();
 
   if let Some(urls) = &options.urls {
     apprise.add_urls(urls);
@@ -176,7 +176,7 @@ pub fn parse_url(url: String) -> Option<ServiceInfo> {
 /// List all supported notification services.
 #[napi]
 pub fn list_services() -> Vec<ServiceInfo> {
-  Apprise::all_service_details().into_iter().map(service_info).collect()
+  CoreApprise::all_service_details().into_iter().map(service_info).collect()
 }
 
 // ── Apprise class for stateful usage ─────────────────────────────────────────
@@ -190,28 +190,28 @@ pub fn list_services() -> Vec<ServiceInfo> {
 /// await a.addConfig('/etc/apprise.yml');
 /// await a.notify('Hello!', { title: 'Test', tags: ['devops'] });
 /// ```
-#[napi(js_name = "Apprise")]
-pub struct JsApprise {
+#[napi]
+pub struct Apprise {
   // A notification works on a snapshot of the services and holds no lock
   // while it sends, so the synchronous methods never wait for one (a
   // change made meanwhile copies the shared, cheaply cloned instance).
-  inner: Arc<Mutex<Arc<Apprise>>>,
+  inner: Arc<Mutex<Arc<CoreApprise>>>,
 }
 
-impl Default for JsApprise {
+impl Default for Apprise {
   fn default() -> Self {
-    Self { inner: Arc::new(Mutex::new(Arc::new(Apprise::new()))) }
+    Self { inner: Arc::new(Mutex::new(Arc::new(CoreApprise::new()))) }
   }
 }
 
-impl JsApprise {
-  fn current(&self) -> MutexGuard<'_, Arc<Apprise>> {
+impl Apprise {
+  fn current(&self) -> MutexGuard<'_, Arc<CoreApprise>> {
     self.inner.lock().unwrap_or_else(|e| e.into_inner())
   }
 }
 
 #[napi]
-impl JsApprise {
+impl Apprise {
   /// Create a new Apprise instance.
   #[napi(constructor)]
   pub fn new() -> Self {
@@ -230,7 +230,7 @@ impl JsApprise {
   #[napi]
   pub async fn add_config(&self, path: String) -> napi::Result<i32> {
     // Load without holding the instance, then move the result in.
-    let mut loaded = Apprise::with_asset(self.current().asset().clone());
+    let mut loaded = CoreApprise::with_asset(self.current().asset().clone());
     let count = loaded.add_config(&path, 1).await.map_err(|e| napi::Error::from_reason(format!("Config error: {}", e)))?;
     Arc::make_mut(&mut self.current()).absorb(loaded);
     Ok(count as i32)

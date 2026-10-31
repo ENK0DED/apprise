@@ -3,6 +3,15 @@ import { expect, test } from 'bun:test';
 // Note: these tests require the native module to be built first:
 //   cd crates/apprise-napi && bun run build
 
+test('every export of the loader is defined', async () => {
+  // The loader is generated; a name it exports that the addon lacks is
+  // undefined at runtime (the generator once exported a JsApprise alias)
+  const mod: Record<string, unknown> = await import('../index.js');
+  for (const [name, value] of Object.entries(mod)) {
+    expect(value, `export ${name}`).toBeDefined();
+  }
+});
+
 test('listServices returns array', async () => {
   const { listServices } = await import('../index.js');
   const services = listServices();

@@ -590,9 +590,8 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Apprise, JsApprise, listServices, parseUrl, send } = nativeBinding
+const { Apprise, listServices, parseUrl, send } = nativeBinding
 export { Apprise }
-export { JsApprise }
 export { listServices }
 export { parseUrl }
 export { send }

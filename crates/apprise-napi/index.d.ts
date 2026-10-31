@@ -38,7 +38,6 @@ export declare class Apprise {
   /** Clear all loaded services. */
   clear(): void
 }
-export type JsApprise = Apprise
 
 /** List all supported notification services. */
 export declare function listServices(): Array<ServiceInfo>
