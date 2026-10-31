@@ -213,9 +213,15 @@ impl PgpController {
 
   async fn source(&self, explicit: Option<&str>, max: usize, discovered: Option<PathBuf>, prefix: &str) -> KeySource {
     if let Some(source) = explicit {
-      return match crate::attachment::load_attachment(source).await {
-        Ok(att) if att.data.len() <= max => KeySource::Found(att.data, format!("{}{}", prefix, source)),
-        Ok(_) => {
+      // The limit applies while reading (upstream sets the key file's
+      // max_file_size)
+      let loaded = match crate::attachment::parse_attachment(source) {
+        Ok(parsed) => parsed.with_max_file_size(max as u64).load().await,
+        Err(e) => Err(e),
+      };
+      return match loaded {
+        Ok(att) => KeySource::Found(att.data, format!("{}{}", prefix, source)),
+        Err(crate::error::AttachError::TooLarge { .. }) => {
           tracing::warn!("PGP key {} exceeds the {} byte limit", cwe312_loggable(source, true), max);
           KeySource::Inaccessible
         }

@@ -10,7 +10,9 @@ use std::path::PathBuf;
 pub async fn read_source(source: &str, max_size: usize) -> Option<(Vec<u8>, Option<PathBuf>)> {
   if source.starts_with("http://") || source.starts_with("https://") {
     // The limit applies while downloading, not after.
-    let attachment = match crate::attachment::http::HttpSource::from_url(source).ok()?.load_limited(max_size as u64).await {
+    let mut http = crate::attachment::http::HttpSource::from_url(source).ok()?;
+    http.max_file_size = max_size as u64;
+    let attachment = match http.load().await {
       Ok(attachment) => attachment,
       Err(crate::error::AttachError::TooLarge { .. }) => {
         tracing::warn!("Remote file exceeds the {} byte limit", max_size);

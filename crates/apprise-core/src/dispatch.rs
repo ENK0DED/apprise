@@ -422,14 +422,8 @@ fn attachment_problem(svc: &dyn Notify, ctx: &NotifyContext, opts: &DispatchOpti
     // Without a body there is nothing left to send.
     return (has_attachments && ctx.body.is_empty()).then(|| format!("{name} does not support attachments; service skipped"));
   }
-  if let Some(source) = opts.attachment_errors.first() {
-    return Some(format!("Could not access {name} attachment {source}."));
-  }
-  ctx
-    .attachments
-    .iter()
-    .find(|a| a.data.len() as u64 > crate::attachment::MAX_FILE_SIZE)
-    .map(|a| format!("Content exceeds allowable maximum file length ({}KB): {}", crate::attachment::MAX_FILE_SIZE / 1024, a.name))
+  // Sizes were checked as the attachments were loaded (Apprise::dispatch_with)
+  opts.attachment_errors.first().map(|source| format!("Could not access {name} attachment {source}."))
 }
 
 /// Log a failed `send()` without leaking secrets from URLs in the error.

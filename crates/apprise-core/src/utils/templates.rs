@@ -178,16 +178,16 @@ where
 #[derive(Debug, Clone)]
 pub struct TemplateFile {
   source: AttachSource,
-  max_size: usize,
 }
 
 impl TemplateFile {
-  /// Parse a `?template=` value. `None`, after a warning, where upstream's
-  /// `AppriseAttachment.add()` fails (an unsupported schema, an
-  /// unparseable URL); the plugin must then refuse the URL.
+  /// Parse a `?template=` value, which may hold at most `max_size` bytes.
+  /// `None`, after a warning, where upstream's `AppriseAttachment.add()`
+  /// fails (an unsupported schema, an unparseable URL); the plugin must
+  /// then refuse the URL.
   pub fn parse(value: &str, max_size: usize) -> Option<Self> {
     match parse_attachment(value) {
-      Ok(source) => Some(Self { source, max_size }),
+      Ok(source) => Some(Self { source: source.with_max_file_size(max_size as u64) }),
       Err(e) => {
         tracing::warn!("The template specified could not be loaded: {}", e);
         None
@@ -204,9 +204,9 @@ impl TemplateFile {
   /// "Could not access {service} template ..." and one that cannot be
   /// read logs "{service} template ... could not be read.", as upstream.
   pub async fn read(&self, service: &str) -> Option<String> {
-    let loaded = match self.source.load_limited(self.max_size as u64).await {
-      Ok(a) if a.data.len() <= self.max_size => a,
-      Ok(_) | Err(AttachError::NotFound(_)) | Err(AttachError::TooLarge { .. }) | Err(AttachError::Disallowed(_)) => {
+    let loaded = match self.source.load().await {
+      Ok(a) => a,
+      Err(AttachError::NotFound(_)) | Err(AttachError::TooLarge { .. }) | Err(AttachError::Disallowed(_)) => {
         tracing::error!("Could not access {} template {}.", service, self.loggable());
         return None;
       }

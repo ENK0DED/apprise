@@ -746,6 +746,18 @@ apprise.notify_with_attachments(&ctx, &attach).await;
 
 `notify_tagged()` takes the same list as its last argument. As upstream does, an attachment that can never load (an unknown schema, for example) fails the whole call, while one that cannot be read right now only fails the services that take attachments; the others send the message without it.
 
+Each attachment may hold up to 1 GB. To give one its own limit, or to attach bytes you already have in memory, parse the sources yourself and use `notify_sources()`:
+```rust
+use apprise_core::attachment::{memory::MemorySource, parse_attachment, AttachSource};
+
+let sources: Vec<AttachSource> = vec![
+  // At most 5 MB; 0 would remove the limit
+  parse_attachment("/var/log/myprogram.log")?.with_max_file_size(5 * 1024 * 1024),
+  MemorySource::new("report.csv", csv_bytes, "text/csv").into(),
+];
+apprise.notify_sources(&ctx, &TagFilter::All, &sources).await;
+```
+
 ## Node.js API
 
 The Node.js package exposes the same library:
