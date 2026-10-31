@@ -325,8 +325,10 @@ impl Notify for Reddit {
     }
 
     // A link post's url field is not Markdown, so the CommonMark escapes
-    // the conversion added (e.g. "my\_page") are removed from it
-    let link = if ctx.body_format == NotifyFormat::Markdown { commonmark_decode_backslash_escapes(&ctx.body) } else { ctx.body.clone() };
+    // the conversion added (e.g. "my\_page") are removed from it. A body
+    // with no declared format had none added and is used as written.
+    let link =
+      if ctx.body_format == NotifyFormat::Markdown && !ctx.body_passthrough { commonmark_decode_backslash_escapes(&ctx.body) } else { ctx.body.clone() };
 
     let kind = if self.kind == "auto" {
       let opts = ParseOptions { verify_host: true, ..Default::default() };
@@ -531,6 +533,29 @@ mod tests {
     // The token is reused by later notifications
     assert!(with_test_base(server.uri(), r.send(&c)).await.unwrap());
     assert_eq!(requests_to(&server, "POST", AUTH).await.len(), 1);
+  }
+
+  #[tokio::test]
+  async fn test_passthrough_link_keeps_its_backslashes() {
+    // What upstream sends for notify(body_format=None), then "markdown"
+    let link = r"https://example.com/my\_page?a=1&b=2";
+    for (query, body, passthrough, kind, field_name, sent) in [
+      ("", link, true, "link", "url", link),
+      ("", link, false, "link", "url", "https://example.com/my_page?a=1&b=2"),
+      ("", r"my\_var 2\*3", true, "self", "text", r"my\_var 2\*3"),
+      ("?kind=link", r"my\_var 2\*3", true, "link", "url", r"my\_var 2\*3"),
+      ("?kind=link", r"my\_var 2\*3", false, "link", "url", "my_var 2*3"),
+    ] {
+      let server = server_with(good(), good()).await;
+      let mut a = crate::Apprise::new();
+      assert!(a.add(&format!("reddit://user:pass@app_id/secret/apprise{query}")));
+      let format = if passthrough { NotifyFormat::Text } else { NotifyFormat::Markdown };
+      let c = NotifyContext { body_passthrough: passthrough, ..ctx("", body, format) };
+      assert!(with_test_base(server.uri(), a.notify(&c)).await.is_success());
+      let post = &requests_to(&server, "POST", SUBMIT).await[0];
+      let label = format!("{query} {body} passthrough={passthrough}");
+      assert_eq!((field(post, "kind").as_deref(), field(post, field_name).as_deref()), (Some(kind), Some(sent)), "{label}");
+    }
   }
 
   #[tokio::test]
