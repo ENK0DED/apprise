@@ -328,9 +328,11 @@ impl Apprise {
     self.services.is_empty()
   }
 
-  /// Clear all loaded services.
+  /// Remove every loaded service, along with the configuration entries
+  /// still waiting for a template value.
   pub fn clear(&mut self) {
     self.services.clear();
+    self.config.pending.clear();
   }
 
   /// Move the services and pending template entries `other` loaded into
@@ -595,6 +597,29 @@ mod tests {
     let a = Apprise::with_asset(AppriseAsset::default());
     assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     drop(a);
+  }
+
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_clear_removes_entries_waiting_for_template_values() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/notify")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = Apprise::new();
+    a.add_config_text("template:\n  host:\nurls:\n  - json://${HOST}/notify\n", None, 1).await.unwrap();
+    assert_eq!(a.pending_templates().len(), 1);
+
+    a.clear();
+    assert!(a.pending_templates().is_empty());
+    assert!(a.add(&format!("json://{}/notify", server.address())));
+    let result = a.notify(&NotifyContext { body: "x".into(), ..Default::default() }).await;
+    assert_eq!((result.status, result.total, result.succeeded), (ResultStatus::Success, 1, 1));
+
+    // A value supplied later brings nothing back
+    a.set_template_values([("host".to_string(), server.address().to_string())].into()).unwrap();
+    assert_eq!(a.len(), 1);
   }
 
   /// The `message` of every JSON notification `server` received, in order.
