@@ -916,9 +916,11 @@ impl PersistentStore {
   /// Find files below `path` not touched for `expires` seconds (31 days
   /// when `None`), limited to `namespaces` (prefixes) when given. With
   /// `action`, they are removed, along with namespace directories left
-  /// empty.
+  /// empty. An `expires` reaching back past the earliest time the system
+  /// clock can hold matches no file (upstream raises `OverflowError`).
   pub fn disk_prune(path: &Path, namespaces: Option<&[String]>, expires: Option<u64>, action: bool) -> BTreeMap<String, Vec<PruneRecord>> {
-    let cutoff = SystemTime::now() - Duration::from_secs(expires.unwrap_or(DEFAULT_FILE_EXPIRY));
+    // `None`: no file can be that old
+    let cutoff = SystemTime::now().checked_sub(Duration::from_secs(expires.unwrap_or(DEFAULT_FILE_EXPIRY)));
     let mut map = BTreeMap::new();
     for namespace in Self::disk_scan(path, namespaces.unwrap_or(&[]), true) {
       let base = path.join(&namespace);
@@ -946,7 +948,7 @@ impl PersistentStore {
             continue;
           }
         };
-        if mtime > cutoff {
+        if cutoff.is_none_or(|cutoff| mtime > cutoff) {
           continue;
         }
         let mut record = PruneRecord { path: file.clone(), removed: false };

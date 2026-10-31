@@ -554,11 +554,9 @@ fn storage(
   } else {
     (!uid_filters.is_empty()).then(|| uid_filters.clone())
   };
-  // Upstream crashes on a day count this large; prune nothing instead of
-  // wrapping around to a recent cutoff.
-  let Some(expires) = (prune_days as u64).checked_mul(86_400) else {
-    return usage_error("The --storage-prune-days (-SPD) value is too large.");
-  };
+  // Upstream crashes on a day count this large. No file is that old, so
+  // prune nothing: past the clock's range `disk_prune()` matches no file.
+  let expires = (prune_days as u64).saturating_mul(86_400);
   PersistentStore::disk_prune(path, namespaces.as_deref(), Some(expires), !dry_run);
   0
 }
@@ -660,5 +658,27 @@ mod tests {
   fn test_fit() {
     assert_eq!(fit("abcdef", 6, 3), "abcdef");
     assert_eq!(fit("abcdefg", 6, 3), "abc...");
+  }
+
+  /// A day count reaching back past the clock's range prunes nothing.
+  /// Upstream raises `OverflowError` from about 739,000 days.
+  #[tokio::test]
+  async fn test_huge_prune_days_prune_nothing() {
+    let dir = std::env::temp_dir().join(format!("apprise-cli-prune-{}", std::process::id()));
+    let file = dir.join("abcdef12").join("var").join("default.psdata");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, b"data").unwrap();
+    std::fs::File::options().append(true).open(&file).unwrap().set_modified(std::time::UNIX_EPOCH).unwrap();
+    let path = dir.to_string_lossy().into_owned();
+    let config = dir.join("none.yml").to_string_lossy().into_owned();
+    let argv = |days: &str| ["storage", "prune", "-SPD", days, "-S", &path, "-c", &config].map(String::from).to_vec();
+    // Too far back for the clock, then too many seconds for a u64
+    for days in ["150000000000000", "9223372036854775807"] {
+      assert_eq!(run(&argv(days)).await, 0, "{days}");
+      assert!(file.exists(), "{days}");
+    }
+    assert_eq!(run(&argv("1")).await, 0);
+    assert!(!file.exists());
+    std::fs::remove_dir_all(&dir).ok();
   }
 }

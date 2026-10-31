@@ -1,4 +1,4 @@
-"""Record upstream Slack's legacy-API text for bodies with no input format.
+"""Record Slack's legacy-API text for bodies with no input format.
 
 Usage:
   python -I gen_slack_passthrough.py OUT.json [COUNT [SEED]]
@@ -6,16 +6,32 @@ Usage:
 Sends COUNT random bodies (default 30000) through upstream's
 `Apprise().notify(body_format=None)` to a legacy Slack webhook with
 `?format=markdown`, where upstream escapes `&`, `<` and `>` and turns
-channel, user and URL links back into links. Writes a sample for
-`notify/slack.rs`: 250 bodies that had links restored, 100 that upstream
-failed on (it raises), and 50 that were only escaped, as
-`[{"body", "ok", "text"}]`. `text` is the attachment text upstream posted,
-or null when the notification failed. Requests are patched; nothing leaves
-the machine.
+channel, user and URL links back into links.
+
+Each body is sent twice: through upstream as it is, then with the port's
+deliberate fixes applied to upstream's code, which is what `text` records:
+
+- Upstream's `re.sub(re.escape(match), link, body, flags=re.IGNORECASE)`
+  reads the link as a replacement template (backslashes are escapes, `\\d`
+  or `\\1` fail the send) and also replaces copies in other cases. The
+  port puts the link in as written and replaces exact copies only.
+- Upstream's `_re_formatting_map` key `r"\\r\\*\\n"` never equals the CR `*`
+  LF its pattern matches, so the lookup raises `KeyError`. The port has
+  no such rule and sends CR `*` LF as written.
+
+The fixed bodies in `CR_STAR_LF` go first: random ones rarely have those
+three characters in a row.
+
+Writes a sample for `notify/slack.rs` as `[{"body", "text"}]`, plus
+`"upstream"` where upstream sent something else: 250 bodies that had
+links restored, 100 where upstream differs and 50 that were only escaped.
+`text` and `upstream` are the attachment text posted; `upstream` is null
+where upstream failed. Requests are patched; nothing leaves the machine.
 """
 
 import json
 import random
+import re
 import sys
 
 import requests
@@ -31,6 +47,26 @@ FRAGMENTS = [
     " | ",
 ]
 
+CR_STAR_LF = [
+    "a\r*\nb",
+    "x\r\r*\n\n*\r*\ny",
+    "<!here>\r*\n<@U1|x> & <https://x.com/?a=1&b=2|site>",
+    "&lt;!chan&gt;\r*\n\\d <@U\\1>",
+]
+
+
+class LiteralRe:
+    """`re` for upstream's Slack module with the port's fix: its only
+    `re.sub()` calls put a link in place of each exact copy of a match."""
+
+    def __getattr__(self, name):
+        return getattr(re, name)
+
+    @staticmethod
+    def sub(pattern, repl, string, count=0, flags=0):
+        assert flags == re.IGNORECASE and isinstance(repl, str)
+        return re.sub(pattern, lambda _: repl, string, count=count)
+
 
 def main():
     out_path = sys.argv[1]
@@ -38,6 +74,7 @@ def main():
     rnd = random.Random(int(sys.argv[3]) if len(sys.argv) > 3 else 11)
 
     import apprise
+    from apprise.plugins import slack
 
     posted = []
 
@@ -54,36 +91,58 @@ def main():
     # No pause between requests
     apprise.URLBase.throttle = lambda self, *a, **k: None
 
-    a = apprise.Apprise()
-    assert a.add("slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/"
-                 "?format=markdown&footer=no&image=no")
+    url = ("slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/"
+           "?format=markdown&footer=no&image=no")
+    upstream_a = apprise.Apprise()
+    assert upstream_a.add(url)
+    # Each instance compiles its formatting pattern from the class map;
+    # the lookups agree, as the dropped key never matched anything
+    cls = slack.NotifySlack
+    cls._re_formatting_map = {
+        k: v for k, v in cls._re_formatting_map.items() if k != r"\r\*\n"}
+    assert list(cls._re_formatting_map) == ["&", "<", ">"]
+    fixed_a = apprise.Apprise()
+    assert fixed_a.add(url)
+
+    def send(body, a, module_re):
+        slack.re = module_re
+        posted.clear()
+        if not a.notify(body=body, title="", body_format=None):
+            return None
+        payload = posted[-1]
+        if isinstance(payload, (str, bytes)):
+            payload = json.loads(payload)
+        return payload["attachments"][0]["text"]
 
     def escaped(body):
         body = body.rstrip()
         return body.replace("&", "&amp;").replace("<", "&lt;") \
             .replace(">", "&gt;")
 
-    groups = {"linked": [], "failed": [], "escaped": []}
+    def bodies():
+        yield from CR_STAR_LF
+        for _ in range(count):
+            yield "".join(rnd.choice(FRAGMENTS)
+                          for _ in range(rnd.randint(1, 14)))
+
+    groups = {"linked": [], "differs": [], "escaped": []}
     seen = set()
-    for _ in range(count):
-        body = "".join(rnd.choice(FRAGMENTS)
-                       for _ in range(rnd.randint(1, 14)))
+    for body in bodies():
         if not body.strip() or body in seen:
             continue
         seen.add(body)
-        posted.clear()
-        ok = bool(a.notify(body=body, title="", body_format=None))
-        text = None
-        if ok:
-            payload = posted[-1]
-            if isinstance(payload, (str, bytes)):
-                payload = json.loads(payload)
-            text = payload["attachments"][0]["text"]
-        group = ("failed" if not ok
-                 else "escaped" if text == escaped(body) else "linked")
-        groups[group].append({"body": body, "ok": ok, "text": text})
+        upstream = send(body, upstream_a, re)
+        text = send(body, fixed_a, LiteralRe())
+        assert text is not None, f"the port sends every body: {body!r}"
+        case = {"body": body, "text": text}
+        if upstream != text:
+            case["upstream"] = upstream
+            group = "differs"
+        else:
+            group = "escaped" if text == escaped(body) else "linked"
+        groups[group].append(case)
 
-    sample = (groups["linked"][:250] + groups["failed"][:100]
+    sample = (groups["linked"][:250] + groups["differs"][:100]
               + groups["escaped"][:50])
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(sample, fh, ensure_ascii=False, indent=0)
