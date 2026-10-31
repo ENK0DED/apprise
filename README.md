@@ -319,7 +319,7 @@ docker compose run --rm apprise -b 'Hello from Docker'
 
 ## Node.js Package
 
-`@enk0ded/apprise` is the library as a native Node.js addon (built with [napi-rs](https://napi.rs/)). CI builds it for macOS (x64, arm64), Windows (x64, arm64), Linux with glibc or musl (x64, arm64) and Android (arm64), and publishes it to npm when a release commit lands on `master`. It needs Node.js 25 or newer, and also runs under Bun.
+`@enk0ded/apprise` is the library as a native Node.js addon (built with [napi-rs](https://napi.rs/)). CI builds it for macOS (x64, arm64), Windows (x64, arm64), Linux with glibc or musl (x64, arm64) and Android (arm64), and publishes it to npm when a release commit lands on `master`, through npm trusted publishing, so every release carries a [provenance attestation](https://docs.npmjs.com/generating-provenance-statements) linking it to the workflow run that built it. It needs Node.js 25 or newer, and also runs under Bun.
 ```bash
 npm install @enk0ded/apprise
 ```

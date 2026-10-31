@@ -82,7 +82,14 @@ bun test
 ```
 
 `bun run build:debug` regenerates `index.js` and `index.d.ts`; commit them
-when the binding's API or the package version changed.
+when the binding's API or the package version changed. `bun run typecheck`
+checks the TypeScript files, as CI does.
+
+Releases publish to npm through trusted publishing: the publish job signs in
+with its GitHub OIDC token, so there is no npm token secret, and npm attaches
+provenance by itself. Each package (`@enk0ded/apprise` and every
+`@enk0ded/apprise-<platform>`) needs `ENK0DED/apprise` with the `CI.yml`
+workflow set as its trusted publisher on npmjs.com.
 
 CI runs `cargo test --workspace --exclude apprise-napi`, the core tests in
 the other three feature sets above and the lint steps (clippy also with
