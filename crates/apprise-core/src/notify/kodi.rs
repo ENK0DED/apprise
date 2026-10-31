@@ -122,6 +122,18 @@ impl Notify for Kodi {
   fn body_max_line_count(&self) -> usize {
     2
   }
+  /// Upstream's: the protocol's schema, the credentials, the host and the
+  /// port (8080, or 443 over TLS, when none is given), each as Python's
+  /// `str()` writes it, so a missing value is `None`.
+  fn url_identifier(&self) -> Option<Vec<String>> {
+    let schema = match self.protocol {
+      Protocol::Xbmc => "xbmc",
+      Protocol::Kodi => "kodi",
+    };
+    let port = self.port.unwrap_or(if self.secure { 443 } else { XBMC_DEFAULT_PORT });
+    let text = |v: &Option<String>| v.clone().unwrap_or_else(|| "None".into());
+    Some(vec![format!("{}{}", schema, if self.secure { "s" } else { "" }), text(&self.user), text(&self.password), self.host.clone(), port.to_string()])
+  }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let schema = if self.secure { "https" } else { "http" };
@@ -257,6 +269,42 @@ mod tests {
     let obj = parse("kodi://user:pass@localhost").unwrap();
     assert_eq!(obj.user.as_deref(), Some("user"));
     assert_eq!(obj.password.as_deref(), Some("pass"));
+  }
+
+  #[test]
+  fn test_storage_id_matches_upstream() {
+    // The uid upstream prints for every URL of its test file that loads
+    for (url, uid) in [
+      ("kodi://192.168.4.1", "96b97d3c"),
+      ("kodi://[2001:db8:002a:3256:adfe:05c0:0003:0006]:8282", "9e488471"),
+      ("kodi://[2001:db8:002a:3256:adfe:05c0:0003:0006]", "af66fbd7"),
+      ("kodi://localhost", "1b25ac18"),
+      ("kodi://localhost:8080", "1b25ac18"),
+      ("kodis://localhost:443", "e59aa063"),
+      ("kodis://localhost:8080/path/", "b2314261"),
+      ("kodis://localhost", "e59aa063"),
+      ("kodis://user:pass@localhost", "b440afb0"),
+      ("kodis://user:password@localhost:8080", "76500587"),
+      ("kodi://user:pass@localhost", "50de9b67"),
+      ("kodi://user:pass@localhost:8080", "50de9b67"),
+      ("kodi://user:pass@localhost:8081", "e0589209"),
+      ("kodi://user:pass@localhost:8082", "aca7bf8a"),
+      ("kodi://user:pass@localhost:8083", "f4b48387"),
+      ("xbmc://localhost:8080", "ca3b303f"),
+      ("xbmc://localhost", "ca3b303f"),
+      ("xbmc://localhost?duration=14", "ca3b303f"),
+      ("xbmc://localhost?duration=-1", "ca3b303f"),
+      ("xbmc://localhost?duration=invalid", "ca3b303f"),
+      ("xbmc://user@localhost", "8a053651"),
+      ("xbmc://user:pass@localhost:8080", "cd2639e5"),
+      ("xbmc://user:pass@localhost:8081", "f0406091"),
+      ("xbmc://user:pass@localhost:8082", "3570680a"),
+      ("xbmc://user:pass@localhost:8083", "380b9870"),
+      ("xbmc://user:pass@localhost", "cd2639e5"),
+    ] {
+      let svc = from_url(url).unwrap_or_else(|| panic!("should load: {url}"));
+      assert_eq!(crate::notify::options::url_id(svc.as_ref(), b"", 8).as_deref(), Some(uid), "{url}");
+    }
   }
 
   #[test]
