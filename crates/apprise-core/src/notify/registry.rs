@@ -387,7 +387,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(streamlabs::Streamlabs::from_url, "strmlabs");
   reg!(synology::Synology::from_url, "synology", "synologys");
   reg!(syslog::Syslog::from_url, "syslog");
-  reg!(techuluspush::TechulusPush::from_url, "push", "techulus");
+  reg!(techuluspush::TechulusPush::from_url, "push");
   reg!(telegram::Telegram::from_url, "tgram");
   reg!(telesign::Telesign::from_url, "telesign");
   reg!(telnyx::Telnyx::from_url, "telnyx");
