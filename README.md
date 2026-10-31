@@ -336,7 +336,7 @@ The package is built with every feature the binding has, which includes PGP/MIME
 
 ## Cargo Features
 
-`apprise-core` has the features below, and the CLI forwards each of them under the same name. The size column is how much each one adds to the x86-64 Linux release binary of the CLI, which is about 8.2 MB with the default features, 9.7 MB with `pgp` added and 7.4 MB with no features at all. Sizes vary by platform.
+`apprise-core` has the features below, and the CLI forwards each of them under the same name. The size column is how much each one adds to the x86-64 Linux release binary of the CLI, which is about 8.8 MB with the default features, 10.3 MB with `pgp` added and 7.5 MB with no features at all. Sizes vary by platform.
 
 | Feature | Default | What it enables | Release size |
 | ------- | ------- | --------------- | ------------ |
