@@ -131,11 +131,30 @@ fn yaml_scalar(v: &Value) -> String {
 /// argument that carries the same value. Settings that name the same list
 /// add up; a token that stands for several URL values is dropped. Siblings
 /// and children go through this separately, before they are merged.
+///
+/// Settings with one prefix (`+name`, `-name`, `:name`) become one token
+/// named after the prefix, holding a mapping of names to Python's `str()`
+/// of their values: upstream collects them into the one plugin argument
+/// that prefix fills (JSON's `headers`), which replaces the URL's, and a
+/// child's replaces a sibling's.
 fn special_tokens(schema: &str, mut tokens: Tokens) -> Tokens {
   if let Some(pass) = tokens.shift_remove("pass")
     && tokens.get("password").is_none_or(Value::is_null)
   {
     tokens.insert("password".to_string(), pass);
+  }
+  for prefix in URL_ARG_PREFIXES {
+    let mut group = Mapping::new();
+    tokens.retain(|key, value| match key.strip_prefix(prefix) {
+      Some(name) => {
+        group.insert(Value::String(name.to_string()), Value::String(value.python_str()));
+        false
+      }
+      None => true,
+    });
+    if !group.is_empty() {
+      tokens.insert(prefix.to_string(), Value::Mapping(group));
+    }
   }
   let mut out = Tokens::new();
   let mut lists = BTreeSet::new();
@@ -566,6 +585,11 @@ fn apply_tokens(parsed: &mut ParsedUrl, tokens: Tokens, entry: usize, item: usiz
     if key == "asset" || key == "schema" {
       continue;
     }
+    if let (Some(prefix), Value::Mapping(group)) = (URL_ARG_PREFIXES.into_iter().find(|p| key == *p), &value) {
+      // The settings replace the URL's own arguments with this prefix
+      replace_prefixed_args(parsed, prefix, group);
+      continue;
+    }
     let prefixed = key.starts_with(['+', '-', ':']);
     if !prefixed && !is_valid_token(&key) {
       tracing::warn!("Ignoring invalid token ({}) found in YAML configuration entry #{}, item #{}", key, entry, item);
@@ -585,6 +609,28 @@ fn apply_tokens(parsed: &mut ParsedUrl, tokens: Tokens, entry: usize, item: usiz
     parsed.set_arg(&key, &text);
   }
   Ok(())
+}
+
+/// The prefixes of URL arguments that fill a plugin argument together
+/// (`?+name=` headers, `?-name=` and `?:name=` for others).
+const URL_ARG_PREFIXES: [&str; 3] = ["+", "-", ":"];
+
+/// Drop the URL's arguments with `prefix` (for `+` also those whose `+`
+/// was decoded to a space) and set `group`'s names under it instead.
+fn replace_prefixed_args(parsed: &mut ParsedUrl, prefix: &str, group: &Mapping) {
+  let starts = |k: &str| k.starts_with(prefix) || (prefix == "+" && k.starts_with(' '));
+  parsed.qsd.retain(|k, _| !starts(k));
+  parsed.qsd_order.retain(|k| !starts(k));
+  match prefix {
+    "+" => parsed.qsd_add.clear(),
+    "-" => parsed.qsd_del.clear(),
+    _ => parsed.qsd_colon.clear(),
+  }
+  for (name, value) in group.iter() {
+    if let (Value::String(name), Value::String(value)) = (name, value) {
+      parsed.set_arg(&format!("{prefix}{name}"), value);
+    }
+  }
 }
 
 /// A YAML `user`, `password`, `host` or `port`, taken the way upstream's
@@ -918,6 +964,31 @@ urls:
     assert_eq!(got[0].get("to"), Some("child"));
     // The same names do nothing for a service without those tokens
     assert_eq!(resolved("urls:\n  - json://localhost:\n      topic: x\n")[0].get("topic"), Some("x"));
+  }
+
+  #[test]
+  fn test_prefixed_settings_replace_the_url_ones() {
+    // What upstream's json:// gets as headers (+), payload extras (:) and
+    // params (-) from each document: the settings with one prefix replace
+    // the URL's, a child's replace a sibling's, and values are str()
+    let args = |doc: &str| {
+      let p = resolved(doc).remove(0);
+      let list = |m: &IndexMap<String, String>| m.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>();
+      (list(&p.qsd_add), list(&p.qsd_colon), list(&p.qsd_del))
+    };
+    let none: Vec<String> = Vec::new();
+    let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(args("urls:\n  - json://localhost/?+X-A=1&:keep=u&-drop=u:\n      +X-B: 2\n"), (strs(&["X-B=2"]), strs(&["keep=u"]), strs(&["drop=u"])));
+    assert_eq!(args("urls:\n  - json://localhost/?+X-A=1:\n      - +X-C: c\n    +X-S: s\n"), (strs(&["X-C=c"]), none.clone(), none.clone()));
+    assert_eq!(args("urls:\n  - json://localhost/?+X-A=1&:k=u:\n      - tag: t\n    +X-S: s\n"), (strs(&["X-S=s"]), strs(&["k=u"]), none.clone()));
+    assert_eq!(
+      args("urls:\n  - json://localhost/:\n      +X-N: null\n      +X-T: yes\n      +X-F: 1.50\n      +X-L: [a, 1]\n"),
+      (strs(&["X-N=None", "X-T=True", "X-F=1.5", "X-L=['a', 1]"]), none.clone(), none.clone())
+    );
+    assert_eq!(args("urls:\n  - json://localhost/?+X-A=1&:k=u&-p=u:\n      :k2: v\n"), (strs(&["X-A=1"]), strs(&["k2=v"]), strs(&["p=u"])));
+    // The raw arguments follow
+    let p = resolved("urls:\n  - json://localhost/?+X-A=1&other=1:\n      +X-B: 2\n").remove(0);
+    assert_eq!((p.get("+X-A"), p.get("+X-B"), p.get("other")), (None, Some("2"), Some("1")));
   }
 
   #[test]
