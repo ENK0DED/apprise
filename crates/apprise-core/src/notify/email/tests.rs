@@ -432,6 +432,16 @@ fn name_str(name: &FromName) -> Option<String> {
   }
 }
 
+#[test]
+fn test_storage_id_matches_upstream() {
+  // uid: lines of upstream's apprise --dry-run; a missing value hashes as "None"
+  crate::notify::custom_json::assert_upstream_uids(&[
+    ("mailto://localhost?from=test@example.com&to=test@example.com", "fa85b224"),
+    ("mailto://user@localhost?from=test@example.com", "99c3cf48"),
+    ("mailto://user:pass@hotmail.com", "e7c5adca"),
+  ]);
+}
+
 /// Upstream's own parse results for every URL in its email and Delta Chat
 /// tests (and more), dumped from Apprise 2.1.0 (`tz=` cases are left out:
 /// the core does not know IANA zone names).

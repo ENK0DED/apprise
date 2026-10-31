@@ -63,7 +63,7 @@ impl AppriseApi {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // Native http(s)://host/[path/]notify/{token} URLs arrive here already
     // rewritten by the registry as apprise(s)://host/[path/]{token}/?version=1
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     let encoded: Vec<&str> = url.path.split('/').filter(|s| !s.is_empty()).collect();
     // Upstream unquotes these a second time
     let arg = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote);
@@ -317,6 +317,12 @@ mod tests {
     }
     // Native URLs take a token of at most 32 characters
     assert!(from_url(&format!("http://example.com/notify/{}", "d".repeat(33))).is_none());
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("apprise://{h}/token");
   }
 
   #[test]

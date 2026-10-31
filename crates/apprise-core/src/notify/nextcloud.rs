@@ -60,7 +60,7 @@ pub struct Nextcloud {
 
 impl Nextcloud {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
 
     let mut targets: Vec<String> = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
@@ -203,14 +203,15 @@ impl Notify for Nextcloud {
   }
   /// The server, not its users, decides what the group cache holds
   fn url_identifier(&self) -> Option<Vec<String>> {
-    let opt = |v: &Option<String>| v.clone().unwrap_or_else(|| "\0".to_string());
+    // Upstream hashes str() of each value, so a missing one is "None"
+    let opt = |v: &Option<String>| v.clone().unwrap_or_else(|| "None".to_string());
     let schema = if self.secure { "nclouds" } else { "ncloud" };
     Some(vec![
       schema.to_string(),
       opt(&self.user),
       opt(&self.password),
       self.host.clone(),
-      self.port.map(|p| p.to_string()).unwrap_or_else(|| "\0".to_string()),
+      self.port.map_or_else(|| "None".to_string(), |p| p.to_string()),
       self.url_prefix.clone(),
     ])
   }
@@ -284,6 +285,16 @@ mod tests {
   use wiremock::{Mock, MockServer, ResponseTemplate};
 
   #[test]
+  fn test_storage_id_matches_upstream() {
+    // uid: lines of upstream's apprise --dry-run; a missing value hashes as "None"
+    crate::notify::custom_json::assert_upstream_uids(&[
+      ("ncloud://localhost", "fe64e948"),
+      ("ncloud://user:pass@localhost/admin", "3c95bec3"),
+      ("ncloud://user@localhost:8080/admin?url_prefix=/abc", "9adc5c2a"),
+    ]);
+  }
+
+  #[test]
   fn test_valid_urls() {
     let urls = vec![
       "ncloud://localhost",
@@ -321,6 +332,12 @@ mod tests {
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("ncloud://user:pass@{h}/bob");
   }
 
   fn nc(url: &str) -> Nextcloud {

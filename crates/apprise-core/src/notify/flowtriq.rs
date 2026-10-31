@@ -23,7 +23,7 @@ pub struct Flowtriq {
 
 impl Flowtriq {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     // validate_regex(): must start with a non-space character; surrounding
     // whitespace is then stripped
     let apikey = url.user.as_deref().filter(|k| k.chars().next().is_some_and(|c| !c.is_whitespace()))?.trim().to_string();
@@ -154,6 +154,12 @@ mod tests {
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("flowtriq://myapikey@{h}/hooks/abc123");
   }
 
   #[test]

@@ -23,7 +23,7 @@ pub struct ParsePlatform {
 impl ParsePlatform {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // parsep[s]://{app_id}:{master_key}@{host}[:{port}][/{path}]
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     let qsd = |k: &str| url.get(k).filter(|v| !v.is_empty()).map(str::to_string);
     let token = |v: Option<String>| v.as_deref().and_then(|v| v.split_whitespace().next()).map(str::to_string);
 
@@ -149,6 +149,12 @@ mod tests {
     assert_eq!(obj.devices, vec!["ios", "android"]);
     let obj = ParsePlatform::from_url(&ParsedUrl::parse("parsep://a:b@localhost?device=android&app_id=x").unwrap()).unwrap();
     assert_eq!((obj.devices.clone(), obj.application_id.as_str()), (vec!["android".to_string()], "x"));
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("parsep://a:b@{h}/path");
   }
 
   #[tokio::test]

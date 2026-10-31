@@ -26,7 +26,7 @@ pub struct OneBot {
 
 impl OneBot {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
 
     // Read the token from the query string (unquoted once more, as
     // upstream does) or URL user field
@@ -289,6 +289,12 @@ mod tests {
     for url in ["onebot://", "onebot://:@/"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("onebot://{h}/@1234");
   }
 
   #[test]

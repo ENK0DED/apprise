@@ -90,10 +90,12 @@ async fn test_templates_wait_for_values() {
   assert_eq!(a.add_config_text(yaml, None, 1).await.unwrap(), 1);
   assert!(a.set_template_values(HashMap::from([("bad-name".to_string(), "x".to_string())])).is_err());
 
-  // Templates can be switched off: the markers are literal text
+  // Templates can be switched off: the markers are literal text. JSON
+  // verifies its host, so the marker sits in the path here.
+  let literal = "template:\n  - token\nurls:\n  - json://localhost/${token}:\n      tag: t\n";
   let mut a = Apprise::new();
   a.set_allow_templates(false);
-  assert_eq!(a.add_config_text(yaml, None, 1).await.unwrap(), 1);
+  assert_eq!(a.add_config_text(literal, None, 1).await.unwrap(), 1);
 }
 
 #[test]

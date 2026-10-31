@@ -23,7 +23,7 @@ pub struct Synology {
 
 impl Synology {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     let encoded: Vec<&str> = url.path.split('/').filter(|s| !s.is_empty()).collect();
 
     // The token is ?token= or the first path element; the rest of the
@@ -152,6 +152,12 @@ mod tests {
     ] {
       assert!(from_url(url).is_some(), "Should parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("synology://u:p@{h}/token");
   }
 
   fn syn(url: &str) -> Synology {

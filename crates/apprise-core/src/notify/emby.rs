@@ -77,7 +77,7 @@ impl Emby {
   }
 
   pub(crate) fn from_url_as(url: &ParsedUrl, flavor: Flavor) -> Option<Self> {
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     let Some(user) = url.user.clone().filter(|u| !u.is_empty()) else {
       tracing::warn!("No {} username was specified.", flavor.details().service_name);
       return None;
@@ -278,6 +278,12 @@ mod tests {
     assert_eq!(e.base_url(), "https://localhost:8096");
     assert!(!e.modal);
     assert!(Emby::from_url(&ParsedUrl::parse("emby://l2g@localhost?modal=yes").unwrap()).unwrap().modal);
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("emby://user@{h}");
   }
 
   fn emby_for(server: &MockServer, auth: &str, query: &str) -> Emby {

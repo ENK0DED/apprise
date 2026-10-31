@@ -29,23 +29,42 @@ fn is_chat_id(target: &str) -> bool {
   !target.is_empty() && target.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
+/// Upstream's rewrite of `{schema}://{bot_id}:` (or `%3A`) to
+/// `{schema}://{bot_id}/` before parsing. The colon inside the Bot Token
+/// looks like a port to a URL parser, so the token is split across the
+/// host and the first path entry instead. `None` when the URL does not
+/// start that way.
+pub(crate) fn token_colon_to_slash(url: &str) -> Option<String> {
+  let (schema, rest) = url.split_once("://")?;
+  if schema.is_empty() || !schema.chars().all(|c| c.is_ascii_alphanumeric()) {
+    return None;
+  }
+  let id = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+  if id == 0 {
+    return None;
+  }
+  let after = &rest[id..];
+  let secret = after.strip_prefix(':').or_else(|| after.get(..3).filter(|p| p.eq_ignore_ascii_case("%3A")).map(|_| &after[3..]))?;
+  Some(format!("{}://{}/{}", schema, &rest[..id], secret))
+}
+
 impl Zalo {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let mut host = url.host.clone().unwrap_or_default();
-    let mut entries = url.path_parts.clone();
-
-    // The colon inside the Bot Token looks like a port to a URL parser.
-    // Upstream swaps it for a slash so the token is split across the host
-    // and the first path entry; do the same here.
-    if let Some(port) = url.port {
-      entries.insert(0, port.to_string());
-    } else if let Some((id, secret)) = host.split_once(':').filter(|(id, _)| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit())) {
-      let (id, secret) = (id.to_string(), secret.to_string());
-      if !secret.is_empty() {
-        entries.insert(0, secret);
+    // The registry applies token_colon_to_slash() before parsing. A URL
+    // parsed without it has the secret as a port (leading zeros lost) or
+    // left in the host, so parse it again the upstream way.
+    let reparsed;
+    let url = match token_colon_to_slash(&url.raw) {
+      Some(raw) if url.port.is_some() || url.host.as_deref().is_some_and(|h| h.contains(':')) => {
+        let mut p = ParsedUrl::parse(&raw)?;
+        p.assigned_tags = url.assigned_tags.clone();
+        reparsed = p;
+        &reparsed
       }
-      host = id;
-    }
+      _ => url,
+    };
+    let host = url.host.clone().unwrap_or_default();
+    let mut entries = url.path_parts.clone();
 
     let token = match url.get("token").filter(|t| !t.is_empty()) {
       Some(token) => {
@@ -288,6 +307,44 @@ mod tests {
     let svc = from_url("zalo://12345:secret-key/chatA/chatB").unwrap();
     let ok = crate::notify::with_test_base(server.uri(), svc.send(&ctx("# Title\n**Body**", NotifyFormat::Markdown))).await.unwrap();
     assert!(ok);
+  }
+
+  #[test]
+  fn test_numeric_secret_is_not_a_port() {
+    assert_eq!(token_colon_to_slash("zalo://123:00123/chat").as_deref(), Some("zalo://123/00123/chat"));
+    assert_eq!(token_colon_to_slash("ZALO://123%3a456").as_deref(), Some("ZALO://123/456"));
+    for url in ["zalo://abc:123/chat", "zalo://123/456", "zalo://?token=1:2", "za-lo://123:456", "zalo:123:456"] {
+      assert_eq!(token_colon_to_slash(url), None, "{url}");
+    }
+
+    let token = |url: &str| Zalo::from_url(&crate::notify::registry::parse_service_url(url).unwrap()).unwrap().token;
+    for (url, expected) in [
+      // pycapture.py sends these to /bot{expected}/sendMessage
+      ("zalo://123456789:00123/chat", "123456789:00123"),
+      ("zalo://123456789:65536/chat", "123456789:65536"),
+      ("zalo://123456789%3a00123/chat", "123456789:00123"),
+      ("zalo://123456789:00123/chat?port=7", "123456789:00123"),
+      ("zalo://123456789/abcdef/chat?port=5", "123456789:abcdef"),
+    ] {
+      assert_eq!(token(url), expected, "{url}");
+      // Parsed without the registry's rewrite, the plugin applies it itself
+      if let Some(parsed) = ParsedUrl::parse(url) {
+        assert_eq!(Zalo::from_url(&parsed).unwrap().token, expected, "{url}");
+      }
+    }
+
+    // Re-parsing keeps the tags whatever loaded the URL assigned
+    let mut url = ParsedUrl::parse("zalo://123456789:00123/chat").unwrap();
+    url.assigned_tags = Some(vec!["mytag".to_string()]);
+    assert_eq!(Zalo::from_url(&url).unwrap().tags(), vec!["mytag".to_string()]);
+  }
+
+  #[tokio::test]
+  async fn test_send_leading_zero_secret() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/bot123456789:00123/sendMessage")).respond_with(ok_response()).expect(1).mount(&server).await;
+    let svc = from_url("zalo://123456789:00123/chat").unwrap();
+    assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx("hi", NotifyFormat::Text))).await.unwrap());
   }
 
   #[tokio::test]

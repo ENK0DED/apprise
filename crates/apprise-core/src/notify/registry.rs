@@ -489,7 +489,10 @@ pub fn parse_service_url(url: &str) -> Option<ParsedUrl> {
   };
 
   if registry().contains_key(&schema) {
-    let parsed = ParsedUrl::parse(&url_);
+    // Zalo rewrites its Bot Token's colon before parsing, as upstream does,
+    // so a numeric secret is not read (or refused) as a port
+    let rewritten = if schema == "zalo" { super::zalo::token_colon_to_slash(&url_) } else { None };
+    let parsed = ParsedUrl::parse(rewritten.as_deref().unwrap_or(&url_));
     if parsed.is_none() {
       tracing::error!("Unparseable {} URL {}", service_name(&schema), cwe312_url(url));
     }

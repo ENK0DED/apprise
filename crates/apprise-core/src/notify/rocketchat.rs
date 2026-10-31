@@ -72,13 +72,18 @@ impl RocketChat {
     // A webhook in the credentials is lifted out before parsing
     let (parsed, mut webhook, mut password) = match split_webhook(&url.raw) {
       Some((stripped, hook)) => {
-        let p = ParsedUrl::parse(&stripped)?;
-        (p, Some(unquote(&hook)), Some(hook))
+        let mut p = ParsedUrl::parse(&stripped)?;
+        // Tags come from whatever loaded the URL, not from its text
+        p.assigned_tags = url.assigned_tags.clone();
+        // It doubles as the password for basic logins, which upstream
+        // decodes once like every password (`pass%2Fword` is `pass/word`)
+        let hook = unquote(&hook);
+        (p, Some(hook.clone()), Some(hook))
       }
       None => (url.clone(), None, url.password.clone()),
     };
     let url = &parsed;
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     if let Some(w) = url.get("webhook").filter(|w| !w.is_empty()) {
       webhook = Some(unquote(w));
     }
@@ -351,6 +356,13 @@ mod tests {
   }
 
   #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("rocket://u:p@{h}/room");
+    crate::notify::custom_json::assert_verifies_host("rockets://user:web/token@{h}/@user/?mode=webhook");
+  }
+
+  #[test]
   fn test_valid_urls() {
     let long = format!("rockets://user:{}@localhost/#channel", "t".repeat(40));
     for url in [
@@ -391,13 +403,23 @@ mod tests {
     let r = rc("rockets://user:web/token@localhost:8080/@user/?mode=webhook");
     assert_eq!((r.mode, r.user.as_deref(), r.port, r.webhook.as_deref()), (Mode::Webhook, Some("user"), Some(8080), Some("web/token")));
 
-    // An explicit basic mode keeps the slash-containing password
+    // An explicit basic mode keeps the slash-containing password, decoded
     let r = rc("rockets://user:pass%2Fwithslash@localhost/#channel/?mode=basic");
-    assert_eq!((r.mode, r.password.as_deref(), r.avatar), (Mode::Basic, Some("pass%2Fwithslash"), false));
+    assert_eq!((r.mode, r.password.as_deref(), r.avatar), (Mode::Basic, Some("pass/withslash"), false));
 
     let r = rc(&format!("rockets://user:{}@localhost/#channel", "t".repeat(40)));
     assert_eq!((r.mode, r.avatar), (Mode::Token, true));
     assert!(rc("rocket://user:pass@localhost/room?avatar=yes").avatar);
+  }
+
+  #[test]
+  fn test_webhook_url_keeps_assigned_tags() {
+    // The webhook form is re-parsed; config tags must survive that
+    for raw in ["rockets://user:web/token@localhost/@user/?mode=webhook", "rocket://user:pass@localhost/room"] {
+      let mut url = ParsedUrl::parse(raw).unwrap();
+      url.assigned_tags = Some(vec!["mytag".to_string()]);
+      assert_eq!(RocketChat::from_url(&url).unwrap().tags(), vec!["mytag".to_string()], "{raw}");
+    }
   }
 
   fn ctx() -> NotifyContext {
@@ -447,6 +469,24 @@ mod tests {
         json!({"text": "**hello**", "avatar": ICON, "roomId": "room"}),
       ]
     );
+  }
+
+  #[tokio::test]
+  async fn test_basic_login_decodes_slash_password() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/api/v1/login"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "success", "data": {"authToken": "AT", "userId": "UID"}})))
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(path("/api/v1/chat.postMessage")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/api/v1/logout")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+
+    let r = rc(&format!("rocket://user:pass%2Fwithslash@localhost:{}/room?mode=basic", server.address().port()));
+    assert!(r.send(&ctx()).await.unwrap());
+    let login = &requests_to(&server, "POST", "/api/v1/login").await[0];
+    let form: Vec<(String, String)> = url::form_urlencoded::parse(&login.body).into_owned().collect();
+    assert_eq!(form, vec![("username".to_string(), "user".to_string()), ("password".to_string(), "pass/withslash".to_string())]);
   }
 
   #[tokio::test]

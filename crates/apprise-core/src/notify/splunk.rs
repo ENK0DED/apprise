@@ -153,7 +153,11 @@ impl Notify for Splunk {
     400
   }
   fn url_identifier(&self) -> Option<Vec<String>> {
-    Some(vec!["splunk".into(), self.routing_key.clone(), self.entity_id.clone().unwrap_or_default(), self.apikey.clone()])
+    // Upstream fills in its default entity ID ({app_id}/{routing_key}) when
+    // loading the URL. The asset is not known here, so a custom app_id
+    // without an explicit entity ID gives a different ID than upstream's.
+    let entity_id = self.entity_id.clone().unwrap_or_else(|| format!("{}/{}", crate::asset::AppriseAsset::default().app_id, self.routing_key));
+    Some(vec!["splunk".into(), self.routing_key.clone(), entity_id, self.apikey.clone()])
   }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
@@ -177,6 +181,17 @@ mod tests {
 
   fn ctx(title: &str, body: &str, notify_type: NotifyType) -> NotifyContext {
     NotifyContext { title: title.into(), body: body.into(), notify_type, ..Default::default() }
+  }
+
+  #[test]
+  fn test_storage_id_matches_upstream() {
+    // uid: lines of upstream's apprise --dry-run; a missing value hashes as "None"
+    // Without an entity ID upstream uses {app_id}/{routing_key}
+    crate::notify::custom_json::assert_upstream_uids(&[
+      ("splunk://db@apikey", "8c61a643"),
+      ("splunk://db@apikey/entity", "7dd6f651"),
+      ("splunk://?apikey=abc123&routing_key=db", "e1147b52"),
+    ]);
   }
 
   #[test]

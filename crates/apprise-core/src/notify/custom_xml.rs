@@ -35,7 +35,7 @@ pub struct Xml {
 
 impl Xml {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     let method = parse_method(url)?;
 
     let mut payload_map = CORE_FIELDS.map(String::from);
@@ -247,6 +247,12 @@ mod tests {
     for url in ["xml://:@/", "xml://", "xmls://", "xml://user@localhost?method=invalid"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("xml://{h}");
   }
 
   fn xml_for(url: &str) -> Xml {

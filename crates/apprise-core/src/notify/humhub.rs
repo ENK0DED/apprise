@@ -23,7 +23,7 @@ pub struct HumHub {
 
 impl HumHub {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     let Some(user) = url.user.clone().filter(|u| !u.is_empty()) else {
       tracing::warn!("A HumHub bearer token or username must be specified.");
       return None;
@@ -255,6 +255,12 @@ mod tests {
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("humhub://mytoken@{h}/1");
   }
 
   #[test]
