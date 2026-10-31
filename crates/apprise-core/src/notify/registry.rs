@@ -207,6 +207,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(workflows::Workflows::static_details());
   collect!(wpush::WPush::static_details());
   collect!(wxpusher::WxPusher::static_details());
+  collect!(xmatters::XMatters::static_details());
   collect!(xmpp::Xmpp::static_details());
   collect!(zalo::Zalo::static_details());
   collect!(youlmk::YouLmk::static_details());
@@ -409,6 +410,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(workflows::Workflows::from_url, "workflow", "workflows");
   reg!(wpush::WPush::from_url, "wpush");
   reg!(wxpusher::WxPusher::from_url, "wxpusher");
+  reg!(xmatters::XMatters::from_url, "xmatters");
   reg!(xmpp::Xmpp::from_url, "xmpp", "xmpps");
   reg!(zalo::Zalo::from_url, "zalo");
   reg!(youlmk::YouLmk::from_url, "youlmk");
@@ -574,6 +576,7 @@ pub static NATIVE_URLS: &[NativeUrl] = &[
   NativeUrl { schema: "lark", convert: native::lark },
   NativeUrl { schema: "workflow", convert: native::workflows },
   NativeUrl { schema: "lfg", convert: native::lfgalarm },
+  NativeUrl { schema: "xmatters", convert: native::xmatters },
 ];
 
 /// The `parse_native_url()` conversions. Each returns the plugin URL that
@@ -864,6 +867,13 @@ mod native {
     let c = pattern!(r"(?i)^https?://api\.lfg\.gm/horn/(?P<token>[a-z0-9]{32})/?(?P<params>\?.+)?$").captures(url)?;
     Some(format!("lfg://{}/{}", group(&c, "token"), group(&c, "params")))
   }
+
+  pub fn xmatters(url: &str) -> Option<String> {
+    let c =
+      pattern!(r"(?i)^https?://(?P<host>[a-z0-9.-]+\.xmatters\.com)/api/integration/1/functions/(?P<integration_id>[a-z0-9-]+)/triggers/?(?P<params>\?.+)?$")
+        .captures(url)?;
+    Some(format!("xmatters://{}/{}/{}", group(&c, "host"), group(&c, "integration_id"), group(&c, "params")))
+  }
 }
 
 #[cfg(test)]
@@ -956,6 +966,16 @@ mod tests {
       Some(r#"workflow://prod.powerautomate.com/abc/?sig=x&pa=yes&route=12345"#),
     ), // routing_id
     (r#"https://api.lfg.gm/horn/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"#, Some(r#"lfg://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"#)),
+    (
+      r#"https://acmeco.xmatters.com/api/integration/1/functions/ba601cb1-3513-4320-b48a-05cb501bb5af/triggers?apiKey=KEY&recipients=jdoe,ops"#,
+      Some(r#"xmatters://acmeco.xmatters.com/ba601cb1-3513-4320-b48a-05cb501bb5af/?apiKey=KEY&recipients=jdoe,ops"#),
+    ),
+    (
+      r#"http://acmeco.na5.xmatters.com/api/integration/1/functions/ba601cb1-3513-4320-b48a-05cb501bb5af/triggers/"#,
+      Some(r#"xmatters://acmeco.na5.xmatters.com/ba601cb1-3513-4320-b48a-05cb501bb5af/"#),
+    ),
+    (r#"https://xmatters.com/api/integration/1/functions/ba601cb1-3513-4320-b48a-05cb501bb5af/triggers"#, None),
+    (r#"https://acme.xmatters.com/api/integration/1/functions/ba601cb1-3513-4320-b48a-05cb501bb5af/triggers/extra"#, None),
     (r#"https://example.com/not/native"#, None),
   ];
 

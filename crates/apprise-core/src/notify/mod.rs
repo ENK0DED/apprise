@@ -186,6 +186,7 @@ pub mod whatsapp;
 pub mod workflows;
 pub mod wpush;
 pub mod wxpusher;
+pub mod xmatters;
 pub mod xmpp;
 pub mod youlmk;
 pub mod zalo;
