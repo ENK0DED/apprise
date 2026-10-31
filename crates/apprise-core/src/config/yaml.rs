@@ -28,7 +28,12 @@
 //! URL's own query string. Plugins in this port read their settings from
 //! the query string, so each setting is applied as the query argument of
 //! the same name; `user`, `password` (or `pass`), `host` and `port` set
-//! those parts of the URL. `tag`/`tags` give the service its tags; a
+//! those parts of the URL. A setting named after one of the service's URL
+//! tokens (Discord's `botname`, ntfy's `topic`, a `target_phone`) sets the
+//! URL part or argument that carries the same value, as upstream's
+//! `_special_token_handler()` maps it (table in `yaml/tokens.rs`). Target
+//! settings add to the URL's own targets, where upstream replaces them.
+//! `tag`/`tags` give the service its tags; a
 //! `?tag=`/`?tags=` on the URL itself stays with the plugin (upstream
 //! c511e1d4, 9b64369c).
 
@@ -37,7 +42,9 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
+mod tokens;
 mod value;
+use tokens::{UrlToken, url_token};
 pub use value::{Mapping, Value, python_float};
 
 use super::template::{PendingService, PlaceholderMap, TemplateSchema, template_in_schema, template_references};
@@ -118,14 +125,56 @@ fn yaml_scalar(v: &Value) -> String {
   v.python_str()
 }
 
-/// Upstream `_special_token_handler()` aliases: `pass` fills `password`
-/// unless that is already set.
-fn normalize_aliases(tokens: &mut Tokens) {
+/// Upstream `_special_token_handler()`: `pass` fills `password` unless
+/// that is already set, and a setting named after one of the service's URL
+/// tokens (Discord's `botname`, ntfy's `topic`) becomes the URL part or
+/// argument that carries the same value. Settings that name the same list
+/// add up; a token that stands for several URL values is dropped. Siblings
+/// and children go through this separately, before they are merged.
+fn special_tokens(schema: &str, mut tokens: Tokens) -> Tokens {
   if let Some(pass) = tokens.shift_remove("pass")
     && tokens.get("password").is_none_or(Value::is_null)
   {
     tokens.insert("password".to_string(), pass);
   }
+  let mut out = Tokens::new();
+  let mut lists = BTreeSet::new();
+  for (key, value) in tokens {
+    let (name, list) = match url_token(schema, &key) {
+      None => (key, false),
+      Some(UrlToken::UrlOnly) => {
+        tracing::warn!("The {}:// {} keyword can only be defined from within a URL; ignoring it.", schema, key);
+        continue;
+      }
+      Some(UrlToken::Arg(name) | UrlToken::Part(name)) => (name.to_string(), false),
+      Some(UrlToken::List(name)) => (name.to_string(), true),
+    };
+    if list || lists.contains(&name) {
+      // A list collects every setting that names it, including one
+      // written under the argument's own name
+      let add = |seq: &mut Vec<Value>, value: Value| match value {
+        Value::Sequence(more) => seq.extend(more),
+        other => seq.push(other),
+      };
+      match out.get_mut(&name) {
+        Some(Value::Sequence(seq)) => add(seq, value),
+        Some(previous) => {
+          let mut seq = vec![std::mem::replace(previous, Value::Null)];
+          add(&mut seq, value);
+          *previous = Value::Sequence(seq);
+        }
+        None => {
+          let mut seq = Vec::new();
+          add(&mut seq, value);
+          out.insert(name.clone(), Value::Sequence(seq));
+        }
+      }
+      lists.insert(name);
+    } else {
+      out.insert(name, value);
+    }
+  }
+  out
 }
 
 /// One URL entry, with its settings applied and its tags (groups
@@ -402,14 +451,13 @@ fn collect(content: &str, opts: &LoadOptions) -> Result<CollectOutput, ConfigErr
           }
         };
 
-        normalize_aliases(&mut siblings);
+        let siblings = special_tokens(&schema, siblings);
         match &tokens {
           Value::Sequence(entries) => {
             // One service per entry; entries that are not mappings are skipped
             for entry in entries {
               if let Value::Mapping(e) = entry {
-                let mut child = tokens_of(e, &|k| k == "schema", no);
-                normalize_aliases(&mut child);
+                let child = special_tokens(&schema, tokens_of(e, &|k| k == "schema", no));
                 let mut merged = siblings.clone();
                 merged.extend(child);
                 results.push((parsed.clone(), merged));
@@ -417,8 +465,7 @@ fn collect(content: &str, opts: &LoadOptions) -> Result<CollectOutput, ConfigErr
             }
           }
           Value::Mapping(e) => {
-            let mut child = tokens_of(e, &|k| k == "schema", no);
-            normalize_aliases(&mut child);
+            let child = special_tokens(&schema, tokens_of(e, &|k| k == "schema", no));
             let mut merged = siblings.clone();
             merged.extend(child);
             results.push((parsed, merged));
@@ -847,6 +894,41 @@ urls:
     assert_eq!(got[0].get("to"), Some("a"));
     assert_eq!(got[0].tags(), vec!["shared"]);
     assert_eq!(got[1].tags(), vec!["two"]);
+  }
+
+  #[test]
+  fn test_url_token_keys_set_their_url_value() {
+    // Upstream test_yaml_url_token_map_to: Discord's botname is the URL user
+    let got = resolved(
+      "urls:\n  - discord://1234567890/abcdefghijklmnopqrstuvwxyz/:\n      - tag: test1\n        botname: App 1\n      - tag: test2\n        botname: App 2\n",
+    );
+    assert_eq!(got.iter().map(|p| p.user.as_deref()).collect::<Vec<_>>(), vec![Some("App 1"), Some("App 2")]);
+    assert_eq!(resolved("urls:\n  - discord://1234567890/abcdefghijklmnopqrstuvwxyz/:\n    botname: App 3\n")[0].user.as_deref(), Some("App 3"));
+    // test_yaml_token_alias_chains: RingCentral's from_phone is its source
+    let got = resolved("urls:\n  - ringc://15551234567/abcd/efgh:\n      from_phone: '+15557654321'\n");
+    assert_eq!(got[0].get("from"), Some("+15557654321"));
+    // A key that is neither an argument nor a URL token is left alone
+    assert_eq!(resolved("urls:\n  - discord://1234567890/abcdefghijklmnopqrstuvwxyz/:\n      not-a-token: x\n")[0].get("not-a-token"), Some("x"));
+
+    // Settings that name the same list add up, in YAML order
+    let got = resolved("urls:\n  - ntfy://localhost:\n      topic: one\n      to: two\n      targets: [three, four]\n");
+    assert_eq!(got[0].get("to"), Some("one,two,three,four"));
+    // ... but a child setting replaces a sibling one, as other settings do
+    let got = resolved("urls:\n  - ntfy://localhost:\n      topic: child\n    topic: sibling\n");
+    assert_eq!(got[0].get("to"), Some("child"));
+    // The same names do nothing for a service without those tokens
+    assert_eq!(resolved("urls:\n  - json://localhost:\n      topic: x\n")[0].get("topic"), Some("x"));
+  }
+
+  #[test]
+  fn test_url_token_for_several_values_is_ignored() {
+    // Upstream test_yaml_token_multi_alias: only the URL can set the three
+    // Slack tokens `token` stands for
+    let content = "urls:\n  - slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/#general:\n      token: ignored\n";
+    let got = resolved(content);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].get("token"), None);
+    assert_eq!(services(content).len(), 1);
   }
 
   #[test]
