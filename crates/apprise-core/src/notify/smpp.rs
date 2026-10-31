@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use serde_json::{Value, json};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 const DEFAULT_PORT: u16 = 2775;
@@ -51,6 +51,9 @@ const GSM_CHARACTER_TABLE: &str = concat!(
 pub struct Smpp {
   host: String,
   port: u16,
+  /// `smpps://`: the session runs over TLS.
+  secure: bool,
+  verify: bool,
   user: String,
   password: String,
   source: String,
@@ -95,7 +98,7 @@ impl Smpp {
       }
     }
 
-    Some(Self { host: url.host.clone().unwrap_or_default(), port, user, password, source, targets, tags: url.tags() })
+    Some(Self { host: url.host.clone().unwrap_or_default(), port, secure, verify: url.verify_certificate(), user, password, source, targets, tags: url.tags() })
   }
 
   pub fn static_details() -> ServiceDetails {
@@ -107,6 +110,23 @@ impl Smpp {
       description: "Send SMS messages through an SMPP server.",
       attachment_support: false,
     }
+  }
+
+  /// Connect, over TLS for `smpps://`. Upstream connects without TLS for
+  /// `smpps://` as well, so the bind sends the password in the clear; this
+  /// port does not follow it there.
+  async fn connect(&self) -> Result<Box<dyn SmppStream>, String> {
+    let addr = format!("{}:{}", self.host, self.port);
+    let tcp = tokio::time::timeout(TIMEOUT, TcpStream::connect(&addr)).await.map_err(|_| "timed out".to_string())?.map_err(|e| e.to_string())?;
+    if !self.secure {
+      return Ok(Box::new(tcp));
+    }
+    let name = rustls::pki_types::ServerName::try_from(self.host.clone()).map_err(|e| format!("invalid TLS server name: {}", e))?;
+    let tls = tokio::time::timeout(TIMEOUT, crate::utils::socket::tls_connector(self.verify).connect(name, tcp))
+      .await
+      .map_err(|_| "TLS handshake timed out".to_string())?
+      .map_err(|e| format!("TLS handshake failed: {}", e))?;
+    Ok(Box::new(tls))
   }
 
   fn bind_pdu(&self, sequence: u32) -> Vec<u8> {
@@ -230,8 +250,12 @@ fn parts_from_json(value: &Value) -> Option<(Vec<Vec<u8>>, u8, u8)> {
 /// Largest PDU accepted from the server.
 const MAX_PDU_LEN: usize = 64 * 1024;
 
+/// A plain or TLS connection.
+trait SmppStream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> SmppStream for T {}
+
 /// Read one PDU and return its command ID, status and sequence.
-async fn read_pdu(stream: &mut TcpStream) -> Result<(u32, u32, u32), String> {
+async fn read_pdu<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> Result<(u32, u32, u32), String> {
   let io = async {
     let mut header = [0u8; 16];
     stream.read_exact(&mut header).await.map_err(|e| e.to_string())?;
@@ -251,7 +275,7 @@ async fn read_pdu(stream: &mut TcpStream) -> Result<(u32, u32, u32), String> {
 
 /// Read the response to the PDU with `sequence`, answering any keepalive
 /// the server sends first. Returns its command status.
-async fn read_response(stream: &mut TcpStream, sequence: u32) -> Result<u32, String> {
+async fn read_response<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, sequence: u32) -> Result<u32, String> {
   loop {
     let (command, status, seq) = read_pdu(stream).await?;
     if command == ENQUIRE_LINK {
@@ -264,8 +288,12 @@ async fn read_response(stream: &mut TcpStream, sequence: u32) -> Result<u32, Str
   }
 }
 
-async fn write(stream: &mut TcpStream, data: &[u8]) -> Result<(), String> {
-  tokio::time::timeout(TIMEOUT, stream.write_all(data)).await.map_err(|_| "timed out".to_string())?.map_err(|e| e.to_string())
+async fn write<S: AsyncWrite + Unpin>(stream: &mut S, data: &[u8]) -> Result<(), String> {
+  let io = async {
+    stream.write_all(data).await?;
+    stream.flush().await
+  };
+  tokio::time::timeout(TIMEOUT, io).await.map_err(|_| "timed out".to_string())?.map_err(|e| e.to_string())
 }
 
 #[async_trait]
@@ -294,17 +322,10 @@ impl Notify for Smpp {
     // SMS has no title; one that reaches us goes in front of the body.
     let body = if ctx.title.is_empty() { ctx.body.clone() } else { format!("{}\r\n{}", ctx.title, ctx.body) };
 
-    // Upstream connects without TLS for smpps:// as well; only the default
-    // port differs.
-    let addr = format!("{}:{}", self.host, self.port);
-    let mut stream = match tokio::time::timeout(TIMEOUT, TcpStream::connect(&addr)).await {
-      Ok(Ok(s)) => s,
-      Ok(Err(e)) => {
+    let mut stream = match self.connect().await {
+      Ok(s) => s,
+      Err(e) => {
         tracing::warn!("Failed to establish connection to SMPP server {}: {}", self.host, e);
-        return Ok(false);
-      }
-      Err(_) => {
-        tracing::warn!("Failed to establish connection to SMPP server {}: timed out", self.host);
         return Ok(false);
       }
     };
@@ -459,6 +480,12 @@ mod tests {
     // A port in the URL wins over the protocol default
     assert_eq!(parse("smpp://user:pass@host:9999/1111111111/2222222222").unwrap().port, 9999);
     assert_eq!(parse("smpps://user:pass@host:9998/1111111111/2222222222").unwrap().port, 9998);
+
+    // smpps:// runs over TLS and verifies unless ?verify=no
+    let s = parse("smpps://user:pass@host/1111111111/2222222222").unwrap();
+    assert!(s.secure && s.verify);
+    assert!(!parse("smpps://user:pass@host/1111111111/2222222222?verify=no").unwrap().verify);
+    assert!(!parse("smpp://user:pass@host/1111111111/2222222222").unwrap().secure);
   }
 
   #[test]
@@ -534,6 +561,13 @@ mod tests {
   /// random ports, so a connection that does not start with a bind is
   /// dropped and does not count.
   async fn smsc_sessions(sessions: usize, statuses: Vec<u32>) -> (u16, tokio::task::JoinHandle<Vec<Vec<u8>>>) {
+    smsc_with(false, sessions, statuses).await
+  }
+
+  /// [`smsc_sessions`] over plain TCP or, with `tls`, behind the test
+  /// certificate. A TLS fake returns what it has once a client refuses
+  /// the certificate.
+  async fn smsc_with(tls: bool, sessions: usize, statuses: Vec<u32>) -> (u16, tokio::task::JoinHandle<Vec<Vec<u8>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let handle = tokio::spawn(async move {
@@ -541,7 +575,17 @@ mod tests {
       let mut received = Vec::new();
       let mut served = 0;
       while served < sessions {
-        let (mut stream, _) = listener.accept().await.unwrap();
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut stream: Box<dyn SmppStream> = if tls {
+          match crate::utils::socket::test_tls_acceptor().accept(tcp).await {
+            Ok(s) => Box::new(s),
+            // Plain bytes: a stray probe, or a client that skipped TLS
+            Err(e) if e.to_string().contains("InvalidContentType") => continue,
+            Err(_) => return received,
+          }
+        } else {
+          Box::new(tcp)
+        };
         let mut bound = false;
         loop {
           let mut header = [0u8; 16];
@@ -572,7 +616,7 @@ mod tests {
             reply[3] = 19;
             reply.extend_from_slice(b"id\0");
           }
-          if stream.write_all(&reply).await.is_err() || command == UNBIND {
+          if stream.write_all(&reply).await.is_err() || stream.flush().await.is_err() || command == UNBIND {
             break;
           }
         }
@@ -604,6 +648,46 @@ mod tests {
     assert_eq!(pdus[1], parsed.submit_pdu(3, "15559876543", b"Hello", 0, 0));
     assert_eq!(pdus[2], parsed.submit_pdu(4, "15559870000", b"Hello", 0, 0));
     assert_eq!(pdus[3], pdu(UNBIND, 5, &[]));
+  }
+
+  /// `smpps://` binds over TLS, so the password never crosses the wire
+  /// in the clear. Upstream connects without TLS for both schemas.
+  #[tokio::test]
+  async fn test_send_smpps_uses_tls() {
+    let (port, server) = smsc_with(true, 1, vec![]).await;
+    let url = format!("smpps://user:pass@127.0.0.1:{}/15551234567/15559876543?verify=no", port);
+    assert!(from_url(&url).unwrap().send(&NotifyContext { body: "Hello".into(), ..Default::default() }).await.unwrap());
+    let pdus = server.await.unwrap();
+    let parsed = parse(&url).unwrap();
+    assert_eq!(pdus, vec![parsed.bind_pdu(2), parsed.submit_pdu(3, "15559876543", b"Hello", 0, 0), pdu(UNBIND, 4, &[])]);
+
+    // The self-signed certificate is refused when verifying, before the
+    // bind is sent
+    let (port, server) = smsc_with(true, 1, vec![]).await;
+    let svc = from_url(&format!("smpps://user:pass@127.0.0.1:{}/15551234567/15559876543", port)).unwrap();
+    assert!(!svc.send(&NotifyContext { body: "Hello".into(), ..Default::default() }).await.unwrap());
+    assert!(server.await.unwrap().is_empty());
+
+    // A server that does not speak TLS gets a ClientHello, not the bind
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+      loop {
+        let (mut tcp, _) = listener.accept().await.unwrap();
+        let mut first = vec![0u8; 512];
+        let Ok(n) = tcp.read(&mut first).await else { continue };
+        first.truncate(n);
+        // Skip stray probes: keep a TLS record or an SMPP bind
+        if first.first() == Some(&0x16) || first.get(4..8) == Some(&BIND_TRANSMITTER.to_be_bytes()[..]) {
+          return first;
+        }
+      }
+    });
+    let svc = from_url(&format!("smpps://user:secret@127.0.0.1:{}/15551234567/15559876543?verify=no", port)).unwrap();
+    assert!(!svc.send(&NotifyContext { body: "Hello".into(), ..Default::default() }).await.unwrap());
+    let first = server.await.unwrap();
+    assert_eq!(first[0], 0x16, "not a TLS handshake record: {:02x?}", &first[..first.len().min(16)]);
+    assert!(!first.windows(6).any(|w| w == b"secret"));
   }
 
   #[tokio::test]
