@@ -118,7 +118,18 @@ impl Growl {
     packet
   }
 
-  fn notify_packet(&self, ctx: &NotifyContext) -> String {
+  /// The NOTIFY message. Version 2 names the 72x72 image by URL; older
+  /// versions embed the raw image as a GNTP binary resource after the
+  /// headers, as upstream's GNTP client does.
+  fn notify_packet(&self, ctx: &NotifyContext) -> Vec<u8> {
+    let resource = if self.include_image && self.version < 2 { ctx.image_raw(NotifyImageSize::Xy72) } else { None };
+    let resource = resource.map(|data| (hex::encode(Md5::digest(&data)), data));
+    let icon = match &resource {
+      Some((id, _)) => Some(format!("x-growl-resource://{}", id)),
+      None if self.include_image && self.version >= 2 => ctx.image_url(NotifyImageSize::Xy72),
+      None => None,
+    };
+
     let mut packet = format!("{}\r\n", self.info_line("NOTIFY"));
     push_header(&mut packet, "Application-Name", &ctx.asset.app_id);
     push_header(&mut packet, "Notification-Name", NOTIFICATION_TYPE);
@@ -129,7 +140,7 @@ impl Growl {
     if self.priority != 0 {
       push_header(&mut packet, "Notification-Priority", &self.priority.to_string());
     }
-    if let Some(icon) = self.icon_url(ctx) {
+    if let Some(icon) = icon {
       push_header(&mut packet, "Notification-Icon", &icon);
     }
     if !ctx.body.is_empty() {
@@ -137,25 +148,23 @@ impl Growl {
     }
     push_origin_headers(&mut packet);
     packet.push_str("\r\n");
-    packet
-  }
 
-  /// Version 2 sends the 72x72 image as a URL. Version 1 would embed the
-  /// raw image, which this port does not ship, so it sends none.
-  fn icon_url(&self, ctx: &NotifyContext) -> Option<String> {
-    if !self.include_image || self.version < 2 {
-      return None;
+    let mut packet = packet.into_bytes();
+    if let Some((id, data)) = resource {
+      packet.extend_from_slice(format!("Identifier: {}\r\nLength: {}\r\n\r\n", id, data.len()).as_bytes());
+      packet.extend_from_slice(&data);
+      packet.extend_from_slice(b"\r\n\r\n");
     }
-    ctx.image_url(NotifyImageSize::Xy72)
+    packet
   }
 
   /// Send one GNTP message on its own connection and read the reply, which
   /// ends with a blank line.
-  async fn exchange(&self, packet: &str) -> Result<String, String> {
+  async fn exchange(&self, packet: &[u8]) -> Result<String, String> {
     let addr = format!("{}:{}", self.host, self.port);
     let io = async {
       let mut stream = TcpStream::connect(&addr).await.map_err(|e| e.to_string())?;
-      stream.write_all(packet.as_bytes()).await.map_err(|e| e.to_string())?;
+      stream.write_all(packet).await.map_err(|e| e.to_string())?;
       let mut response = Vec::new();
       let mut buf = [0u8; 1024];
       while !response.ends_with(b"\r\n\r\n") {
@@ -172,7 +181,7 @@ impl Growl {
 
   /// Send a message and check the reply: `-OK` is success, `-ERROR` is a
   /// failure, and anything that is not GNTP is a parse error.
-  async fn transact(&self, kind: &str, packet: &str) -> bool {
+  async fn transact(&self, kind: &str, packet: &[u8]) -> bool {
     let response = match self.exchange(packet).await {
       Ok(r) => r,
       Err(e) => {
@@ -263,7 +272,7 @@ impl Notify for Growl {
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     if !self.registered.load(Ordering::SeqCst) {
-      if !self.transact("registration", &self.register_packet(&ctx.asset.app_id)).await {
+      if !self.transact("registration", self.register_packet(&ctx.asset.app_id).as_bytes()).await {
         return Ok(false);
       }
       tracing::debug!("Growl server registration completed successfully.");
@@ -374,7 +383,7 @@ mod tests {
     assert!(register.ends_with("\r\n\r\nNotification-Name: New Messages\r\nNotification-Enabled: True\r\n\r\n"), "{}", register);
 
     let ctx = NotifyContext { title: "Title".into(), body: "line one\r\nline two".into(), notify_type: NotifyType::Warning, ..Default::default() };
-    let notify = g.notify_packet(&ctx);
+    let notify = String::from_utf8(g.notify_packet(&ctx)).unwrap();
     assert!(
       notify.starts_with(
         "GNTP/1.0 NOTIFY NONE\r\n\
@@ -392,16 +401,39 @@ mod tests {
     );
     assert!(notify.ends_with("\r\n\r\n"));
 
-    // No icon for version 1 or image=no, no sticky/priority headers when off
-    let g = parse("growl://growl.server?version=1&sticky=no").unwrap();
-    let notify = g.notify_packet(&NotifyContext { title: "T".into(), body: "".into(), ..Default::default() });
+    // No icon for image=no, no sticky/priority headers when off
+    let g = parse("growl://growl.server?version=1&sticky=no&image=no").unwrap();
+    let notify = String::from_utf8(g.notify_packet(&NotifyContext { title: "T".into(), body: "".into(), ..Default::default() })).unwrap();
     assert!(
       notify.starts_with("GNTP/1.0 NOTIFY NONE\r\nApplication-Name: Apprise\r\nNotification-Name: New Messages\r\nNotification-Title: T\r\nOrigin-"),
       "{}",
       notify
     );
+    assert!(notify.ends_with("\r\n\r\n") && !notify.contains("Identifier"));
     let g = parse("growl://growl.server?image=no").unwrap();
-    assert!(!g.notify_packet(&ctx).contains("Notification-Icon"));
+    assert!(!String::from_utf8(g.notify_packet(&ctx)).unwrap().contains("Notification-Icon"));
+  }
+
+  #[test]
+  fn test_version_1_embeds_raw_icon() {
+    // Upstream's GNTP client: Notification-Icon names x-growl-resource://{md5},
+    // and the PNG follows the headers as Identifier/Length, a blank line,
+    // the data and two CRLFs (7875 bytes for the 72x72 info icon)
+    let g = parse("growl://growl.server?version=1&sticky=no").unwrap();
+    let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
+    let png = ctx.image_raw(NotifyImageSize::Xy72).unwrap();
+    let id = hex::encode(Md5::digest(&png));
+    assert_eq!(png.len(), 7875);
+    assert_eq!(id, "c924e3b052fb3f7d2dbf81fbd8e7e7d1");
+
+    let packet = g.notify_packet(&ctx);
+    let split = packet.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    let headers = String::from_utf8(packet[..split].to_vec()).unwrap();
+    assert!(headers.contains(&format!("Notification-Title: T\r\nNotification-Icon: x-growl-resource://{id}\r\nNotification-Text: B\r\n")), "{headers}");
+    let mut resource = format!("Identifier: {id}\r\nLength: 7875\r\n\r\n").into_bytes();
+    resource.extend_from_slice(&png);
+    resource.extend_from_slice(b"\r\n\r\n");
+    assert_eq!(&packet[split..], &resource[..]);
   }
 
   #[test]
