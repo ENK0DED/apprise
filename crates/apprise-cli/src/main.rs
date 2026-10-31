@@ -269,6 +269,8 @@ async fn run(argv: &[String]) -> i32 {
     body_format: Some(input_format.clone()),
     // As upstream: on, or left to each URL (and to a YAML asset: section)
     interpret_emojis: cli.flag("interpret_emojis").then_some(true),
+    // An asset setting, as upstream, so a YAML asset: section can replace it
+    interpret_escapes: cli.flag("interpret_escapes"),
     theme: cli.str("theme").unwrap_or("default").to_string(),
     async_mode: !cli.flag("disable_async"),
     storage_path: Some(storage_path.clone()),
@@ -386,14 +388,7 @@ async fn run(argv: &[String]) -> i32 {
         buf
       }
     };
-    let ctx = NotifyContext {
-      body,
-      title: cli.str("title").unwrap_or_default().to_string(),
-      notify_type,
-      body_format,
-      interpret_escapes: cli.flag("interpret_escapes"),
-      ..Default::default()
-    };
+    let ctx = NotifyContext { body, title: cli.str("title").unwrap_or_default().to_string(), notify_type, body_format, ..Default::default() };
     let result = apprise.notify_with_attachments(&ctx, &cli.strs("attach")).await;
     tracing::debug!(
       "Finished in {:.2}s. {} service(s) tried ({}): {} sent / {} failed / {} timed out.",
@@ -661,19 +656,12 @@ mod tests {
     assert_eq!(fit("abcdefg", 6, 3), "abc...");
   }
 
-  /// `-j` turns emojis on in the asset, as upstream's CLI does, so a YAML
-  /// `asset: interpret_emojis: no` can turn them back off; without `-j`
-  /// the asset has no value for YAML to replace (`u2_cli.sh`).
-  #[tokio::test]
-  async fn test_interpret_emojis_is_an_asset_setting() {
+  /// A local server that answers 200 and passes on the body of every POST.
+  async fn json_recorder() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    if Apprise::new().add_config_text("urls: []", Some(apprise_core::config::ConfigFormat::Yaml), 0).await.is_err() {
-      return; // a build without YAML support
-    }
-    // Records the JSON body of every POST
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     tokio::spawn(async move {
       while let Ok((mut stream, _)) = listener.accept().await {
         let tx = tx.clone();
@@ -700,7 +688,18 @@ mod tests {
         });
       }
     });
+    (port, rx)
+  }
 
+  /// `-j` turns emojis on in the asset, as upstream's CLI does, so a YAML
+  /// `asset: interpret_emojis: no` can turn them back off; without `-j`
+  /// the asset has no value for YAML to replace (`u2_cli.sh`).
+  #[tokio::test]
+  async fn test_interpret_emojis_is_an_asset_setting() {
+    if Apprise::new().add_config_text("urls: []", Some(apprise_core::config::ConfigFormat::Yaml), 0).await.is_err() {
+      return; // a build without YAML support
+    }
+    let (port, mut rx) = json_recorder().await;
     let dir = std::env::temp_dir().join(format!("apprise-cli-emojis-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for (asset, flag, converted) in [("", true, true), ("asset:\n  interpret_emojis: no\n", true, false), ("asset:\n  interpret_emojis: yes\n", false, false)] {
@@ -714,6 +713,35 @@ mod tests {
       let body = rx.recv().await.unwrap();
       assert_eq!(body.contains("\"B \u{1f604}\""), converted, "{asset:?} -j={flag}: {body}");
       assert_eq!(body.contains("\"B :smile:\""), !converted, "{asset:?} -j={flag}: {body}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+  }
+
+  /// `-e` sets the asset's interpret_escapes, as upstream's CLI does, so a
+  /// YAML `asset: interpret_escapes:` replaces it either way.
+  #[tokio::test]
+  async fn test_interpret_escapes_is_an_asset_setting() {
+    if Apprise::new().add_config_text("urls: []", Some(apprise_core::config::ConfigFormat::Yaml), 0).await.is_err() {
+      return; // a build without YAML support
+    }
+    let (port, mut rx) = json_recorder().await;
+    let dir = std::env::temp_dir().join(format!("apprise-cli-escapes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // Upstream, for each: -e alone, neither, -e with YAML no, YAML yes alone
+    for (asset, flag, interpreted) in
+      [("", true, true), ("", false, false), ("asset:\n  interpret_escapes: no\n", true, false), ("asset:\n  interpret_escapes: yes\n", false, true)]
+    {
+      let config = dir.join("escapes.yml");
+      std::fs::write(&config, format!("{asset}urls:\n  - json://127.0.0.1:{port}/\n")).unwrap();
+      let mut argv: Vec<String> = ["-c", &config.to_string_lossy(), "-b", r"a\tb"].map(String::from).to_vec();
+      if flag {
+        argv.insert(0, "-e".into());
+      }
+      assert_eq!(run(&argv).await, 0, "{asset:?}");
+      let body = rx.recv().await.unwrap();
+      // A real tab is \t in the JSON; a literal backslash-t is \\t
+      assert_eq!(body.contains(r#""a\tb""#), interpreted, "{asset:?} -e={flag}: {body}");
+      assert_eq!(body.contains(r#""a\\tb""#), !interpreted, "{asset:?} -e={flag}: {body}");
     }
     std::fs::remove_dir_all(&dir).ok();
   }
