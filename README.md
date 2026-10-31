@@ -110,6 +110,7 @@ The table below identifies the services this tool supports and some example serv
 | [Jellyfin](https://appriseit.com/services/jellyfin/)  | jellyfin:// or jellyfins:// | (TCP) 8096 | jellyfin://user@hostname/<br />jellyfins://user:password@hostname
 | [Jira](https://appriseit.com/services/jira/) | jira:// | (TCP) 443 | jira://APIKey<br/>jira://APIKey/@UserID<br/>jira://APIKey/#Team<br/>jira://APIKey/\*Schedule<br/>jira://APIKey/^Escalation
 | [Join](https://appriseit.com/services/join/) | join://   | (TCP) 443    | join://apikey/device<br />join://apikey/device1/device2/deviceN/<br />join://apikey/group<br />join://apikey/groupA/groupB/groupN<br />join://apikey/DeviceA/groupA/groupN/DeviceN/
+| [KakaoTalk](https://appriseit.com/services/kakaotalk/) | kakaotalk:// or kakao:// | (TCP) 443 | kakaotalk://ClientID/RefreshToken<br/>kakaotalk://ClientSecret@ClientID/RefreshToken<br/>kakaotalk://ClientID/RefreshToken/FriendUUID1/FriendUUID2/FriendUUIDN/me
 | [KODI](https://appriseit.com/services/kodi/) | kodi:// or kodis://<br/>xbmc:// or xbmcs://    | (TCP) 8080 or 443   | kodi://hostname<br />kodi://user@hostname<br />kodi://user:password@hostname:port
 | [Kook](https://appriseit.com/services/kook/) | kook:// | (TCP) 443 | kook://token/channel_id<br/>kook://token/channel1/channel2<br/>kook://token/@user_id<br/>kook://webhook_key?mode=webhook
 | [Kumulos](https://appriseit.com/services/kumulos/) | kumulos:// | (TCP) 443 | kumulos://apikey/serverkey
@@ -192,6 +193,7 @@ The table below identifies the services this tool supports and some example serv
 | [WhatsApp](https://appriseit.com/services/whatsapp/) | whatsapp://  | (TCP) 443   | whatsapp://AccessToken@FromPhoneID/ToPhoneNo<br/>whatsapp://Template:AccessToken@FromPhoneID/ToPhoneNo
 | [WPUSH](https://appriseit.com/services/wpush/) | wpush://  | (TCP) 443   | wpush://APIKey<br/>wpush://APIKey/Topic1/Topic2/TopicN
 | [WxPusher](https://appriseit.com/services/wxpusher/) | wxpusher://  | (TCP) 443   | wxpusher://AppToken@UserID1/UserID2/UserIDN<br/>wxpusher://AppToken@Topic1/Topic2/Topic3<br/>wxpusher://AppToken@UserID1/Topic1/
+| [xMatters](https://appriseit.com/services/xmatters/) | xmatters://  | (TCP) 443   | xmatters://apikey@company/integration_id<br />xmatters://apikey@company/integration_id/recipient1/recipient2<br />xmatters://user:password@company.xmatters.com/integration_id/recipient
 | [XMPP](https://appriseit.com/services/xmpp/) | xmpp:// or xmpps://    | (TCP) 5222 or 5223   | xmpp://user:pass@hostname<br />xmpps://user:pass@hostname/jid<br />xmpps://user:pass@hostname/jid1/jid2@example.ca
 | [YouLMK](https://appriseit.com/services/youlmk/) | youlmk://  | (TCP) 443   | youlmk://ylk_token<br/>youlmk://k_key<br/>youlmk://ylk_token?priority=critical<br/>youlmk://ylk_token?failure=critical&url=https://example.com/runs/1
 | [Zalo](https://appriseit.com/services/zalo/) | zalo://  | (TCP) 443   | zalo://BotToken/ChatID<br/>zalo://BotToken/ChatID1/ChatID2/ChatIDN

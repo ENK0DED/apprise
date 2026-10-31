@@ -106,8 +106,7 @@ const DEFAULT_PUSHSAFER_ICON: &str = "25";
 pub struct Pushsafer {
   privatekey: String,
   targets: Vec<String>,
-  /// Parsed and validated as upstream does; Pushsafer receives no priority
-  #[allow(dead_code)]
+  /// Sent only when given, so the device's own default applies otherwise
   priority: Option<i64>,
   sound: Option<i64>,
   vibration: Option<i64>,
@@ -277,6 +276,9 @@ impl Notify for Pushsafer {
           ("c", ctx.notify_type.color_hex()),
           ("d", recipient.clone()),
         ];
+        if let Some(priority) = self.priority {
+          form.push(("pr", priority.to_string()));
+        }
         if let Some(sound) = self.sound {
           form.push(("s", sound.to_string()));
         }
@@ -386,7 +388,8 @@ mod tests {
     let server = MockServer::builder().start().await;
     Mock::given(method("POST"))
       .and(path("/api"))
-      .and(body_string("t=T&m=B&i=25&c=%23CACF29&d=a&s=32&v=2&k=pkey"))
+      // Matches pycapture.py for this URL
+      .and(body_string("t=T&m=B&i=25&c=%23CACF29&d=a&pr=1&s=32&v=2&k=pkey"))
       .respond_with(good())
       .expect(1)
       .mount(&server)
@@ -394,6 +397,24 @@ mod tests {
     let svc = from_url("psafers://pkey?sound=okay&vibration=2&priority=high").unwrap();
     let ctx = NotifyContext { title: "T".into(), body: "B".into(), notify_type: NotifyType::Warning, ..Default::default() };
     assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn test_send_priority() {
+    // Upstream test_plugin_pushsafer_priority; the forms match pycapture.py
+    let cases = [
+      ("psafer://abc123?priority=emergency", "t=&m=body&i=25&c=%233AA3E3&d=a&pr=2&k=abc123"),
+      ("psafer://abc123?priority=-2", "t=&m=body&i=25&c=%233AA3E3&d=a&pr=-2&k=abc123"),
+      // The device default is kept when no priority is given
+      ("psafer://abc123", "t=&m=body&i=25&c=%233AA3E3&d=a&k=abc123"),
+    ];
+    for (url, form) in cases {
+      let server = MockServer::builder().start().await;
+      Mock::given(method("POST")).and(path("/api")).and(body_string(form)).respond_with(good()).expect(1).mount(&server).await;
+      let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+      assert!(crate::notify::with_test_base(server.uri(), from_url(url).unwrap().send(&ctx)).await.unwrap(), "{}", url);
+    }
+    assert_eq!(psafer("psafer://abc123?priority=emergency").priority, Some(2));
   }
 
   #[tokio::test]
