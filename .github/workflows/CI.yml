@@ -58,6 +58,9 @@ jobs:
         run: |
           sh packaging/man/build.sh
           git diff --exit-code -- packaging/man
+      - name: The npm package's LICENSE matches the repository's
+        working-directory: .
+        run: cmp LICENSE crates/apprise-napi/LICENSE
 
   test:
     name: Rust tests
@@ -342,6 +345,9 @@ jobs:
         run: bun create-npm-dirs
       - name: Move artifacts
         run: bun artifacts
+      - name: Add the license to every platform package
+        shell: bash
+        run: for dir in npm/*/; do cp LICENSE "$dir"; done
       - name: List packages
         run: ls -R ./npm
         shell: bash
@@ -350,12 +356,13 @@ jobs:
         run: |
           npm pack --dry-run --json | node -e "
             const files = JSON.parse(require('fs').readFileSync(0))[0].files.map((f) => f.path);
-            const missing = ['index.js', 'index.d.ts'].filter((f) => !files.includes(f));
+            const missing = ['index.js', 'index.d.ts', 'LICENSE'].filter((f) => !files.includes(f));
             if (missing.length) { console.error('missing from the package: ' + missing); process.exit(1); }"
           for dir in npm/*/; do
             (cd "$dir" && npm pack --dry-run --json | node -e "
               const pkg = JSON.parse(require('fs').readFileSync(0))[0];
-              if (!pkg.files.some((f) => f.path.endsWith('.node'))) { console.error(pkg.name + ' has no binary'); process.exit(1); }")
+              if (!pkg.files.some((f) => f.path.endsWith('.node'))) { console.error(pkg.name + ' has no binary'); process.exit(1); }
+              if (!pkg.files.some((f) => f.path === 'LICENSE')) { console.error(pkg.name + ' has no LICENSE'); process.exit(1); }")
           done
       - name: Publish
         run: |

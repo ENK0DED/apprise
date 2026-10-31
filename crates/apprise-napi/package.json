@@ -9,7 +9,7 @@
     "type": "git",
     "url": "https://github.com/enk0ded/apprise"
   },
-  "license": "MIT",
+  "license": "BSD-2-Clause",
   "keywords": [
     "apprise",
     "notification",
