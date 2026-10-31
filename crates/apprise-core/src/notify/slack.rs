@@ -148,12 +148,16 @@ static LINK_RES: LazyLock<[(Regex, LinkKind); 3]> = LazyLock::new(|| {
 
 /// Upstream's legacy-API escaping of Markdown with no declared format:
 /// `&`, `<` and `>` become entities, then channel, user and URL links are
-/// turned back into Slack links, each match replacing every copy of itself
-/// in any case (upstream `re.sub(re.escape(match), ..., re.IGNORECASE)`).
+/// turned back into Slack links, each match replacing every copy of itself.
 ///
-/// Fails where upstream raises: on a CR `*` LF, which its formatting
-/// pattern matches but its map has no entry for, and on a link whose text
-/// Python's `re.sub()` cannot read as a replacement.
+/// Deliberately unlike upstream, the link goes in as written and only
+/// exact copies are replaced. Upstream's `re.sub(re.escape(match), link,
+/// body, flags=re.IGNORECASE)` reads the link as a replacement template, so
+/// `\\` became `\` and `\d` or `\1` failed the send, and it also replaced
+/// copies in other cases (`<!here>` after `<!Here>` became `<!Here>`).
+///
+/// Fails where upstream raises on a CR `*` LF, which its formatting
+/// pattern matches but its map has no entry for.
 fn escape_passthrough_markdown(body: &str) -> Result<String, String> {
   if body.contains("\r*\n") {
     return Err(r"KeyError: '\r*\n'".into());
@@ -171,175 +175,10 @@ fn escape_passthrough_markdown(body: &str) -> Result<String, String> {
       };
       let desc = pystr::strip(&val);
       let link = if desc.is_empty() { format!("<{sigil}{name}>") } else { format!("<{sigil}{name}|{desc}>") };
-      body = py_ignorecase_sub(&whole, &link, &body)?;
+      body = body.replace(&whole, &link);
     }
   }
   Ok(body)
-}
-
-/// Python `re._casefix._EXTRA_CASES` as classes: lowercase letters that
-/// `re.IGNORECASE` matches with each other beyond their case mappings.
-const PY_EXTRA_CASES: &[&[char]] = &[
-  &['\u{69}', '\u{131}'],
-  &['\u{73}', '\u{17F}'],
-  &['\u{B5}', '\u{3BC}'],
-  &['\u{345}', '\u{3B9}', '\u{1FBE}'],
-  &['\u{390}', '\u{1FD3}'],
-  &['\u{3B0}', '\u{1FE3}'],
-  &['\u{3B2}', '\u{3D0}'],
-  &['\u{3B5}', '\u{3F5}'],
-  &['\u{3B8}', '\u{3D1}'],
-  &['\u{3BA}', '\u{3F0}'],
-  &['\u{3C0}', '\u{3D6}'],
-  &['\u{3C1}', '\u{3F1}'],
-  &['\u{3C2}', '\u{3C3}'],
-  &['\u{3C6}', '\u{3D5}'],
-  &['\u{432}', '\u{1C80}'],
-  &['\u{434}', '\u{1C81}'],
-  &['\u{43E}', '\u{1C82}'],
-  &['\u{441}', '\u{1C83}'],
-  &['\u{442}', '\u{1C84}', '\u{1C85}'],
-  &['\u{44A}', '\u{1C86}'],
-  &['\u{463}', '\u{1C87}'],
-  &['\u{1C88}', '\u{A64B}'],
-  &['\u{1E61}', '\u{1E9B}'],
-  &['\u{FB05}', '\u{FB06}'],
-];
-
-/// The character a literal matches under Python's `re.IGNORECASE`: its
-/// simple lowercase (U+0130 is the one letter whose full lowercase has two
-/// characters; Python's is `i`), then the first of its extra class.
-fn py_ignorecase_key(c: char) -> char {
-  let mut lower = c.to_lowercase();
-  let lower = match (lower.next(), lower.next()) {
-    (Some(l), None) => l,
-    _ if c == '\u{130}' => 'i',
-    _ => c,
-  };
-  PY_EXTRA_CASES.iter().find(|class| class.contains(&lower)).map_or(lower, |class| class[0])
-}
-
-/// One part of a parsed `re.sub()` replacement.
-enum TemplatePart {
-  Text(String),
-  /// `\g<0>`: the text the pattern matched.
-  Match,
-}
-
-/// Python's `re._parser.parse_template()` for a pattern without groups:
-/// the character escapes (`\n`, `\\`, ...), octal escapes and `\g<0>`.
-/// Group references and unknown ASCII-letter escapes are the errors Python
-/// raises; any other escaped character stays as written.
-fn py_template(repl: &str) -> Result<Vec<TemplatePart>, String> {
-  let s: Vec<char> = repl.chars().collect();
-  let octal = |c: Option<&char>| c.is_some_and(|c| ('0'..='7').contains(c));
-  let mut parts = Vec::new();
-  let mut text = String::new();
-  let mut i = 0;
-  while i < s.len() {
-    let c = s[i];
-    i += 1;
-    if c != '\\' {
-      text.push(c);
-      continue;
-    }
-    let Some(&e) = s.get(i) else { return Err("bad escape (end of pattern)".into()) };
-    i += 1;
-    match e {
-      'g' => {
-        if s.get(i) != Some(&'<') {
-          return Err("missing <".into());
-        }
-        let Some(len) = s[i + 1..].iter().position(|&c| c == '>') else {
-          return Err(if i + 1 == s.len() { "missing group name" } else { "missing >, unterminated name" }.into());
-        };
-        let name: String = s[i + 1..i + 1 + len].iter().collect();
-        i += len + 2;
-        if name.is_empty() {
-          return Err("missing group name".into());
-        }
-        if !name.chars().all(|c| c.is_ascii_digit()) {
-          return Err(format!("unknown group name '{name}'"));
-        }
-        if name.chars().any(|c| c != '0') {
-          return Err(format!("invalid group reference {}", name.trim_start_matches('0')));
-        }
-        parts.push(TemplatePart::Text(std::mem::take(&mut text)));
-        parts.push(TemplatePart::Match);
-      }
-      '0' => {
-        let mut digits = String::from("0");
-        while digits.len() < 3 && octal(s.get(i)) {
-          digits.push(s[i]);
-          i += 1;
-        }
-        let value = u32::from_str_radix(&digits, 8).unwrap_or(0) & 0xff;
-        text.extend(char::from_u32(value));
-      }
-      '1'..='9' => {
-        let mut digits = String::from(e);
-        if let Some(&second) = s.get(i).filter(|c| c.is_ascii_digit()) {
-          digits.push(second);
-          i += 1;
-          if octal(Some(&e)) && octal(Some(&second)) && octal(s.get(i)) {
-            digits.push(s[i]);
-            i += 1;
-            let value = u32::from_str_radix(&digits, 8).unwrap_or(0);
-            if value > 0o377 {
-              return Err(format!("octal escape value \\{digits} outside of range 0-0o377"));
-            }
-            text.extend(char::from_u32(value));
-            continue;
-          }
-        }
-        return Err(format!("invalid group reference {digits}"));
-      }
-      'a' => text.push('\x07'),
-      'b' => text.push('\x08'),
-      'f' => text.push('\x0C'),
-      'n' => text.push('\n'),
-      'r' => text.push('\r'),
-      't' => text.push('\t'),
-      'v' => text.push('\x0B'),
-      '\\' => text.push('\\'),
-      e if e.is_ascii_alphabetic() => return Err(format!("bad escape \\{e}")),
-      e => {
-        text.push('\\');
-        text.push(e);
-      }
-    }
-  }
-  parts.push(TemplatePart::Text(text));
-  Ok(parts)
-}
-
-/// `re.sub(re.escape(needle), repl, haystack, flags=re.IGNORECASE)`. The
-/// replacement is parsed first, so a bad one fails even without a match.
-fn py_ignorecase_sub(needle: &str, repl: &str, haystack: &str) -> Result<String, String> {
-  let template = py_template(repl)?;
-  let needle: Vec<char> = needle.chars().map(py_ignorecase_key).collect();
-  let hay: Vec<char> = haystack.chars().collect();
-  if needle.is_empty() {
-    return Ok(haystack.to_string());
-  }
-  let keys: Vec<char> = hay.iter().copied().map(py_ignorecase_key).collect();
-  let mut out = String::with_capacity(haystack.len());
-  let mut i = 0;
-  while i < hay.len() {
-    if keys[i..].starts_with(&needle) {
-      for part in &template {
-        match part {
-          TemplatePart::Text(text) => out.push_str(text),
-          TemplatePart::Match => out.extend(&hay[i..i + needle.len()]),
-        }
-      }
-      i += needle.len();
-    } else {
-      out.push(hay[i]);
-      i += 1;
-    }
-  }
-  Ok(out)
 }
 
 pub struct Slack {
@@ -1276,20 +1115,22 @@ mod tests {
 
   /// Markdown with no declared format over the legacy API, as upstream
   /// sends it for `notify(body_format=None)`: escaped, with Slack links
-  /// turned back into links. Upstream raises on a CR `*` LF and on links
-  /// `re.sub()` cannot use as a replacement; nothing is sent then.
+  /// turned back into links. Upstream raises on a CR `*` LF; nothing is
+  /// sent then. Unlike upstream, links go in as written.
   #[tokio::test]
   async fn test_passthrough_markdown_legacy_text() {
     let linked = "<!channel> hi <!here|Here Now> &lt;@U123|bob&gt; <@U9> see <https://x.com/a?b=1&c=2|the site> and <mailto://u@x.com>";
     let cases: [(&str, &str, Option<&str>); 9] = [
       ("", "a < b & c > d", Some("a &lt; b &amp; c &gt; d")),
       ("", linked, Some("<!channel> hi <!here|Here Now> &amp;lt;<@U123|bob&amp;gt; &lt;@U9> see <https://x.com/a?b=1&c=2|the site> and <mailto://u<@x.com>")),
-      // Every copy of a link is replaced, in any case
-      ("", "<!Here> and <!here>", Some("<!Here> and <!Here>")),
-      // The link is a re.sub() replacement: backslashes are read as escapes
-      ("", r"x <@u\\n> y", Some(r"x <@u\n> y")),
-      ("", r"x <@u\101> y", Some("x <@uA> y")),
-      ("", r"x <!chan\d> y", None),
+      // Each link replaces exact copies of itself only; upstream also
+      // replaced the other case, sending "<!Here> and <!Here>"
+      ("", "<!Here> and <!here> or <!Here>", Some("<!Here> and <!here> or <!Here>")),
+      // Backslashes stay as written; upstream read the link as a re.sub()
+      // template, sending "x <@u\n> y" and "x <@uA> y", and failing here
+      ("", r"x <@u\\n> y", Some(r"x <@u\\n> y")),
+      ("", r"x <@u\101> y", Some(r"x <@u\101> y")),
+      ("", r"x <!chan\d|a\1\g> y", Some(r"x <!chan\d|a\1\g> y")),
       ("", "a\r*\nb", None),
       // Plain text targets and blocks take the body as written
       ("&format=text", linked, Some(linked)),
@@ -1327,35 +1168,20 @@ mod tests {
     );
   }
 
-  /// Upstream's legacy text for random passthrough bodies, including the
-  /// ones it fails on (see `testdata/gen_slack_passthrough.py`).
+  /// The legacy text for random passthrough bodies, including the ones
+  /// that fail, from upstream's code with the port's fix applied (see
+  /// `testdata/gen_slack_passthrough.py`). `upstream` is what upstream
+  /// itself sent where that differs.
   #[test]
   fn test_passthrough_markdown_vectors() {
     let cases: Vec<Value> = serde_json::from_str(include_str!("testdata/slack_passthrough.json")).unwrap();
     assert_eq!(cases.len(), 400);
+    assert!(cases.iter().filter(|c| c.get("upstream").is_some()).count() >= 50);
     for case in &cases {
       // Preparation strips trailing space from the body first
       let body = pystr::rstrip(case["body"].as_str().unwrap());
-      let expected = case["text"].as_str().filter(|_| case["ok"] == json!(true));
-      assert_eq!(escape_passthrough_markdown(body).ok().as_deref(), expected, "{body:?}");
+      assert_eq!(escape_passthrough_markdown(body).ok().as_deref(), case["text"].as_str(), "{body:?}");
     }
-  }
-
-  #[test]
-  fn test_python_replacement_templates() {
-    let expand = |repl: &str| py_ignorecase_sub("ab", repl, "xAby").map_err(|e| e.split(' ').next().unwrap_or_default().to_string());
-    assert_eq!(expand(r"<\g<0>|\g<00>>"), Ok("x<Ab|Ab>y".into()));
-    assert_eq!(expand(r"\n\t\\\&\0\012\101\0777\08"), Ok("x\n\t\\\\&\0\nA?7\08y".into()));
-    for bad in [r"\g<1>", r"\g<a>", r"\g", r"\g<", r"\g<>", r"\1", r"\7", r"\12", r"\400", r"\d", r"\x41", "\\"] {
-      assert!(expand(bad).is_err(), "{bad}");
-    }
-    // A bad replacement fails even when nothing matches
-    assert!(py_ignorecase_sub("zz", r"\d", "xAby").is_err());
-    // re.IGNORECASE also folds ſ, K, İ, ı and the Greek and Cyrillic extras
-    assert_eq!(py_ignorecase_sub("sk", "!", "ſK SK sk"), Ok("! ! !".into()));
-    assert_eq!(py_ignorecase_sub("ii", "!", "İı"), Ok("!".into()));
-    assert_eq!(py_ignorecase_sub("σ", "!", "Σςσ\u{3c2}"), Ok("!!!!".into()));
-    assert_eq!(py_ignorecase_sub("в", "!", "В\u{1c80}"), Ok("!!".into()));
   }
 
   #[tokio::test]

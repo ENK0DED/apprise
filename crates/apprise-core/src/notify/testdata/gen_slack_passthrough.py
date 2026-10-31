@@ -1,4 +1,4 @@
-"""Record upstream Slack's legacy-API text for bodies with no input format.
+"""Record Slack's legacy-API text for bodies with no input format.
 
 Usage:
   python -I gen_slack_passthrough.py OUT.json [COUNT [SEED]]
@@ -6,16 +6,26 @@ Usage:
 Sends COUNT random bodies (default 30000) through upstream's
 `Apprise().notify(body_format=None)` to a legacy Slack webhook with
 `?format=markdown`, where upstream escapes `&`, `<` and `>` and turns
-channel, user and URL links back into links. Writes a sample for
-`notify/slack.rs`: 250 bodies that had links restored, 100 that upstream
-failed on (it raises), and 50 that were only escaped, as
-`[{"body", "ok", "text"}]`. `text` is the attachment text upstream posted,
-or null when the notification failed. Requests are patched; nothing leaves
-the machine.
+channel, user and URL links back into links.
+
+Each body is sent twice: through upstream as it is, then with the port's
+deliberate fix applied to upstream's code, which is what `text` records.
+Upstream's `re.sub(re.escape(match), link, body, flags=re.IGNORECASE)`
+reads the link as a replacement template (backslashes are escapes, `\\d`
+or `\\1` fail the send) and also replaces copies in other cases. The port
+puts the link in as written and replaces exact copies only.
+
+Writes a sample for `notify/slack.rs` as `[{"body", "text"}]`, plus
+`"upstream"` where upstream sent something else: 250 bodies that had
+links restored, 100 where upstream differs, up to 20 that both fail on
+(they raise) and 50 that were only escaped. `text` and `upstream` are the
+attachment text posted, or null when the notification failed. Requests
+are patched; nothing leaves the machine.
 """
 
 import json
 import random
+import re
 import sys
 
 import requests
@@ -32,12 +42,26 @@ FRAGMENTS = [
 ]
 
 
+class LiteralRe:
+    """`re` for upstream's Slack module with the port's fix: its only
+    `re.sub()` calls put a link in place of each exact copy of a match."""
+
+    def __getattr__(self, name):
+        return getattr(re, name)
+
+    @staticmethod
+    def sub(pattern, repl, string, count=0, flags=0):
+        assert flags == re.IGNORECASE and isinstance(repl, str)
+        return re.sub(pattern, lambda _: repl, string, count=count)
+
+
 def main():
     out_path = sys.argv[1]
     count = int(sys.argv[2]) if len(sys.argv) > 2 else 30000
     rnd = random.Random(int(sys.argv[3]) if len(sys.argv) > 3 else 11)
 
     import apprise
+    from apprise.plugins import slack
 
     posted = []
 
@@ -58,12 +82,22 @@ def main():
     assert a.add("slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/"
                  "?format=markdown&footer=no&image=no")
 
+    def send(body, module_re):
+        slack.re = module_re
+        posted.clear()
+        if not a.notify(body=body, title="", body_format=None):
+            return None
+        payload = posted[-1]
+        if isinstance(payload, (str, bytes)):
+            payload = json.loads(payload)
+        return payload["attachments"][0]["text"]
+
     def escaped(body):
         body = body.rstrip()
         return body.replace("&", "&amp;").replace("<", "&lt;") \
             .replace(">", "&gt;")
 
-    groups = {"linked": [], "failed": [], "escaped": []}
+    groups = {"linked": [], "differs": [], "failed": [], "escaped": []}
     seen = set()
     for _ in range(count):
         body = "".join(rnd.choice(FRAGMENTS)
@@ -71,20 +105,20 @@ def main():
         if not body.strip() or body in seen:
             continue
         seen.add(body)
-        posted.clear()
-        ok = bool(a.notify(body=body, title="", body_format=None))
-        text = None
-        if ok:
-            payload = posted[-1]
-            if isinstance(payload, (str, bytes)):
-                payload = json.loads(payload)
-            text = payload["attachments"][0]["text"]
-        group = ("failed" if not ok
-                 else "escaped" if text == escaped(body) else "linked")
-        groups[group].append({"body": body, "ok": ok, "text": text})
+        upstream = send(body, re)
+        text = send(body, LiteralRe())
+        case = {"body": body, "text": text}
+        if upstream != text:
+            case["upstream"] = upstream
+            group = "differs"
+        elif text is None:
+            group = "failed"
+        else:
+            group = "escaped" if text == escaped(body) else "linked"
+        groups[group].append(case)
 
-    sample = (groups["linked"][:250] + groups["failed"][:100]
-              + groups["escaped"][:50])
+    sample = (groups["linked"][:250] + groups["differs"][:100]
+              + groups["failed"][:20] + groups["escaped"][:50])
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(sample, fh, ensure_ascii=False, indent=0)
         fh.write("\n")
