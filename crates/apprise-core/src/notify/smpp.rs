@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::Instant;
 
 const DEFAULT_PORT: u16 = 2775;
 const DEFAULT_SECURE_PORT: u16 = 3550;
@@ -59,6 +60,8 @@ pub struct Smpp {
   source: String,
   targets: Vec<String>,
   tags: Vec<String>,
+  /// How long to wait for the response to each PDU ([`TIMEOUT`]).
+  response_timeout: Duration,
 }
 
 impl Smpp {
@@ -98,7 +101,18 @@ impl Smpp {
       }
     }
 
-    Some(Self { host: url.host.clone().unwrap_or_default(), port, secure, verify: url.verify_certificate(), user, password, source, targets, tags: url.tags() })
+    Some(Self {
+      host: url.host.clone().unwrap_or_default(),
+      port,
+      secure,
+      verify: url.verify_certificate(),
+      user,
+      password,
+      source,
+      targets,
+      tags: url.tags(),
+      response_timeout: TIMEOUT,
+    })
   }
 
   pub fn static_details() -> ServiceDetails {
@@ -254,8 +268,9 @@ const MAX_PDU_LEN: usize = 64 * 1024;
 trait SmppStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> SmppStream for T {}
 
-/// Read one PDU and return its command ID, status and sequence.
-async fn read_pdu<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> Result<(u32, u32, u32), String> {
+/// Read one PDU by `deadline` and return its command ID, status and
+/// sequence.
+async fn read_pdu<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, deadline: Instant) -> Result<(u32, u32, u32), String> {
   let io = async {
     let mut header = [0u8; 16];
     stream.read_exact(&mut header).await.map_err(|e| e.to_string())?;
@@ -270,16 +285,26 @@ async fn read_pdu<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> Result<(
     stream.read_exact(&mut body).await.map_err(|e| e.to_string())?;
     Ok((word(4), word(8), word(12)))
   };
-  tokio::time::timeout(TIMEOUT, io).await.map_err(|_| "timed out".to_string())?
+  tokio::time::timeout_at(deadline, io).await.map_err(|_| "timed out".to_string())?
 }
 
-/// Read the response to the PDU with `sequence`, answering any keepalive
-/// the server sends first. Returns its command status.
-async fn read_response<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, sequence: u32) -> Result<u32, String> {
+/// Read the response to the PDU with `sequence` within `limit`, answering
+/// any keepalive the server sends first. Returns its command status.
+///
+/// One deadline covers the whole wait: a server that keeps sending
+/// keepalives or unrelated PDUs cannot hold the send open (smpplib reads
+/// a single PDU, with a 5 s socket timeout).
+async fn read_response<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, sequence: u32, limit: Duration) -> Result<u32, String> {
+  let deadline = Instant::now() + limit;
   loop {
-    let (command, status, seq) = read_pdu(stream).await?;
+    // Checked before every read: a timer around a read that is always
+    // ready never gets to fire.
+    if Instant::now() >= deadline {
+      return Err("timed out".to_string());
+    }
+    let (command, status, seq) = read_pdu(stream, deadline).await?;
     if command == ENQUIRE_LINK {
-      write(stream, &pdu(ENQUIRE_LINK | RESPONSE, seq, &[])).await?;
+      write_by(stream, &pdu(ENQUIRE_LINK | RESPONSE, seq, &[]), deadline).await?;
       continue;
     }
     if seq == sequence || command == RESPONSE {
@@ -289,11 +314,15 @@ async fn read_response<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, sequen
 }
 
 async fn write<S: AsyncWrite + Unpin>(stream: &mut S, data: &[u8]) -> Result<(), String> {
+  write_by(stream, data, Instant::now() + TIMEOUT).await
+}
+
+async fn write_by<S: AsyncWrite + Unpin>(stream: &mut S, data: &[u8], deadline: Instant) -> Result<(), String> {
   let io = async {
     stream.write_all(data).await?;
     stream.flush().await
   };
-  tokio::time::timeout(TIMEOUT, io).await.map_err(|_| "timed out".to_string())?.map_err(|e| e.to_string())
+  tokio::time::timeout_at(deadline, io).await.map_err(|_| "timed out".to_string())?.map_err(|e| e.to_string())
 }
 
 #[async_trait]
@@ -334,7 +363,7 @@ impl Notify for Smpp {
     let mut sequence = 2u32;
     let bound = async {
       write(&mut stream, &self.bind_pdu(sequence)).await?;
-      read_response(&mut stream, sequence).await
+      read_response(&mut stream, sequence, self.response_timeout).await
     }
     .await;
     match bound {
@@ -378,7 +407,7 @@ impl Notify for Smpp {
           }
           sequence += 1;
           write(&mut stream, &self.submit_pdu(sequence, target, part, data_coding, esm_class)).await?;
-          match read_response(&mut stream, sequence).await? {
+          match read_response(&mut stream, sequence, self.response_timeout).await? {
             0 => crate::delivery::mark_delivered(&part_key, false),
             status => return Err(format!("submit_sm was rejected (status {:#x})", status)),
           }
@@ -400,7 +429,7 @@ impl Notify for Smpp {
 
     sequence += 1;
     if write(&mut stream, &pdu(UNBIND, sequence, &[])).await.is_ok() {
-      let _ = read_response(&mut stream, sequence).await;
+      let _ = read_response(&mut stream, sequence, self.response_timeout).await;
     }
     let _ = stream.shutdown().await;
     Ok(!has_error)
@@ -780,5 +809,103 @@ mod tests {
     // The retry sent only the rejected part, with its original reference
     assert_eq!(udh(&submits[4]), udh(&submits[3]));
     assert_eq!(udh(&submits[4])[5], 2);
+  }
+
+  /// YAML `from_phone`, `target_phone` and `targets` replace the URL's
+  /// source and targets, its `?to=` included, as upstream's constructor
+  /// arguments do (upstream: source 15550001111, targets 15553334444 and
+  /// 15559998888, in that order).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_settings_replace_source_and_targets() {
+    let (port, server) = smsc(0).await;
+    let doc = format!(
+      concat!(
+        "urls:\n  - smpp://user:pass@127.0.0.1:{}/15551234567/15557654321?to=15550000000:\n",
+        "      target_phone: '15559998888'\n      targets: ['15553334444']\n      from_phone: '15550001111'\n",
+      ),
+      port
+    );
+    let mut a = crate::Apprise::new();
+    assert_eq!(a.add_config_text(&doc, Some(crate::config::ConfigFormat::Yaml), 0).await.unwrap(), 1);
+    assert!(a.notify(&NotifyContext { body: "Hello".into(), ..Default::default() }).await.is_success());
+    let pdus = server.await.unwrap();
+    let expected = parse(&format!("smpp://user:pass@127.0.0.1:{}/15550001111/15553334444", port)).unwrap();
+    assert_eq!(pdus.len(), 4);
+    assert_eq!(pdus[1], expected.submit_pdu(3, "15553334444", b"Hello", 0, 0));
+    assert_eq!(pdus[2], expected.submit_pdu(4, "15559998888", b"Hello", 0, 0));
+  }
+
+  /// A fake SMSC that answers the bind (unless `before_bind`) and then
+  /// sends `flood` without end, while reading whatever the client sends.
+  /// Connections that do not start with a bind are dropped.
+  async fn flooding_smsc(before_bind: bool, flood: Vec<u8>) -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+      while let Ok((tcp, _)) = listener.accept().await {
+        let flood = flood.repeat(64);
+        tokio::spawn(async move {
+          let (mut read, mut write) = tcp.into_split();
+          let mut header = [0u8; 16];
+          if read.read_exact(&mut header).await.is_err() || header[4..8] != BIND_TRANSMITTER.to_be_bytes() {
+            return;
+          }
+          let length = u32::from_be_bytes(header[0..4].try_into().unwrap()) as usize;
+          let mut body = vec![0u8; length.saturating_sub(16).min(1024)];
+          if read.read_exact(&mut body).await.is_err() {
+            return;
+          }
+          if !before_bind {
+            let sequence = u32::from_be_bytes(header[12..16].try_into().unwrap());
+            if write.write_all(&pdu(BIND_TRANSMITTER | RESPONSE, sequence, b"fake\0")).await.is_err() {
+              return;
+            }
+          }
+          tokio::spawn(async move { tokio::io::copy(&mut read, &mut tokio::io::sink()).await });
+          while write.write_all(&flood).await.is_ok() {}
+        });
+      }
+    });
+    port
+  }
+
+  /// Keepalives and PDUs for other sequences, sent without pause.
+  fn floods() -> [(&'static str, Vec<u8>); 2] {
+    [("enquire_link", pdu(ENQUIRE_LINK, 1000, &[])), ("unrelated enquire_link_resp", pdu(ENQUIRE_LINK | RESPONSE, 7777, &[]))]
+  }
+
+  /// One deadline holds the wait for a response however fast the server
+  /// keeps sending other PDUs (each read used to get a fresh timeout).
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn test_response_deadline_holds_while_pdus_arrive() {
+    for (name, flood) in floods() {
+      let port = flooding_smsc(true, flood).await;
+      let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+      let svc = parse(&format!("smpp://user:pass@127.0.0.1:{port}/15551234567/15559876543")).unwrap();
+      write(&mut stream, &svc.bind_pdu(2)).await.unwrap();
+      let started = std::time::Instant::now();
+      let result = tokio::time::timeout(Duration::from_secs(10), read_response(&mut stream, 2, Duration::from_millis(300))).await;
+      assert_eq!(result, Ok(Err("timed out".to_string())), "{name}");
+      assert!(started.elapsed() < Duration::from_secs(2), "{name}: took {:?}", started.elapsed());
+    }
+  }
+
+  /// A send gives up on a flooding server: before the bind is answered, and
+  /// after it (smpplib never waits for the submit_sm response).
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn test_send_gives_up_on_a_flooding_server() {
+    for before_bind in [true, false] {
+      for (name, flood) in floods() {
+        let port = flooding_smsc(before_bind, flood).await;
+        let mut svc = parse(&format!("smpp://user:pass@127.0.0.1:{port}/15551234567/15559876543")).unwrap();
+        svc.response_timeout = Duration::from_millis(300);
+        let started = std::time::Instant::now();
+        let sent = tokio::time::timeout(Duration::from_secs(10), svc.send(&NotifyContext { body: "hi".into(), ..Default::default() })).await;
+        assert_eq!(sent.map(|r| r.ok()), Ok(Some(false)), "{name}, before bind: {before_bind}");
+        // The bind, or a submit and the unbind, each wait at most 300 ms.
+        assert!(started.elapsed() < Duration::from_secs(3), "{name}, before bind: {before_bind}: took {:?}", started.elapsed());
+      }
+    }
   }
 }

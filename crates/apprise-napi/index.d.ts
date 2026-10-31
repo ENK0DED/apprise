@@ -38,6 +38,13 @@ export declare class Apprise {
   notify(body: string, options?: NotifyOptions | undefined | null): Promise<SendResult>
   /** Get details of all loaded services. */
   details(): Array<ServiceInfo>
+  /**
+   * Let every loaded service give back what it holds on the remote end
+   * (a Matrix login kept only in memory is logged out). Call it when the
+   * instance is no longer needed; the services stay usable, and a later
+   * notification starts over.
+   */
+  close(): Promise<void>
   /** Remove every loaded service and configuration entry. */
   clear(): void
 }

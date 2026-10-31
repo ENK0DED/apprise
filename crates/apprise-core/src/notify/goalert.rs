@@ -91,11 +91,20 @@ impl GoAlert {
       }
     }
 
+    // A YAML `path:` setting replaces the path the URL gives (upstream
+    // passes it to the constructor). Only the setting can say it: the
+    // path and the keys share the URL path, told apart by their form, so
+    // the configuration loader leaves it here as `?path=`.
+    let fullpath = match arg(url, "path") {
+      Some(setting) => setting.trim_matches('/').to_string(),
+      None => path.join("/"),
+    };
+
     Some(Self {
       secure: url.schema == "goalerts",
       host,
       port: url.port,
-      fullpath: path.join("/"),
+      fullpath,
       targets,
       action,
       // An optional key so repeated notifications update one alert

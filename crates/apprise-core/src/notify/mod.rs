@@ -538,6 +538,16 @@ pub trait Notify: Send + Sync {
   fn url_identifier(&self) -> Option<Vec<String>> {
     None
   }
+
+  /// Give back what the service holds on the remote end once it is no
+  /// longer needed: the clean-up upstream does when a plugin object is
+  /// destroyed (Matrix logs out of a login it cannot keep for the next
+  /// run). [`Apprise::close`](crate::Apprise::close) calls it for every
+  /// loaded service with the store, HTTP settings and throttle of its
+  /// sends. It must be safe to call more than once and on a service that
+  /// never sent, and the service must still work afterwards. Default:
+  /// nothing to do.
+  async fn close(&self) {}
 }
 
 // ── Helper: throttle requests ────────────────────────────────────────────────

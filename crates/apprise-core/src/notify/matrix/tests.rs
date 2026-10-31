@@ -986,6 +986,178 @@ async fn test_login_state_persists_across_instances() {
   assert_eq!(txn_ids(&requests), vec!["0", "1"]);
 }
 
+// ── Logout (upstream `__del__`) ──────────────────────────────────────────────
+
+/// [`homeserver`] plus registration, webhooks and a logout that answers
+/// `status` and `answer`.
+async fn homeserver_with_logout(server: &MockServer, status: u16, answer: Value) {
+  homeserver(server).await;
+  mock_re(server, "POST", r"^/_matrix/client/(v3|r0)/logout$", status, answer).await;
+  mock_re(server, "POST", r"^/_matrix/client/(v3|r0)/register$", 200, json!({"access_token": "reg5678", "user_id": "@anon:localhost", "device_id": "DEV2"}))
+    .await;
+  Mock::given(method("POST")).and(path_regex(r"/hook/|/webhook/")).respond_with(ResponseTemplate::new(200)).mount(server).await;
+}
+
+fn logouts(requests: &[Request]) -> Vec<&Request> {
+  requests.iter().filter(|r| r.url.path().ends_with("/logout")).collect()
+}
+
+fn memory_asset() -> AppriseAsset {
+  AppriseAsset { storage_mode: StorageMode::Memory, ..Default::default() }
+}
+
+#[tokio::test]
+async fn test_close_logs_out_a_login_kept_in_memory() {
+  // The CLI runs of upstream and the port against a fake homeserver agree
+  // on each case (round-3 report, r5-matrix-smpp-yaml).
+  let dir = tempfile::tempdir().unwrap();
+  let disk = || AppriseAsset { storage_path: Some(dir.path().to_path_buf()), ..Default::default() };
+  let login = "matrix://user:pass@localhost/!r:localhost?e2ee=no";
+  let cases = [
+    (memory_asset(), login.to_string(), Some("abcd1234")),
+    // No storage path: the store lives in memory.
+    (AppriseAsset::default(), login.into(), Some("abcd1234")),
+    (disk(), format!("{login}&store=no"), Some("abcd1234")),
+    // A registration is given back too.
+    (memory_asset(), "matrix://localhost/!r:localhost?e2ee=no".into(), Some("reg5678")),
+    // The store keeps the login for the next run.
+    (disk(), login.into(), None),
+    // The URL's own access token is not ours to give back.
+    (memory_asset(), "matrix://rawtoken@localhost/!r:localhost?e2ee=no".into(), None),
+    // Webhooks never log in.
+    (memory_asset(), "matrix://user:pass@localhost?mode=matrix".into(), None),
+    (memory_asset(), "matrix://user:pass@localhost?mode=hookshot".into(), None),
+  ];
+  for (asset, url, token) in cases {
+    let server = MockServer::start().await;
+    homeserver_with_logout(&server, 200, json!({})).await;
+    let mut a = Apprise::with_asset(asset);
+    assert!(a.add(&url), "{url}");
+    with_test_base(server.uri(), async {
+      assert!(a.notify(&ctx("", "B")).await.is_success(), "{url}");
+      a.close().await;
+    })
+    .await;
+    let requests = seen(&server).await;
+    let logouts = logouts(&requests);
+    match token {
+      Some(token) => {
+        assert_eq!(logouts.len(), 1, "{url}");
+        assert_eq!(line(logouts[0]), "POST /_matrix/client/v3/logout", "{url}");
+        assert_eq!(logouts[0].headers.get("authorization").unwrap(), &format!("Bearer {token}"), "{url}");
+        assert_eq!(body(logouts[0]), json!({}), "{url}");
+        // Nothing is sent after the logout.
+        assert!(requests.last().unwrap().url.path().ends_with("/logout"), "{url}");
+      }
+      None => assert!(logouts.is_empty(), "{url}"),
+    }
+  }
+}
+
+#[tokio::test]
+async fn test_close_forgets_the_login() {
+  let server = MockServer::start().await;
+  homeserver_with_logout(&server, 200, json!({})).await;
+  let mut a = Apprise::with_asset(memory_asset());
+  assert!(a.add("matrix://user:pass@localhost/!r:localhost?e2ee=no&v=2"));
+  with_test_base(server.uri(), async {
+    assert!(a.notify(&ctx("", "1")).await.is_success());
+    a.close().await;
+    // Nothing is left to give back.
+    a.close().await;
+    // The service still works: it logs in again.
+    assert!(a.notify(&ctx("", "2")).await.is_success());
+    a.close().await;
+  })
+  .await;
+  let lines: Vec<String> = seen(&server).await.iter().map(line).filter(|l| !l.contains("/join/")).collect();
+  assert_eq!(
+    lines,
+    [
+      "POST /_matrix/client/r0/login",
+      "PUT /_matrix/client/r0/rooms/%21r%3Alocalhost/send/m.room.message/0",
+      "POST /_matrix/client/r0/logout",
+      "POST /_matrix/client/r0/login",
+      "PUT /_matrix/client/r0/rooms/%21r%3Alocalhost/send/m.room.message/1",
+      "POST /_matrix/client/r0/logout",
+    ]
+  );
+}
+
+#[tokio::test]
+async fn test_failed_logout_keeps_the_login() {
+  // Upstream `_logout()`: an expired token counts as logged out; any other
+  // failure keeps the login, so a later close tries again.
+  for (status, errcode, attempts) in [(500, "M_UNKNOWN", 2), (401, "M_UNKNOWN_TOKEN", 1)] {
+    let server = MockServer::start().await;
+    homeserver_with_logout(&server, status, json!({"errcode": errcode, "error": "x"})).await;
+    // Used directly, without a dispatch or store.
+    let m = load("matrix://user:pass@localhost/!r:localhost?e2ee=no");
+    assert!(send(&m, &server, &ctx("", "B")).await);
+    m.close().await;
+    m.close().await;
+    assert_eq!(logouts(&seen(&server).await).len(), attempts, "{errcode}");
+    assert_eq!(m.session.lock().await.access_token.is_some(), attempts == 2, "{errcode}");
+  }
+}
+
+#[test]
+fn test_logout_conditions() {
+  // Upstream `__del__`: not for t2bot, not when the store persists, and not
+  // for the access token the URL gave (`access_token == password and not user`).
+  let session = |token: Option<&str>, memory_store: bool| Session {
+    access_token: token.map(str::to_string),
+    base_url: Some("https://hs.example".into()),
+    last_use: Some(LastUse { http: HttpOptions::default(), store: None, memory_store }),
+    ..Default::default()
+  };
+  let due = |url: &str, s: &Session| load(url).logout_due(s).map(|l| (l.url, l.token));
+  let logout = |path: &str, token: &str| Some((format!("https://hs.example{path}/logout"), token.to_string()));
+  assert_eq!(due("matrix://user:pass@localhost/#r", &session(Some("t"), true)), logout("/_matrix/client/v3", "t"));
+  assert_eq!(due("matrix://user:pass@localhost/#r?v=2", &session(Some("t"), true)), logout("/_matrix/client/r0", "t"));
+  assert_eq!(due("matrix://user:pass@localhost/#r", &session(Some("t"), false)), None);
+  assert_eq!(due("matrix://user:pass@localhost/#r", &session(None, true)), None);
+  assert_eq!(due("matrix://t@localhost/#r", &session(Some("t"), true)), None);
+  // A token that is not the URL's was obtained by this process.
+  assert_eq!(due("matrix://t@localhost/#r", &session(Some("other"), true)), logout("/_matrix/client/v3", "other"));
+  // With a user, the password is a password even if it equals the token.
+  assert_eq!(due("matrix://user:t@localhost/#r", &session(Some("t"), true)), logout("/_matrix/client/v3", "t"));
+  let t2bot = format!("matrix://{}?mode=t2bot", "a".repeat(64));
+  assert_eq!(due(&t2bot, &session(Some("t"), true)), None);
+}
+
+#[tokio::test]
+async fn test_dropped_service_logs_out_in_the_background() {
+  let server = MockServer::start().await;
+  homeserver_with_logout(&server, 200, json!({})).await;
+  let url = "matrix://user:pass@localhost/!r:localhost?e2ee=no";
+  let logged_out = || async { logouts(&seen(&server).await).len() };
+  super::with_drop_logout_in_tests(async {
+    // Dropped without close(): the logout runs on this runtime.
+    let mut a = Apprise::with_asset(memory_asset());
+    assert!(a.add(url));
+    assert!(with_test_base(server.uri(), a.notify(&ctx("", "B"))).await.is_success());
+    drop(a);
+    let started = Instant::now();
+    while logged_out().await == 0 {
+      assert!(started.elapsed() < Duration::from_secs(5), "no logout after the drop");
+      tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // Closed, then dropped: no second logout.
+    let mut a = Apprise::with_asset(memory_asset());
+    assert!(a.add(url));
+    with_test_base(server.uri(), async {
+      assert!(a.notify(&ctx("", "B")).await.is_success());
+      a.close().await;
+    })
+    .await;
+    drop(a);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+  })
+  .await;
+  assert_eq!(logged_out().await, 2);
+}
+
 /// Fails the first PUT to one room, then accepts everything.
 struct FlakyRoom {
   hits: std::sync::Mutex<u32>,

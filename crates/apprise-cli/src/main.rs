@@ -401,6 +401,9 @@ async fn run(argv: &[String]) -> i32 {
     );
     result.status
   };
+  // Let services give back what they hold, as upstream does on exit (a
+  // Matrix login kept only in memory is logged out).
+  apprise.close().await;
   apprise.flush_stores();
   status.exit_code()
 }
@@ -742,6 +745,87 @@ mod tests {
       // A real tab is \t in the JSON; a literal backslash-t is \\t
       assert_eq!(body.contains(r#""a\tb""#), interpreted, "{asset:?} -e={flag}: {body}");
       assert_eq!(body.contains(r#""a\\tb""#), !interpreted, "{asset:?} -e={flag}: {body}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+  }
+
+  /// A homeserver on a local port that answers logins, joins, sends and
+  /// logouts, and the `METHOD /path` of each request it got.
+  async fn fake_homeserver() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+      while let Ok((mut stream, _)) = listener.accept().await {
+        let log = log.clone();
+        tokio::spawn(async move {
+          let (read, mut write) = stream.split();
+          let mut reader = BufReader::new(read);
+          // Connections are kept alive between requests.
+          loop {
+            let mut request = String::new();
+            let mut length = 0;
+            if reader.read_line(&mut request).await.unwrap_or(0) == 0 {
+              return;
+            }
+            loop {
+              let mut header = String::new();
+              if reader.read_line(&mut header).await.unwrap_or(0) == 0 {
+                return;
+              }
+              if header == "\r\n" {
+                break;
+              }
+              if let Some((name, value)) = header.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+              {
+                length = value.trim().parse().unwrap_or(0);
+              }
+            }
+            let mut body = vec![0; length];
+            if reader.read_exact(&mut body).await.is_err() {
+              return;
+            }
+            let mut parts = request.split_whitespace();
+            let verb = parts.next().unwrap_or_default();
+            let path = parts.next().unwrap_or_default().split('?').next().unwrap_or_default();
+            // Other local processes probe `/`.
+            if path != "/" {
+              log.lock().unwrap().push(format!("{verb} {path}"));
+            }
+            let answer = match path {
+              p if p.ends_with("/login") => r#"{"access_token": "tok", "user_id": "@bot:localhost", "device_id": "D"}"#,
+              p if p.contains("/join/") => r#"{"room_id": "!r:localhost"}"#,
+              _ => "{}",
+            };
+            let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{answer}", answer.len());
+            if write.write_all(reply.as_bytes()).await.is_err() {
+              return;
+            }
+          }
+        });
+      }
+    });
+    (address, seen)
+  }
+
+  /// As upstream's `NotifyMatrix.__del__` at exit: a login the store does
+  /// not keep is logged out, one it keeps is not.
+  #[tokio::test]
+  async fn test_matrix_login_kept_in_memory_is_logged_out_on_exit() {
+    let dir = std::env::temp_dir().join(format!("apprise-cli-matrix-{}", std::process::id()));
+    let path = dir.to_string_lossy().into_owned();
+    for (storage, logout) in [(["-SM", "memory"], true), (["-S", &path], false)] {
+      let (address, seen) = fake_homeserver().await;
+      let url = format!("matrix://user:pass@{address}/!r:localhost?e2ee=no");
+      let argv: Vec<String> = storage.iter().chain(&["-b", "hi", &url]).map(|s| s.to_string()).collect();
+      assert_eq!(run(&argv).await, 0, "{argv:?}");
+      let lines = seen.lock().unwrap().clone();
+      assert_eq!(lines.first().map(String::as_str), Some("POST /_matrix/client/v3/login"), "{lines:?}");
+      assert_eq!(lines.iter().any(|l| l == "POST /_matrix/client/v3/logout"), logout, "{lines:?}");
+      assert!(lines.last().unwrap().contains(if logout { "/logout" } else { "/send/" }), "{lines:?}");
     }
     std::fs::remove_dir_all(&dir).ok();
   }
