@@ -265,19 +265,26 @@ fn run(program: &Path, args: &[String], limit: Duration) -> std::io::Result<Outp
     child = spawn();
   }
   let mut child = child?;
-  let collect = |pipe: Option<Box<dyn Read + Send>>| {
+  // Each pipe is read on its own thread, so a full one cannot stall the
+  // child. A process the child started can hold them open after the child
+  // exits, so the readers are only waited for until the deadline, as
+  // upstream's subprocess.run(timeout=) does.
+  let (tx, rx) = std::sync::mpsc::channel();
+  let pipes = [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)];
+  for (index, pipe) in pipes.into_iter().enumerate() {
+    let tx = tx.clone();
     std::thread::spawn(move || {
       let mut buf = Vec::new();
       if let Some(mut pipe) = pipe {
         let _ = pipe.read_to_end(&mut buf);
       }
-      buf
-    })
-  };
-  let stdout = collect(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-  let stderr = collect(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+      let _ = tx.send((index, buf));
+    });
+  }
+  drop(tx);
 
   let deadline = Instant::now() + limit;
+  let timed_out = || std::io::Error::new(std::io::ErrorKind::TimedOut, format!("{} did not finish within {:?}", program.display(), limit));
   let status = loop {
     if let Some(status) = child.try_wait()? {
       break status;
@@ -285,11 +292,20 @@ fn run(program: &Path, args: &[String], limit: Duration) -> std::io::Result<Outp
     if Instant::now() >= deadline {
       let _ = child.kill();
       let _ = child.wait();
-      return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("{} did not finish within {:?}", program.display(), limit)));
+      return Err(timed_out());
     }
     std::thread::sleep(Duration::from_millis(10));
   };
-  Ok(Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
+  let mut output = [Vec::new(), Vec::new()];
+  for _ in 0..output.len() {
+    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+      Ok((index, buf)) => output[index] = buf,
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err(timed_out()),
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+  let [stdout, stderr] = output;
+  Ok(Output { status, stdout, stderr })
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -499,12 +515,35 @@ mod tests {
     m.send_timeout = Duration::from_millis(200);
     assert!(m.send(&ctx("title", "body")).await.is_err());
 
+    // So is one that exits while a process it started keeps its output
+    // open
+    let tn = Surrogate::new("terminal-notifier 3.1.0.", "sleep 3 &\nexit 0");
+    let mut m = tn.notifier("macosx://_/?version=3");
+    m.send_timeout = Duration::from_millis(200);
+    let start = Instant::now();
+    assert!(m.send(&ctx("title", "body")).await.is_err());
+    assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+
     // No terminal-notifier at all
     let mut m = parse("macosx://").unwrap();
     m.notify_path = None;
     assert!(!m.send(&ctx("title", "body")).await.unwrap());
     m.notify_path = Some(tn.dir.path().join("missing"));
     assert!(!m.send(&ctx("title", "body")).await.unwrap());
+  }
+
+  /// The limit covers reading the output too: a child can exit while a
+  /// process it started still holds the pipes open.
+  #[test]
+  fn test_run_limit_covers_output() {
+    let start = Instant::now();
+    let result = run(Path::new("/bin/sh"), &["-c".into(), "sleep 3 & exit 0".into()], Duration::from_millis(200));
+    assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+
+    // Output that is complete within the limit is all there
+    let output = run(Path::new("/bin/sh"), &["-c".into(), "echo out; echo err >&2; exit 4".into()], Duration::from_secs(5)).unwrap();
+    assert_eq!((output.status.code(), output.stdout.as_slice(), output.stderr.as_slice()), (Some(4), &b"out\n"[..], &b"err\n"[..]));
   }
 
   #[test]
