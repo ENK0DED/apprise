@@ -12,11 +12,12 @@
 //!   written `slack://T/F/X/Y?mode=workflow` and `slack://T/X/Y?mode=trigger`.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use indexmap::IndexMap;
+use regex_lite::Regex;
 use serde_json::{Value, json};
 
 use crate::asset::NotifyImageSize;
@@ -121,6 +122,224 @@ fn truthy(v: Option<&Value>) -> bool {
 /// Python `html.escape(text, quote=False)`.
 fn escape_html(text: &str) -> String {
   text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// The Slack links upstream turns back into links after escaping
+/// (`_re_channel_support`, `_re_user_id_support`, `_re_url_support`).
+#[derive(Clone, Copy)]
+enum LinkKind {
+  Channel,
+  User,
+  Url,
+}
+
+/// `<!channel|desc>`, `<@user|desc>` and `<url|desc>`, with the brackets
+/// whole or escaped. `(?i)` is upstream's `re.IGNORECASE`; the scheme's s
+/// and i are spelled out because Python also folds ſ, İ and ı onto them.
+static LINK_RES: LazyLock<[(Regex, LinkKind); 3]> = LazyLock::new(|| {
+  let tail = r"(?:[ \t]*\|[ \t]*(?:(?P<val>[^\n]+?)[ \t]*)?(?:>|&gt;)|(?:>|&gt;))";
+  let re = |target: &str| Regex::new(&format!(r"(?i)(?P<match>(?:<|&lt;)?[ \t]*{target}{tail})")).expect("Slack link pattern");
+  [
+    (re(r"!(?P<name>[^| \n]+)"), LinkKind::Channel),
+    (re(r"@(?P<name>[^| \n]+)"), LinkKind::User),
+    (re(r"(?P<name>(?:http[sS\x{17F}]?|ma[iI\x{130}\x{131}]lto)://[^| \n]+)"), LinkKind::Url),
+  ]
+});
+
+/// Upstream's legacy-API escaping of Markdown with no declared format:
+/// `&`, `<` and `>` become entities, then channel, user and URL links are
+/// turned back into Slack links, each match replacing every copy of itself
+/// in any case (upstream `re.sub(re.escape(match), ..., re.IGNORECASE)`).
+///
+/// Fails where upstream raises: on a CR `*` LF, which its formatting
+/// pattern matches but its map has no entry for, and on a link whose text
+/// Python's `re.sub()` cannot read as a replacement.
+fn escape_passthrough_markdown(body: &str) -> Result<String, String> {
+  if body.contains("\r*\n") {
+    return Err(r"KeyError: '\r*\n'".into());
+  }
+  let mut body = escape_html(body);
+  for (re, kind) in LINK_RES.iter() {
+    let found: Vec<(String, String, String)> =
+      re.captures_iter(&body).map(|c| (c["match"].to_string(), c["name"].to_string(), c.name("val").map_or("", |v| v.as_str()).to_string())).collect();
+    for (whole, name, val) in found {
+      let (sigil, name) = match kind {
+        LinkKind::Channel => ("!", pystr::strip(&name).to_string()),
+        LinkKind::User => ("@", pystr::strip(&name).to_string()),
+        // Swap back the ampersands escaped above
+        LinkKind::Url => ("", name.replace("&amp;", "&")),
+      };
+      let desc = pystr::strip(&val);
+      let link = if desc.is_empty() { format!("<{sigil}{name}>") } else { format!("<{sigil}{name}|{desc}>") };
+      body = py_ignorecase_sub(&whole, &link, &body)?;
+    }
+  }
+  Ok(body)
+}
+
+/// Python `re._casefix._EXTRA_CASES` as classes: lowercase letters that
+/// `re.IGNORECASE` matches with each other beyond their case mappings.
+const PY_EXTRA_CASES: &[&[char]] = &[
+  &['\u{69}', '\u{131}'],
+  &['\u{73}', '\u{17F}'],
+  &['\u{B5}', '\u{3BC}'],
+  &['\u{345}', '\u{3B9}', '\u{1FBE}'],
+  &['\u{390}', '\u{1FD3}'],
+  &['\u{3B0}', '\u{1FE3}'],
+  &['\u{3B2}', '\u{3D0}'],
+  &['\u{3B5}', '\u{3F5}'],
+  &['\u{3B8}', '\u{3D1}'],
+  &['\u{3BA}', '\u{3F0}'],
+  &['\u{3C0}', '\u{3D6}'],
+  &['\u{3C1}', '\u{3F1}'],
+  &['\u{3C2}', '\u{3C3}'],
+  &['\u{3C6}', '\u{3D5}'],
+  &['\u{432}', '\u{1C80}'],
+  &['\u{434}', '\u{1C81}'],
+  &['\u{43E}', '\u{1C82}'],
+  &['\u{441}', '\u{1C83}'],
+  &['\u{442}', '\u{1C84}', '\u{1C85}'],
+  &['\u{44A}', '\u{1C86}'],
+  &['\u{463}', '\u{1C87}'],
+  &['\u{1C88}', '\u{A64B}'],
+  &['\u{1E61}', '\u{1E9B}'],
+  &['\u{FB05}', '\u{FB06}'],
+];
+
+/// The character a literal matches under Python's `re.IGNORECASE`: its
+/// simple lowercase (U+0130 is the one letter whose full lowercase has two
+/// characters; Python's is `i`), then the first of its extra class.
+fn py_ignorecase_key(c: char) -> char {
+  let mut lower = c.to_lowercase();
+  let lower = match (lower.next(), lower.next()) {
+    (Some(l), None) => l,
+    _ if c == '\u{130}' => 'i',
+    _ => c,
+  };
+  PY_EXTRA_CASES.iter().find(|class| class.contains(&lower)).map_or(lower, |class| class[0])
+}
+
+/// One part of a parsed `re.sub()` replacement.
+enum TemplatePart {
+  Text(String),
+  /// `\g<0>`: the text the pattern matched.
+  Match,
+}
+
+/// Python's `re._parser.parse_template()` for a pattern without groups:
+/// the character escapes (`\n`, `\\`, ...), octal escapes and `\g<0>`.
+/// Group references and unknown ASCII-letter escapes are the errors Python
+/// raises; any other escaped character stays as written.
+fn py_template(repl: &str) -> Result<Vec<TemplatePart>, String> {
+  let s: Vec<char> = repl.chars().collect();
+  let octal = |c: Option<&char>| c.is_some_and(|c| ('0'..='7').contains(c));
+  let mut parts = Vec::new();
+  let mut text = String::new();
+  let mut i = 0;
+  while i < s.len() {
+    let c = s[i];
+    i += 1;
+    if c != '\\' {
+      text.push(c);
+      continue;
+    }
+    let Some(&e) = s.get(i) else { return Err("bad escape (end of pattern)".into()) };
+    i += 1;
+    match e {
+      'g' => {
+        if s.get(i) != Some(&'<') {
+          return Err("missing <".into());
+        }
+        let Some(len) = s[i + 1..].iter().position(|&c| c == '>') else {
+          return Err(if i + 1 == s.len() { "missing group name" } else { "missing >, unterminated name" }.into());
+        };
+        let name: String = s[i + 1..i + 1 + len].iter().collect();
+        i += len + 2;
+        if name.is_empty() {
+          return Err("missing group name".into());
+        }
+        if !name.chars().all(|c| c.is_ascii_digit()) {
+          return Err(format!("unknown group name '{name}'"));
+        }
+        if name.chars().any(|c| c != '0') {
+          return Err(format!("invalid group reference {}", name.trim_start_matches('0')));
+        }
+        parts.push(TemplatePart::Text(std::mem::take(&mut text)));
+        parts.push(TemplatePart::Match);
+      }
+      '0' => {
+        let mut digits = String::from("0");
+        while digits.len() < 3 && octal(s.get(i)) {
+          digits.push(s[i]);
+          i += 1;
+        }
+        let value = u32::from_str_radix(&digits, 8).unwrap_or(0) & 0xff;
+        text.extend(char::from_u32(value));
+      }
+      '1'..='9' => {
+        let mut digits = String::from(e);
+        if let Some(&second) = s.get(i).filter(|c| c.is_ascii_digit()) {
+          digits.push(second);
+          i += 1;
+          if octal(Some(&e)) && octal(Some(&second)) && octal(s.get(i)) {
+            digits.push(s[i]);
+            i += 1;
+            let value = u32::from_str_radix(&digits, 8).unwrap_or(0);
+            if value > 0o377 {
+              return Err(format!("octal escape value \\{digits} outside of range 0-0o377"));
+            }
+            text.extend(char::from_u32(value));
+            continue;
+          }
+        }
+        return Err(format!("invalid group reference {digits}"));
+      }
+      'a' => text.push('\x07'),
+      'b' => text.push('\x08'),
+      'f' => text.push('\x0C'),
+      'n' => text.push('\n'),
+      'r' => text.push('\r'),
+      't' => text.push('\t'),
+      'v' => text.push('\x0B'),
+      '\\' => text.push('\\'),
+      e if e.is_ascii_alphabetic() => return Err(format!("bad escape \\{e}")),
+      e => {
+        text.push('\\');
+        text.push(e);
+      }
+    }
+  }
+  parts.push(TemplatePart::Text(text));
+  Ok(parts)
+}
+
+/// `re.sub(re.escape(needle), repl, haystack, flags=re.IGNORECASE)`. The
+/// replacement is parsed first, so a bad one fails even without a match.
+fn py_ignorecase_sub(needle: &str, repl: &str, haystack: &str) -> Result<String, String> {
+  let template = py_template(repl)?;
+  let needle: Vec<char> = needle.chars().map(py_ignorecase_key).collect();
+  let hay: Vec<char> = haystack.chars().collect();
+  if needle.is_empty() {
+    return Ok(haystack.to_string());
+  }
+  let keys: Vec<char> = hay.iter().copied().map(py_ignorecase_key).collect();
+  let mut out = String::with_capacity(haystack.len());
+  let mut i = 0;
+  while i < hay.len() {
+    if keys[i..].starts_with(&needle) {
+      for part in &template {
+        match part {
+          TemplatePart::Text(text) => out.push_str(text),
+          TemplatePart::Match => out.extend(&hay[i..i + needle.len()]),
+        }
+      }
+      i += needle.len();
+    } else {
+      out.push(hay[i]);
+      i += 1;
+    }
+  }
+  Ok(out)
 }
 
 pub struct Slack {
@@ -425,14 +644,15 @@ impl Slack {
     Some(user_id.to_string())
   }
 
-  /// The message for webhook and bot modes, without its channel.
-  async fn message_payload(&self, ctx: &NotifyContext) -> Option<Value> {
+  /// The message for webhook and bot modes, without its channel. `None`
+  /// when the template failed; an error where upstream raises.
+  async fn message_payload(&self, ctx: &NotifyContext) -> Result<Option<Value>, NotifyError> {
     let image_url = if self.include_image { ctx.image_url(NotifyImageSize::Xy72) } else { None };
     let color = ctx.asset.color(&ctx.notify_type);
 
     if self.use_blocks {
       if let Some(template) = &self.template {
-        return Some(json!({ "attachments": [self.gen_payload(template, ctx).await?] }));
+        return Ok(self.gen_payload(template, ctx).await.map(|p| json!({ "attachments": [p] })));
       }
       let slack_format = if ctx.body_format == NotifyFormat::Markdown { "mrkdwn" } else { "plain_text" };
       let mut blocks = vec![json!({ "type": "section", "text": { "type": slack_format, "text": ctx.body } })];
@@ -450,11 +670,17 @@ impl Slack {
         blocks.push(json!({ "type": "context", "elements": elements }));
       }
       payload["attachments"] = json!([{ "blocks": blocks, "color": color }]);
-      return Some(payload);
+      return Ok(Some(payload));
     }
 
-    // The legacy attachment format; the title skips dialect_convert()
-    let mut attachment = json!({ "title": escape_html(&ctx.title), "text": ctx.body, "color": color });
+    // The legacy attachment format; the title skips dialect_convert().
+    // Declared input is already escaped; only escape passthrough Markdown.
+    let text = if ctx.body_format == NotifyFormat::Markdown && ctx.body_passthrough {
+      escape_passthrough_markdown(&ctx.body).map_err(NotifyError::Other)?
+    } else {
+      ctx.body.clone()
+    };
+    let mut attachment = json!({ "title": escape_html(&ctx.title), "text": text, "color": color });
     let mut payload = json!({ "mrkdwn": ctx.body_format == NotifyFormat::Markdown });
     if let Some(image) = &image_url {
       payload["icon_url"] = json!(image);
@@ -469,7 +695,7 @@ impl Slack {
       }
     }
     payload["attachments"] = json!([attachment]);
-    Some(payload)
+    Ok(Some(payload))
   }
 }
 
@@ -683,7 +909,7 @@ impl Notify for Slack {
       return Ok(sent);
     }
 
-    let Some(mut payload) = self.message_payload(ctx).await else { return Ok(false) };
+    let Some(mut payload) = self.message_payload(ctx).await? else { return Ok(false) };
 
     if !ctx.attachments.is_empty() && matches!(self.mode, Mode::Webhook | Mode::WebhookGov) {
       tracing::warn!("Slack Webhooks do not support attachments.");
@@ -1046,6 +1272,90 @@ mod tests {
     assert_eq!(without_ts(json_of(&requests[0])), expected(json!({"channel": "#chan"})));
     assert_eq!(without_ts(json_of(&requests[1])), expected(json!({"channel": "id", "thread_ts": "1.5"})));
     assert_eq!(without_ts(json_of(&requests[2])), expected(json!({"channel": "@user"})));
+  }
+
+  /// Markdown with no declared format over the legacy API, as upstream
+  /// sends it for `notify(body_format=None)`: escaped, with Slack links
+  /// turned back into links. Upstream raises on a CR `*` LF and on links
+  /// `re.sub()` cannot use as a replacement; nothing is sent then.
+  #[tokio::test]
+  async fn test_passthrough_markdown_legacy_text() {
+    let linked = "<!channel> hi <!here|Here Now> &lt;@U123|bob&gt; <@U9> see <https://x.com/a?b=1&c=2|the site> and <mailto://u@x.com>";
+    let cases: [(&str, &str, Option<&str>); 9] = [
+      ("", "a < b & c > d", Some("a &lt; b &amp; c &gt; d")),
+      ("", linked, Some("<!channel> hi <!here|Here Now> &amp;lt;<@U123|bob&amp;gt; &lt;@U9> see <https://x.com/a?b=1&c=2|the site> and <mailto://u<@x.com>")),
+      // Every copy of a link is replaced, in any case
+      ("", "<!Here> and <!here>", Some("<!Here> and <!Here>")),
+      // The link is a re.sub() replacement: backslashes are read as escapes
+      ("", r"x <@u\\n> y", Some(r"x <@u\n> y")),
+      ("", r"x <@u\101> y", Some("x <@uA> y")),
+      ("", r"x <!chan\d> y", None),
+      ("", "a\r*\nb", None),
+      // Plain text targets and blocks take the body as written
+      ("&format=text", linked, Some(linked)),
+      ("&blocks=yes", "a < b <!here>", Some("a < b <!here>")),
+    ];
+    for (query, body, sent) in cases {
+      let server = hook("ok").await;
+      let mut a = crate::Apprise::new();
+      assert!(a.add(&format!("{WEBHOOK}/?footer=no{query}")));
+      let c = NotifyContext { body_passthrough: true, ..ctx("T <&>", body, NotifyFormat::Text) };
+      let ok = with_test_base(server.uri(), a.notify(&c)).await.is_success();
+      let requests = requests_to(&server, HOOK).await;
+      assert_eq!(ok, sent.is_some(), "{body:?}");
+      let text = requests
+        .first()
+        .map(json_of)
+        .map(|p| if query == "&blocks=yes" { p["attachments"][0]["blocks"][1]["text"]["text"].clone() } else { p["attachments"][0]["text"].clone() });
+      assert_eq!(text, sent.map(|s| json!(s)), "{body:?}");
+      if sent.is_some() && query.is_empty() {
+        let payload = json_of(&requests[0]);
+        assert_eq!((&payload["mrkdwn"], &payload["attachments"][0]["title"]), (&json!(true), &json!("T &lt;&amp;&gt;")));
+      }
+    }
+
+    // A bot sends the same message
+    let server = MockServer::start().await;
+    mock_at(&server, "POST", "/api/chat.postMessage", 200, r#"{"ok": true}"#).await;
+    let mut a = crate::Apprise::new();
+    assert!(a.add("slack://xoxb-1234-1234-abc124/#chan?footer=no&image=no"));
+    let c = NotifyContext { body_passthrough: true, ..ctx("T <&>", "a < b <!here|Now> & <https://x.com/?a=1&b=2>", NotifyFormat::Text) };
+    assert!(with_test_base(server.uri(), a.notify(&c)).await.is_success());
+    assert_eq!(
+      json_of(&requests_to(&server, "/api/chat.postMessage").await[0]),
+      json!({"mrkdwn": true, "attachments": [{"title": "T &lt;&amp;&gt;", "text": "a &lt; b <!here|Now> &amp; <https://x.com/?a=1&b=2>", "color": "#3AA3E3"}], "channel": "#chan"})
+    );
+  }
+
+  /// Upstream's legacy text for random passthrough bodies, including the
+  /// ones it fails on (see `testdata/gen_slack_passthrough.py`).
+  #[test]
+  fn test_passthrough_markdown_vectors() {
+    let cases: Vec<Value> = serde_json::from_str(include_str!("testdata/slack_passthrough.json")).unwrap();
+    assert_eq!(cases.len(), 400);
+    for case in &cases {
+      // Preparation strips trailing space from the body first
+      let body = pystr::rstrip(case["body"].as_str().unwrap());
+      let expected = case["text"].as_str().filter(|_| case["ok"] == json!(true));
+      assert_eq!(escape_passthrough_markdown(body).ok().as_deref(), expected, "{body:?}");
+    }
+  }
+
+  #[test]
+  fn test_python_replacement_templates() {
+    let expand = |repl: &str| py_ignorecase_sub("ab", repl, "xAby").map_err(|e| e.split(' ').next().unwrap_or_default().to_string());
+    assert_eq!(expand(r"<\g<0>|\g<00>>"), Ok("x<Ab|Ab>y".into()));
+    assert_eq!(expand(r"\n\t\\\&\0\012\101\0777\08"), Ok("x\n\t\\\\&\0\nA?7\08y".into()));
+    for bad in [r"\g<1>", r"\g<a>", r"\g", r"\g<", r"\g<>", r"\1", r"\7", r"\12", r"\400", r"\d", r"\x41", "\\"] {
+      assert!(expand(bad).is_err(), "{bad}");
+    }
+    // A bad replacement fails even when nothing matches
+    assert!(py_ignorecase_sub("zz", r"\d", "xAby").is_err());
+    // re.IGNORECASE also folds ſ, K, İ, ı and the Greek and Cyrillic extras
+    assert_eq!(py_ignorecase_sub("sk", "!", "ſK SK sk"), Ok("! ! !".into()));
+    assert_eq!(py_ignorecase_sub("ii", "!", "İı"), Ok("!".into()));
+    assert_eq!(py_ignorecase_sub("σ", "!", "Σςσ\u{3c2}"), Ok("!!!!".into()));
+    assert_eq!(py_ignorecase_sub("в", "!", "В\u{1c80}"), Ok("!!".into()));
   }
 
   #[tokio::test]
