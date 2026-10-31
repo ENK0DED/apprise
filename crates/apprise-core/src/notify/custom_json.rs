@@ -96,6 +96,16 @@ pub(crate) async fn requests_to(server: &wiremock::MockServer, method: &str, pat
   server.received_requests().await.unwrap_or_default().into_iter().filter(|r| r.method.as_str() == method && r.url.path() == path).collect()
 }
 
+/// Check that each URL's storage ID (`url_id()`, 8 characters, no salt)
+/// is the `uid:` upstream's `apprise --dry-run` prints for it.
+#[cfg(test)]
+pub(crate) fn assert_upstream_uids(cases: &[(&str, &str)]) {
+  for (url, uid) in cases {
+    let svc = crate::notify::registry::from_url(url).unwrap_or_else(|| panic!("should load: {url}"));
+    assert_eq!(crate::notify::options::url_id(svc.as_ref(), b"", 8).as_deref(), Some(*uid), "{url}");
+  }
+}
+
 /// Check a plugin that upstream parses with `verify_host=True`: `template`
 /// (with `{h}` for the host) loads with `localhost` and is rejected with a
 /// host upstream refuses. The encoded authority would otherwise move the

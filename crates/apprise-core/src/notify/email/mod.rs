@@ -338,10 +338,12 @@ impl Email {
   /// The values that make this service distinct (upstream
   /// `url_identifier`): schema, credentials, host, SMTP server and port.
   pub(crate) fn identifier(&self, schema: &str) -> Vec<String> {
+    // Upstream hashes str() of each value, so a missing one is "None"
+    let none = || "None".to_string();
     vec![
       schema.to_string(),
-      self.user.clone().unwrap_or_default(),
-      self.password.clone().unwrap_or_default(),
+      self.user.clone().unwrap_or_else(none),
+      self.password.clone().unwrap_or_else(none),
       self.host.clone(),
       self.smtp_host.clone(),
       self.port.to_string(),

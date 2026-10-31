@@ -313,18 +313,12 @@ impl Notify for Mattermost {
     0.02
   }
   fn url_identifier(&self) -> Option<Vec<String>> {
+    // Upstream hashes str() of each value, so a missing one is "None"
+    let none = || "None".to_string();
     let schema = if self.secure { "mmosts" } else { "mmost" };
     let mode = if self.mode == Mode::Bot { "bot" } else { "webhook" };
-    let team = if self.mode == Mode::Bot { self.user.clone().unwrap_or_default() } else { String::new() };
-    Some(vec![
-      schema.into(),
-      mode.into(),
-      self.token.clone(),
-      self.host.clone(),
-      self.port.map(|p| p.to_string()).unwrap_or_default(),
-      self.fullpath.clone(),
-      team,
-    ])
+    let team = if self.mode == Mode::Bot { self.user.clone().unwrap_or_else(none) } else { none() };
+    Some(vec![schema.into(), mode.into(), self.token.clone(), self.host.clone(), self.port.map_or_else(none, |p| p.to_string()), self.fullpath.clone(), team])
   }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
@@ -462,6 +456,17 @@ mod tests {
 
   fn port(server: &MockServer) -> u16 {
     server.address().port()
+  }
+
+  #[test]
+  fn test_storage_id_matches_upstream() {
+    // uid: lines of upstream's apprise --dry-run; a missing value hashes as "None"
+    crate::notify::custom_json::assert_upstream_uids(&[
+      ("mmost://localhost/3ccdd113474722377935511fc85d3dd4", "4eb68637"),
+      ("mmosts://localhost:8443/path/3ccdd113474722377935511fc85d3dd4", "760fbd89"),
+      ("mmost://localhost/3ccdd113474722377935511fc85d3dd4?mode=bot&channel=abc", "858226a0"),
+      ("mmost://team@localhost/3ccdd113474722377935511fc85d3dd4?mode=bot&channel=abc", "b4575e1a"),
+    ]);
   }
 
   #[test]

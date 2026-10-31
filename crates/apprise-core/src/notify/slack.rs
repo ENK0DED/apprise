@@ -656,7 +656,8 @@ impl Notify for Slack {
     if self.mode.is_workflow() {
       return Some(["slack", self.mode.as_str()].into_iter().map(str::to_string).chain(self.workflow_path.iter().cloned()).collect());
     }
-    let part = |v: &Option<String>| v.clone().unwrap_or_default();
+    // Upstream hashes str() of each value, so a missing one is "None"
+    let part = |v: &Option<String>| v.clone().unwrap_or_else(|| "None".to_string());
     Some(vec!["slack".into(), part(&self.token_a), part(&self.token_b), part(&self.token_c), part(&self.access_token)])
   }
 
@@ -859,6 +860,15 @@ mod tests {
   }
 
   #[test]
+  fn test_storage_id_matches_upstream() {
+    // uid: lines of upstream's apprise --dry-run; a missing value hashes as "None"
+    crate::notify::custom_json::assert_upstream_uids(&[
+      ("slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/#channel", "ef4fa19c"),
+      ("slack://username@xoxe.xoxb-1234-1234-abc124/#nuxref", "054ce864"),
+    ]);
+  }
+
+  #[test]
   fn test_valid_urls() {
     let urls = [
       "slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/#hmm/#-invalid-",
@@ -959,7 +969,7 @@ mod tests {
     assert_eq!(slack("slack://T1/X3/Y4?mode=tri").mode, Mode::Trigger);
     assert_eq!(
       slack(WEBHOOK).url_identifier(),
-      Some(vec!["slack".into(), "T1JJ3T3L2".into(), "A1BRTD4JD".into(), "TIiajkdnlazkcOXrIdevi7FQ".into(), String::new()])
+      Some(vec!["slack".into(), "T1JJ3T3L2".into(), "A1BRTD4JD".into(), "TIiajkdnlazkcOXrIdevi7FQ".into(), "None".into()])
     );
 
     // The native gov URL keeps its own arguments (upstream drops them)

@@ -68,6 +68,8 @@ struct Request<'a> {
 }
 
 pub struct BlueSky {
+  /// The user as the URL gives it (user.example.ca), for the storage ID.
+  handle: String,
   /// Handle without its host part.
   user: String,
   /// Host part of the handle (bsky.social unless the handle carries one).
@@ -86,6 +88,7 @@ impl BlueSky {
       return None;
     };
     let password = url.password.clone().or_else(|| url.host.clone()).unwrap_or_default();
+    let handle = url.user.clone().unwrap_or_default();
 
     // A handle such as user.example.ca targets example.ca
     let (user, host) = match user.split_once('.') {
@@ -96,6 +99,7 @@ impl BlueSky {
     };
 
     Some(Self {
+      handle,
       user,
       host,
       password,
@@ -330,7 +334,9 @@ impl Notify for BlueSky {
     0.0
   }
   fn url_identifier(&self) -> Option<Vec<String>> {
-    Some(vec!["bsky".to_string(), self.user.clone(), self.password.clone()])
+    // Upstream opens its store, fixing the ID, before it splits the host
+    // off the handle, so the ID uses the handle as written
+    Some(vec!["bsky".to_string(), self.handle.clone(), self.password.clone()])
   }
 
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
@@ -477,6 +483,17 @@ mod tests {
 
   fn requests_to<'a>(reqs: &'a [MockRequest], p: &str) -> Vec<&'a MockRequest> {
     reqs.iter().filter(|r| r.url.path() == p).collect()
+  }
+
+  #[test]
+  fn test_storage_id_matches_upstream() {
+    // uid: lines of upstream's apprise --dry-run; a missing value hashes as "None"
+    // Upstream fixes the ID before it splits the host off the handle
+    crate::notify::custom_json::assert_upstream_uids(&[
+      ("bluesky://user.example.com:pass@bsky.social", "8db9828b"),
+      ("bluesky://user.example.ca@app-pw3", "30756a26"),
+      ("bluesky://user@app-pw", "88258130"),
+    ]);
   }
 
   #[test]

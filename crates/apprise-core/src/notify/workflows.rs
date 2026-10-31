@@ -259,13 +259,15 @@ impl Notify for Workflows {
     1000
   }
   fn url_identifier(&self) -> Option<Vec<String>> {
+    // Upstream hashes str() of each value, so a missing one is "None"
+    let none = || "None".to_string();
     Some(vec![
       "workflow".to_string(),
       self.host.clone(),
-      self.port.map(|p| p.to_string()).unwrap_or_default(),
+      self.port.map_or_else(none, |p| p.to_string()),
       self.workflow.clone(),
       self.signature.clone(),
-      self.routing_id.clone().unwrap_or_default(),
+      self.routing_id.clone().unwrap_or_else(none),
     ])
   }
 
@@ -350,6 +352,17 @@ mod tests {
         },
       }],
     })
+  }
+
+  #[test]
+  fn test_storage_id_matches_upstream() {
+    // uid: lines of upstream's apprise --dry-run; a missing value hashes as "None"
+    crate::notify::custom_json::assert_upstream_uids(&[
+      ("workflow://host:443/workflow1a/signature/", "9ebd09f7"),
+      ("workflows://host/workflow1a/signature/?id=abc", "54fd36dd"),
+      ("workflow://host/3XXX5/iXXXU/?pa=yes&routeid=123456789", "602e0a16"),
+      ("workflows://host:8443/3XXX5/iXXXU/?route=123456789", "67048b98"),
+    ]);
   }
 
   #[test]

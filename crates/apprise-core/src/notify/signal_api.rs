@@ -445,12 +445,14 @@ impl Notify for SignalApi {
     0
   }
   fn url_identifier(&self) -> Option<Vec<String>> {
+    // Upstream hashes str() of each value, so a missing one is "None"
+    let none = || "None".to_string();
     Some(vec![
       if self.secure { "signals" } else { "signal" }.into(),
-      self.user.clone().unwrap_or_default(),
-      self.password.clone().unwrap_or_default(),
+      self.user.clone().unwrap_or_else(none),
+      self.password.clone().unwrap_or_else(none),
       self.host.clone(),
-      self.port.map(|p| p.to_string()).unwrap_or_default(),
+      self.port.map_or_else(none, |p| p.to_string()),
       self.source.clone(),
     ])
   }
@@ -575,6 +577,15 @@ mod tests {
 
   fn url(server: &MockServer, rest: &str) -> String {
     format!("signal://127.0.0.1:{}/{}", server.address().port(), rest)
+  }
+
+  #[test]
+  fn test_storage_id_matches_upstream() {
+    // uid: lines of upstream's apprise --dry-run; a missing value hashes as "None"
+    crate::notify::custom_json::assert_upstream_uids(&[
+      ("signal://localhost/11111111111/123/", "5f4c42f0"),
+      ("signals://user:pw@localhost:8080/11111111111/", "cf21f8f2"),
+    ]);
   }
 
   #[test]
