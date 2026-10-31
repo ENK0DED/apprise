@@ -61,9 +61,15 @@ const TELEGRAM_HTML_BLOCKS: &[&str] = &["p", "div", "table", "hr"];
 /// Upstream `__telegram_escape_html_entries`: the substitutions that make
 /// HTML with no declared format acceptable to Telegram, applied in order.
 /// Declared HTML goes through [`reduce_html`] instead.
+///
+/// Deliberately unlike upstream, the comment pattern matches comments
+/// only, ending where HTML ends them (`<!-->` and `<!--->` are empty
+/// comments). Upstream's `\s*<!.+?-->\s*` starts at any `<!`, so a
+/// document with `<!DOCTYPE html>` and a later comment lost everything
+/// between the two. The doctype is removed by the next pattern.
 const TELEGRAM_ESCAPE_HTML_ENTRIES: &[(&str, &str)] = &[
   // Comments
-  (r"\s*<!.+?-->\s*", ""),
+  (r"\s*<!--(?:-?>|.*?-->)\s*", ""),
   // The following tags are not supported
   (r"\s*<\s*(!?DOCTYPE|p|div|span|body|script|link|meta|html|font|head|label|form|input|textarea|select|iframe|source|script)([^a-z0-9>][^>]*)?>\s*", ""),
   // All closing tags to be removed are put here
@@ -2213,8 +2219,15 @@ mod tests {
         "HTML",
         "<b>T <b></b>\r\nHello <b>world</b> &amp;more\r\n<b>Head</b>a b &lt;x&gt; \"q\"\r\n-one\r\n",
       ),
-      // The comment pattern runs from "<!DOCTYPE" to the first "-->"
-      ("", "", "<!DOCTYPE html><html><head><title>Hi</title></head><body><!-- note --> <em>x</em>&emsp;y&APOS;z</body></html>", "HTML", "<i>x</i>   y'z"),
+      // Upstream's comment pattern runs from "<!DOCTYPE" to the first
+      // "-->", sending "<i>x</i>   y'z"
+      (
+        "",
+        "",
+        "<!DOCTYPE html><html><head><title>Hi</title></head><body><!-- note --> <em>x</em>&emsp;y&APOS;z</body></html>",
+        "HTML",
+        "<b>Hi</b><i>x</i>   y'z",
+      ),
       // Python's \s and re.IGNORECASE reach beyond ASCII
       ("", "", "a\u{2003}<p>b</p>\u{2003}c <\u{17F}pan class=x>d</\u{17F}pan> <LINK rel=\u{212A}> <\u{130}nput>", "HTML", "ab\r\ncd"),
       ("", "", "1 < 2 & 3 **bold** _u_\n\n\nend<br/>x<hr>y", "HTML", "1 < 2 & 3 **bold** _u_\r\nend\r\nx\r\ny"),
@@ -2228,6 +2241,30 @@ mod tests {
       assert!(notify(&apprise(&format!("{base}{query}")), &server, &passthrough).await, "{body}");
       let calls = calls(&server).await;
       assert_eq!(body_json(&calls[0].1), payload(json!(12345), text, json!({"parse_mode": mode})), "{body}");
+    }
+  }
+
+  /// Undeclared HTML loses its comments and nothing else. Each case is
+  /// what upstream sends with the port's comment pattern in place of its
+  /// own; upstream's starts at any `<!`.
+  #[tokio::test]
+  async fn test_undeclared_html_comments_end_where_html_ends_them() {
+    let server = MockServer::start().await;
+    for (body, text, upstream) in [
+      ("<!doctype html>Hi <b>there</b> <!-- c -->x", "Hi <b>there</b>x", "x"),
+      ("<!DOCTYPE html>no comment <i>here</i>", "no comment <i>here</i>", "no comment <i>here</i>"),
+      ("a <!---->b<!-- two\nlines -->\nc <!-- <b>x</b> --> d", "abcd", "abcd"),
+      // HTML ends a comment at "<!-->" and "<!--->"
+      ("a <!---> b <!-- c --> d", "abd", "abd"),
+      ("a <!--> b <!-- c --> d", "abd", "ad"),
+      ("p <!-- unterminated <b>bold</b>", "p <!-- unterminated <b>bold</b>", "p <!-- unterminated <b>bold</b>"),
+    ] {
+      server.reset().await;
+      mount_ok(&server).await;
+      let passthrough = NotifyContext { body: body.into(), body_passthrough: true, ..NotifyContext::default() };
+      assert!(notify(&apprise("tgram://123456789:abcdefg_hijklmnop/12345/"), &server, &passthrough).await, "{body}");
+      let calls = calls(&server).await;
+      assert_eq!(body_json(&calls[0].1), payload(json!(12345), text, json!({"parse_mode": "HTML"})), "{body} (upstream: {upstream:?})");
     }
   }
 
