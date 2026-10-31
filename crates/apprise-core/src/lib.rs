@@ -383,6 +383,11 @@ impl Apprise {
   /// the filter, services are tried by tag priority and lower-priority
   /// groups only run if a more urgent one failed. Plugins see the asset of
   /// this instance in `ctx.asset`.
+  ///
+  /// `ctx.body_format` says what the title and body are written in. Left
+  /// at its default (`Text`), the asset's `body_format` applies when it
+  /// sets one, so a call can give Markdown or HTML over an asset default
+  /// but not plain text.
   pub async fn notify(&self, ctx: &NotifyContext) -> SendResult {
     self.dispatch(ctx, &self.dispatch_options(), &self.tag_filter).await
   }
@@ -469,6 +474,13 @@ impl Apprise {
     let mut ctx = ctx.clone();
     ctx.asset = self.asset.clone();
     ctx.interpret_escapes |= self.asset.interpret_escapes;
+    // A call that leaves the input format at its default takes the asset's
+    // (upstream `notify(body_format=None)`).
+    if ctx.body_format == NotifyFormat::Text
+      && let Some(format) = self.asset.body_format.as_deref().and_then(|f| f.trim().parse::<NotifyFormat>().ok())
+    {
+      ctx.body_format = format;
+    }
     // Names reach MIME and multipart headers; attachments built by a
     // library caller have not been through the loaders' cleanup.
     for attachment in &mut ctx.attachments {
@@ -583,5 +595,30 @@ mod tests {
     let a = Apprise::with_asset(AppriseAsset::default());
     assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     drop(a);
+  }
+
+  /// The `message` of every JSON notification `server` received, in order.
+  async fn messages(server: &wiremock::MockServer) -> Vec<String> {
+    let posts = server.received_requests().await.unwrap().into_iter().filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == "/notify");
+    posts.map(|r| serde_json::from_slice::<serde_json::Value>(&r.body).unwrap()["message"].as_str().unwrap_or_default().to_string()).collect()
+  }
+
+  #[tokio::test]
+  async fn test_asset_body_format_is_the_default_input_format() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/notify")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let asset = AppriseAsset { body_format: Some("markdown".into()), ..Default::default() };
+    let mut a = Apprise::with_asset(asset);
+    assert!(a.add(&format!("json://{}/notify?format=html", server.address())));
+
+    // No format given: the body is the asset's Markdown
+    assert!(a.notify(&NotifyContext { body: "**Hello**".into(), ..Default::default() }).await.is_success());
+    // A format given for the call wins over the asset
+    let ctx = NotifyContext { body: "**Hello**".into(), body_format: NotifyFormat::Html, ..Default::default() };
+    assert!(a.notify(&ctx).await.is_success());
+    assert_eq!(messages(&server).await, vec!["<p><strong>Hello</strong></p>", "**Hello**"]);
   }
 }
