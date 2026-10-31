@@ -679,9 +679,12 @@ impl<S: XmppStream> Link<S> {
   async fn close(&mut self) {
     if self.write("</stream:stream>").await.is_ok() {
       let deadline = Instant::now() + CLOSE_TIMEOUT;
-      while let Ok(Ok(event)) = tokio::time::timeout_at(deadline, self.event()).await {
-        if event == Event::StreamClose {
-          break;
+      // An event that is ready at once completes before its timeout is
+      // looked at, so a server that keeps sending would keep us here
+      while Instant::now() < deadline {
+        match tokio::time::timeout_at(deadline, self.event()).await {
+          Ok(Ok(Event::StreamClose)) | Ok(Err(_)) | Err(_) => break,
+          Ok(Ok(_)) => {}
         }
       }
     }

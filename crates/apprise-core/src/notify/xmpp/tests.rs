@@ -590,6 +590,38 @@ fn test_send_scram_iteration_count_bounded_by_timeout() {
   assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(None), "the key derivation kept running after the send gave up");
 }
 
+/// A server that answers the end of our stream with stanza after stanza,
+/// never closing its side: close() must still give up at its deadline
+/// (upstream's disconnect waits a fixed time).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_close_deadline_holds_while_stanzas_arrive() {
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let addr = listener.local_addr().unwrap();
+  let server = tokio::spawn(async move {
+    loop {
+      let (tcp, _) = listener.accept().await.unwrap();
+      let mut link = Link::new(tcp);
+      // Skip stray local connections that do not speak XMPP
+      if !matches!(link.event().await, Ok(Event::StreamOpen(_))) {
+        continue;
+      }
+      let header = "<stream:stream xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' id='s1' from='example.com' version='1.0'>";
+      link.write(header).await.unwrap();
+      while !matches!(link.event().await, Ok(Event::StreamClose) | Err(_)) {}
+      let burst = "<presence from='flood@example.com/x'/>".repeat(200);
+      while link.write(&burst).await.is_ok() {}
+      return;
+    }
+  });
+  let mut client = Link::new(TcpStream::connect(addr).await.unwrap());
+  client.write("<stream:stream xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' to='example.com' version='1.0'>").await.unwrap();
+  assert!(matches!(client.event().await, Ok(Event::StreamOpen(_))));
+  let start = Instant::now();
+  let closed = tokio::time::timeout(Duration::from_secs(10), client.close()).await;
+  assert!(closed.is_ok() && start.elapsed() < CLOSE_TIMEOUT + Duration::from_secs(1), "took {:?}", start.elapsed());
+  server.abort();
+}
+
 #[test]
 fn test_static_details() {
   let details = Xmpp::static_details();
