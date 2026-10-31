@@ -443,17 +443,12 @@ fn atomic_write(path: &Path, content: &[u8]) -> bool {
   let tmp = dir.join(format!("{}.{}{}.tmp", base, std::process::id(), nanos));
 
   let result = (|| -> std::io::Result<()> {
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    let mut file = create_private(&tmp)?;
     file.write_all(content)?;
     file.sync_all()?;
+    // A new file keeps the temporary file's private mode
     if let Ok(meta) = std::fs::metadata(&target) {
       std::fs::set_permissions(&tmp, meta.permissions())?;
-    } else {
-      #[cfg(unix)]
-      {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-      }
     }
     std::fs::rename(&tmp, &target)
   })();
@@ -465,6 +460,17 @@ fn atomic_write(path: &Path, content: &[u8]) -> bool {
     return false;
   }
   true
+}
+
+/// Create a file only its owner can read (upstream writes through
+/// `NamedTemporaryFile`, which does the same), so the subscriptions it
+/// receives are never readable by others before its mode is set.
+fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+  let mut options = std::fs::OpenOptions::new();
+  options.write(true).create_new(true);
+  #[cfg(unix)]
+  std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+  options.open(path)
 }
 
 // ── Persistent storage ───────────────────────────────────────────────────────
@@ -1064,6 +1070,32 @@ Oc4My77ylXst/I1fVk62i06E2YwM//ZmgQ==
       b64url(&body),
       "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN"
     );
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn test_atomic_write_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let dir = tempfile::tempdir().unwrap();
+
+    // The temporary file is private from the moment it exists, before
+    // any subscription is written to it
+    let tmp = dir.path().join("subscriptions.json.tmp");
+    drop(create_private(&tmp).unwrap());
+    assert_eq!(mode(&tmp), 0o600);
+
+    // A rewrite keeps the target's mode; a new file stays private
+    let target = dir.path().join("subscriptions.json");
+    std::fs::write(&target, "{}").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
+    assert!(atomic_write(&target, b"{\"a\": 1}"));
+    assert_eq!((mode(&target), std::fs::read_to_string(&target).unwrap().as_str()), (0o640, "{\"a\": 1}"));
+    let new = dir.path().join("new.json");
+    assert!(atomic_write(&new, b"{}"));
+    assert_eq!(mode(&new), 0o600);
+    // Nothing is left behind
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
   }
 
   #[test]
