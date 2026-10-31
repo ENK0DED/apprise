@@ -72,7 +72,9 @@ impl RocketChat {
     // A webhook in the credentials is lifted out before parsing
     let (parsed, mut webhook, mut password) = match split_webhook(&url.raw) {
       Some((stripped, hook)) => {
-        let p = ParsedUrl::parse(&stripped)?;
+        let mut p = ParsedUrl::parse(&stripped)?;
+        // Tags come from whatever loaded the URL, not from its text
+        p.assigned_tags = url.assigned_tags.clone();
         // It doubles as the password for basic logins, which upstream
         // decodes once like every password (`pass%2Fword` is `pass/word`)
         let hook = unquote(&hook);
@@ -408,6 +410,16 @@ mod tests {
     let r = rc(&format!("rockets://user:{}@localhost/#channel", "t".repeat(40)));
     assert_eq!((r.mode, r.avatar), (Mode::Token, true));
     assert!(rc("rocket://user:pass@localhost/room?avatar=yes").avatar);
+  }
+
+  #[test]
+  fn test_webhook_url_keeps_assigned_tags() {
+    // The webhook form is re-parsed; config tags must survive that
+    for raw in ["rockets://user:web/token@localhost/@user/?mode=webhook", "rocket://user:pass@localhost/room"] {
+      let mut url = ParsedUrl::parse(raw).unwrap();
+      url.assigned_tags = Some(vec!["mytag".to_string()]);
+      assert_eq!(RocketChat::from_url(&url).unwrap().tags(), vec!["mytag".to_string()], "{raw}");
+    }
   }
 
   fn ctx() -> NotifyContext {
