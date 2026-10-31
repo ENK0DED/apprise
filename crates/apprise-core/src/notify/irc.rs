@@ -207,6 +207,13 @@ impl Irc {
   }
 
   async fn deliver<S: AsyncRead + AsyncWrite + Unpin>(&self, client: &mut Client<S>, message: &str) -> Result<(), String> {
+    // IDENTIFY puts the password on a line of its own, which a line break
+    // would end early and turn the rest into another command
+    let identify = self.password.as_deref().filter(|p| self.auth_mode == AuthMode::NickServ && !p.is_empty());
+    if identify.is_some_and(|p| p.contains(['\r', '\n', '\0'])) {
+      return Err("the NickServ password contains a line break or NUL".into());
+    }
+
     client.register(self.pass().as_deref(), REGISTER_TIMEOUT, self.send_timeout).await?;
 
     // Upstream clears the password before identifying, so it never sends
@@ -214,9 +221,7 @@ impl Irc {
     // command is routed by the server to its services only; a PRIVMSG to
     // the nick NickServ would hand the password to whoever holds that nick
     // on a network without services.
-    if self.auth_mode == AuthMode::NickServ
-      && let Some(password) = self.password.as_deref().filter(|p| !p.is_empty())
-    {
+    if let Some(password) = identify {
       client.write(&format!("NICKSERV IDENTIFY {}", password), self.send_timeout).await?;
       client.pump(PUMP_INTERVAL).await?;
     }
@@ -847,6 +852,19 @@ mod tests {
       server.await.unwrap(),
       vec!["NICK me", "USER me 0 * :Apprise Notifications", "NICKSERV IDENTIFY pw", "PRIVMSG #chan :Title Body", "QUIT :Apprise Notifications"]
     );
+  }
+
+  /// IDENTIFY puts the password on a protocol line of its own; one that
+  /// holds a line break would end it early and send what follows as
+  /// another command. Upstream never sends IDENTIFY at all.
+  #[tokio::test]
+  async fn test_send_nickserv_password_with_line_break() {
+    for password in ["pw%0D%0APRIVMSG%20mallory%20%3Ainjected", "pw%0Ax", "pw%00x"] {
+      let (port, server) = irc_server(false, welcoming()).await;
+      let svc = from_url(&format!("irc://me:{}@127.0.0.1:{}/#chan?mode=nickserv&join=no", password, port)).unwrap();
+      assert!(!svc.send(&ctx("Title", "Body")).await.unwrap(), "{}", password);
+      assert!(server.await.unwrap().is_empty(), "{}", password);
+    }
   }
 
   #[tokio::test]
