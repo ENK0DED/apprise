@@ -69,7 +69,8 @@ pub async fn read_http(parsed: &ParsedUrl, asset: &AppriseAsset) -> Result<(Stri
   crate::ensure_crypto_provider();
   let url = fetch_url(parsed);
   let verify = parsed.verify_certificate();
-  let redirects = parsed.get("redirect").map(parse_bool).unwrap_or(true);
+  // `?redirect=` wins; the asset's `http_redirects` is the default.
+  let redirects = parsed.get("redirect").map(parse_bool).unwrap_or(asset.http_redirects);
   tracing::debug!("HTTP POST URL: {} (cert_verify={})", loggable(&url, asset), verify);
 
   let client = reqwest::Client::builder()
@@ -191,6 +192,27 @@ mod tests {
     assert!(read_http(&parsed(&format!("{}/missing", server.uri())), &asset).await.is_err());
     assert!(read_http(&parsed(&format!("{}/big", server.uri())), &asset).await.is_err());
     assert!(read_http(&parsed(&format!("{}/moved?redirect=no", server.uri())), &asset).await.is_err());
+  }
+
+  #[tokio::test]
+  async fn test_read_http_redirects_follow_the_asset_default() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/start")).respond_with(ResponseTemplate::new(302).insert_header("Location", "/target")).mount(&server).await;
+    Mock::given(method("GET"))
+      .and(path("/target"))
+      .respond_with(ResponseTemplate::new(200).set_body_raw("json://localhost\n", "text/plain"))
+      .expect(1)
+      .mount(&server)
+      .await;
+
+    // The asset forbids redirects and the URL says nothing: the 302 is refused
+    let asset = AppriseAsset { http_redirects: false, ..Default::default() };
+    let err = read_http(&parsed(&format!("{}/start", server.uri())), &asset).await.unwrap_err();
+    assert!(err.to_string().contains("redirect following is disabled"), "{}", err);
+
+    // ?redirect=yes overrides the asset for this URL
+    let (body, _) = read_http(&parsed(&format!("{}/start?redirect=yes", server.uri())), &asset).await.unwrap();
+    assert_eq!(body, "json://localhost\n");
   }
 
   #[tokio::test]

@@ -32,13 +32,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, TimeZone, Utc};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::types::StorageMode;
 
 /// Largest total size a namespace may grow to through `write()` (1 MiB).
 pub const MAX_FILE_SIZE: u64 = 1_048_576;
+
+/// Largest a namespace's cache may be as JSON, before compression (1 MiB).
+/// `set()` refuses a value that would make it larger, so every cache this
+/// store writes can be read back. Upstream sets no limit; a larger cache
+/// file it wrote is left in place and not used.
+pub const MAX_CACHE_SIZE: u64 = 1_048_576;
 
 /// Age after which `disk_prune()` removes files by default, in seconds.
 pub const DEFAULT_FILE_EXPIRY: u64 = 2_678_400;
@@ -90,22 +96,160 @@ pub enum StorageError {
   InvalidKey(String),
 }
 
+/// A cached value as upstream's JSON decoder reads it: object members keep
+/// their order, as a Python dict does. Upstream hashes the value's `str()`,
+/// so the order is part of the checksum and must survive a rewrite.
+#[derive(Debug, Clone, PartialEq)]
+enum Stored {
+  Null,
+  Bool(bool),
+  Number(serde_json::Number),
+  String(String),
+  Array(Vec<Stored>),
+  Object(Vec<(String, Stored)>),
+}
+
+impl From<&Value> for Stored {
+  fn from(value: &Value) -> Self {
+    match value {
+      Value::Null => Self::Null,
+      Value::Bool(b) => Self::Bool(*b),
+      Value::Number(n) => Self::Number(n.clone()),
+      Value::String(s) => Self::String(s.clone()),
+      Value::Array(items) => Self::Array(items.iter().map(Self::from).collect()),
+      Value::Object(map) => Self::Object(map.iter().map(|(k, v)| (k.clone(), Self::from(v))).collect()),
+    }
+  }
+}
+
+impl Stored {
+  fn to_value(&self) -> Value {
+    match self {
+      Self::Null => Value::Null,
+      Self::Bool(b) => Value::Bool(*b),
+      Self::Number(n) => Value::Number(n.clone()),
+      Self::String(s) => Value::String(s.clone()),
+      Self::Array(items) => Value::Array(items.iter().map(Self::to_value).collect()),
+      Self::Object(members) => Value::Object(members.iter().map(|(k, v)| (k.clone(), v.to_value())).collect()),
+    }
+  }
+
+  fn member(&self, key: &str) -> Option<&Stored> {
+    match self {
+      Self::Object(members) => members.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+      _ => None,
+    }
+  }
+}
+
+impl serde::Serialize for Stored {
+  fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+    match self {
+      Self::Null => serializer.serialize_unit(),
+      Self::Bool(b) => serializer.serialize_bool(*b),
+      Self::Number(n) => n.serialize(serializer),
+      Self::String(s) => serializer.serialize_str(s),
+      Self::Array(items) => serializer.collect_seq(items),
+      Self::Object(members) => {
+        let mut map = serializer.serialize_map(Some(members.len()))?;
+        for (k, v) in members {
+          map.serialize_entry(k, v)?;
+        }
+        map.end()
+      }
+    }
+  }
+}
+
+impl<'de> serde::Deserialize<'de> for Stored {
+  fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    struct Visit;
+    impl<'de> serde::de::Visitor<'de> for Visit {
+      type Value = Stored;
+
+      fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a JSON value")
+      }
+      fn visit_unit<E>(self) -> Result<Stored, E> {
+        Ok(Stored::Null)
+      }
+      fn visit_bool<E>(self, b: bool) -> Result<Stored, E> {
+        Ok(Stored::Bool(b))
+      }
+      fn visit_i64<E>(self, n: i64) -> Result<Stored, E> {
+        Ok(Stored::Number(n.into()))
+      }
+      fn visit_u64<E>(self, n: u64) -> Result<Stored, E> {
+        Ok(Stored::Number(n.into()))
+      }
+      fn visit_f64<E>(self, n: f64) -> Result<Stored, E> {
+        Ok(serde_json::Number::from_f64(n).map_or(Stored::Null, Stored::Number))
+      }
+      fn visit_str<E>(self, s: &str) -> Result<Stored, E> {
+        Ok(Stored::String(s.to_string()))
+      }
+      fn visit_string<E>(self, s: String) -> Result<Stored, E> {
+        Ok(Stored::String(s))
+      }
+      fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Stored, A::Error> {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element()? {
+          items.push(item);
+        }
+        Ok(Stored::Array(items))
+      }
+      fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Stored, A::Error> {
+        let mut members: Vec<(String, Stored)> = Vec::new();
+        while let Some((key, value)) = map.next_entry::<String, Stored>()? {
+          // A repeated name keeps its first position and its last value,
+          // as a Python dict does.
+          match members.iter_mut().find(|(k, _)| *k == key) {
+            Some(member) => member.1 = value,
+            None => members.push((key, value)),
+          }
+        }
+        Ok(Stored::Object(members))
+      }
+    }
+    deserializer.deserialize_any(Visit)
+  }
+}
+
 /// One cached value and when it expires.
 #[derive(Debug, Clone, PartialEq)]
 struct CacheObject {
-  value: Value,
+  value: Stored,
   /// Upstream's Python class name, kept so values round-trip.
   class_name: String,
   expires: Option<DateTime<Utc>>,
   persistent: bool,
+  /// Bytes the entry takes in the cache file.
+  size: u64,
+}
+
+/// A cache entry as it is written to disk, in upstream's member order.
+#[derive(serde::Serialize)]
+struct CacheEntry<'a> {
+  v: &'a Stored,
+  x: Option<f64>,
+  c: &'a str,
+  #[serde(rename = "!")]
+  hash: String,
 }
 
 impl CacheObject {
-  fn new(value: Value, expires: Option<Duration>, persistent: bool) -> Self {
+  fn new(value: &Value, expires: Option<Duration>, persistent: bool) -> Self {
     // An expiry too far out for a timestamp (a server's huge expires_in)
     // means never.
     let expires = expires.and_then(|d| chrono::Duration::from_std(d).ok()).and_then(|d| Utc::now().checked_add_signed(d));
-    Self { class_name: class_name(&value).to_string(), value, expires, persistent }
+    Self::build(Stored::from(value), class_name(value).to_string(), expires, persistent)
+  }
+
+  fn build(value: Stored, class_name: String, expires: Option<DateTime<Utc>>, persistent: bool) -> Self {
+    let mut co = Self { value, class_name, expires, persistent, size: 0 };
+    co.size = serde_json::to_vec(&co.to_entry()).map_or(0, |v| v.len() as u64);
+    co
   }
 
   fn is_live(&self) -> bool {
@@ -116,7 +260,7 @@ impl CacheObject {
   fn describe(&self) -> String {
     let expires = self.expires.map(|e| e.format("%Y-%m-%dT%H:%M:%S%.6f").to_string()).unwrap_or_else(|| "never".to_string());
     let value = match (&self.value, self.class_name.as_str()) {
-      (Value::String(s), "str" | "bytes" | "aware_datetime" | "naive_datetime" | "datetime") => s.clone(),
+      (Stored::String(s), "str" | "bytes" | "aware_datetime" | "naive_datetime" | "datetime") => s.clone(),
       (v, _) => py_str(v),
     };
     format!("{}:{}:{} expires: {}", self.class_name, if self.persistent { "+" } else { "-" }, value, expires)
@@ -126,34 +270,35 @@ impl CacheObject {
     hex::encode(Sha256::digest(self.describe().as_bytes()))[..HASH_LENGTH].to_string()
   }
 
-  fn to_json(&self) -> Value {
-    let expires = self.expires.map(|e| e.timestamp() as f64 + f64::from(e.timestamp_subsec_micros()) / 1e6);
-    serde_json::json!({ "v": self.value, "x": expires, "c": self.class_name, "!": self.hash() })
+  fn to_entry(&self) -> CacheEntry<'_> {
+    let x = self.expires.map(|e| e.timestamp() as f64 + f64::from(e.timestamp_subsec_micros()) / 1e6);
+    CacheEntry { v: &self.value, x, c: &self.class_name, hash: self.hash() }
   }
 
-  /// Load an entry written by `to_json()` (or by upstream), or `None` when
+  /// Load an entry written by `to_entry()` (or by upstream), or `None` when
   /// it is malformed or fails its integrity check.
-  fn from_json(content: &Value) -> Option<Self> {
-    let obj = content.as_object()?;
-    let value = obj.get("v")?.clone();
-    let expires = match obj.get("x")? {
-      Value::Null => None,
-      x => {
+  fn from_json(content: &Stored) -> Option<Self> {
+    let Stored::Object(_) = content else { return None };
+    let value = content.member("v")?.clone();
+    let expires = match content.member("x")? {
+      Stored::Null => None,
+      Stored::Number(x) => {
         let micros = (x.as_f64()? * 1e6).round() as i64;
         Some(Utc.timestamp_micros(micros).single()?)
       }
+      _ => return None,
     };
-    let class_name = match obj.get("c") {
+    let class_name = match content.member("c") {
       None => String::new(),
-      Some(Value::String(c)) => c.clone(),
+      Some(Stored::String(c)) => c.clone(),
       Some(_) => return None,
     };
-    let hashsum = match obj.get("!") {
+    let hashsum = match content.member("!") {
       None => String::new(),
-      Some(Value::String(h)) => h.clone(),
+      Some(Stored::String(h)) => h.clone(),
       Some(_) => return None,
     };
-    let co = Self { value, class_name, expires, persistent: true };
+    let co = Self::build(value, class_name, expires, true);
     if co.hash() != hashsum {
       tracing::debug!("Tampering detected with a persistent cache entry");
       return None;
@@ -176,25 +321,25 @@ fn class_name(value: &Value) -> &'static str {
 }
 
 /// Python's `str()` of a JSON-like value, as upstream hashes it.
-fn py_str(value: &Value) -> String {
+fn py_str(value: &Stored) -> String {
   match value {
-    Value::String(s) => s.clone(),
+    Stored::String(s) => s.clone(),
     other => py_repr(other),
   }
 }
 
-fn py_repr(value: &Value) -> String {
+fn py_repr(value: &Stored) -> String {
   match value {
-    Value::Null => "None".to_string(),
-    Value::Bool(true) => "True".to_string(),
-    Value::Bool(false) => "False".to_string(),
-    Value::Number(n) => match n.as_f64() {
+    Stored::Null => "None".to_string(),
+    Stored::Bool(true) => "True".to_string(),
+    Stored::Bool(false) => "False".to_string(),
+    Stored::Number(n) => match n.as_f64() {
       Some(f) if n.is_f64() => py_float(f),
       _ => n.to_string(),
     },
-    Value::String(s) => py_repr_str(s),
-    Value::Array(items) => format!("[{}]", items.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
-    Value::Object(map) => format!("{{{}}}", map.iter().map(|(k, v)| format!("{}: {}", py_repr_str(k), py_repr(v))).collect::<Vec<_>>().join(", ")),
+    Stored::String(s) => py_repr_str(s),
+    Stored::Array(items) => format!("[{}]", items.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
+    Stored::Object(members) => format!("{{{}}}", members.iter().map(|(k, v)| format!("{}: {}", py_repr_str(k), py_repr(v))).collect::<Vec<_>>().join(", ")),
   }
 }
 
@@ -333,9 +478,14 @@ impl PersistentStore {
       return true;
     }
     let Some(cache_file) = self.cache_file() else { return false };
-    match read_gzip(&cache_file) {
-      Ok(bytes) => match serde_json::from_slice::<Map<String, Value>>(&bytes) {
-        Ok(entries) => {
+    match read_gzip(&cache_file, MAX_CACHE_SIZE) {
+      Ok(bytes) if bytes.len() as u64 > MAX_CACHE_SIZE => {
+        // Larger than this store ever writes: not corrupt, so not deleted.
+        tracing::warn!("Persistent cache content exceeds allowable maximum length ({}KB); leaving it unused: {}", MAX_CACHE_SIZE / 1024, cache_file.display());
+        return false;
+      }
+      Ok(bytes) => match serde_json::from_slice::<Stored>(&bytes) {
+        Ok(Stored::Object(entries)) => {
           let mut cache = HashMap::new();
           for (k, v) in entries {
             match CacheObject::from_json(&v) {
@@ -347,7 +497,7 @@ impl PersistentStore {
           }
           self.cache = Some(cache);
         }
-        Err(_) => return self.recover_cache(&cache_file),
+        Ok(_) | Err(_) => return self.recover_cache(&cache_file),
       },
       Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.cache = Some(HashMap::new()),
       Err(e) if matches!(e.kind(), std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput | std::io::ErrorKind::UnexpectedEof) => {
@@ -396,7 +546,7 @@ impl PersistentStore {
     {
       self.renew.insert(f);
     }
-    self.cache.as_ref()?.get(key).filter(|co| co.is_live()).map(|co| co.value.clone())
+    self.cache.as_ref()?.get(key).filter(|co| co.is_live()).map(|co| co.value.to_value())
   }
 
   /// Cache `value` under `key`, expiring after `expires` (never when
@@ -406,11 +556,19 @@ impl PersistentStore {
     if !self.load_cache() {
       return false;
     }
-    let cache = self.cache.as_mut().expect("cache loaded");
-    let new = CacheObject::new(value, expires, persistent);
+    let new = CacheObject::new(&value, expires, persistent);
+    let cache = self.cache.as_ref().expect("cache loaded");
     if cache.get(key).is_some_and(|old| old.describe() == new.describe()) {
       return true;
     }
+    if self.mode != StorageMode::Memory && new.persistent && new.is_live() {
+      let size = cache_size(cache.iter().filter(|(k, _)| k.as_str() != key).chain(std::iter::once((&key.to_string(), &new))));
+      if size > MAX_CACHE_SIZE {
+        tracing::warn!("Persistent cache content exceeds allowable maximum length ({}KB); key not saved: {}", MAX_CACHE_SIZE / 1024, key);
+        return false;
+      }
+    }
+    let cache = self.cache.as_mut().expect("cache loaded");
     // Replacing a saved entry changes what is on disk too.
     let replaced = cache.get(key).is_some_and(|old| old.persistent);
     cache.insert(key.to_string(), new);
@@ -529,8 +687,8 @@ impl PersistentStore {
     }
     self.cache_size = None;
     let (Some(cache_file), Some(temp)) = (self.cache_file(), self.temp_path()) else { return false };
-    let entries: Map<String, Value> =
-      self.cache.iter().flatten().filter(|(_, co)| co.is_live() && co.persistent).map(|(k, co)| (k.clone(), co.to_json())).collect();
+    let entries: BTreeMap<&String, CacheEntry<'_>> =
+      self.cache.iter().flatten().filter(|(_, co)| co.is_live() && co.persistent).map(|(k, co)| (k, co.to_entry())).collect();
     if entries.is_empty() {
       // Nothing to keep: move the old cache file aside.
       let backup = backup_path(&cache_file);
@@ -551,7 +709,12 @@ impl PersistentStore {
       self.dirty = false;
       return true;
     }
-    let data = serde_json::to_vec(&Value::Object(entries)).unwrap_or_default();
+    let data = serde_json::to_vec(&entries).unwrap_or_default();
+    if data.len() as u64 > MAX_CACHE_SIZE {
+      // set() keeps the cache below this; never write what cannot be read.
+      tracing::error!("Persistent cache content exceeds allowable maximum length ({}KB); not written", MAX_CACHE_SIZE / 1024);
+      return false;
+    }
     let tmp = match write_temp(&temp, &data, true) {
       Ok(tmp) => tmp,
       Err(e) if e.kind() == std::io::ErrorKind::NotFound && !recovery => return self.flush_inner(true, true),
@@ -580,7 +743,7 @@ impl PersistentStore {
       return None;
     }
     let path = self.data_file(key)?;
-    let result = if compress { read_gzip(&path) } else { fs::read(&path) };
+    let result = if compress { read_gzip(&path, MAX_FILE_SIZE) } else { fs::read(&path) };
     match result {
       Ok(mut data) => {
         data.truncate(MAX_FILE_SIZE as usize);
@@ -850,11 +1013,25 @@ fn remove_if_exists(path: &Path) -> std::io::Result<()> {
   }
 }
 
-fn read_gzip(path: &Path) -> std::io::Result<Vec<u8>> {
+/// Up to `limit` + 1 decompressed bytes of `path`, so a caller can tell
+/// when there is more than `limit`.
+fn read_gzip(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
   let file = fs::File::open(path)?;
   let mut out = Vec::new();
-  flate2::read::GzDecoder::new(file).take(MAX_FILE_SIZE + 1).read_to_end(&mut out)?;
+  flate2::read::GzDecoder::new(file).take(limit + 1).read_to_end(&mut out)?;
   Ok(out)
+}
+
+/// Bytes the cache file's JSON takes for these entries; only live,
+/// persistent ones are written.
+fn cache_size<'a>(entries: impl Iterator<Item = (&'a String, &'a CacheObject)>) -> u64 {
+  let mut count = 0u64;
+  let mut size = 2u64;
+  for (key, co) in entries.filter(|(_, co)| co.persistent && co.is_live()) {
+    count += 1;
+    size += serde_json::to_vec(key).map_or(0, |k| k.len() as u64) + 1 + co.size;
+  }
+  size + count.saturating_sub(1)
 }
 
 /// Write `data` to a fresh file in `dir` and return its path.

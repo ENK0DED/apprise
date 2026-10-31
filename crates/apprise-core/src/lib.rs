@@ -48,6 +48,8 @@ pub use result::{NotifyAttempt, ResultStatus, SendResult, ServiceResult};
 pub use tag::{AppriseTag, TagFilter};
 pub use types::{NotifyFormat, NotifyType, StorageMode};
 
+use std::sync::Arc;
+
 use utils::parse::{parse_list, parse_urls};
 
 /// Delivery tracking for plugins that send one notification to several
@@ -72,7 +74,7 @@ pub fn ensure_crypto_provider() {
 /// Cloning is cheap: services are shared, as are the persistent stores.
 #[derive(Clone)]
 pub struct Apprise {
-  services: Vec<std::sync::Arc<dyn Notify>>,
+  entries: Vec<Entry>,
   asset: AppriseAsset,
   tag_filter: TagFilter,
   timeout: Option<std::time::Duration>,
@@ -81,11 +83,38 @@ pub struct Apprise {
   config: ConfigState,
 }
 
+/// One loaded entry, in load order.
+#[derive(Clone)]
+enum Entry {
+  Service(Arc<dyn Notify>),
+  /// A configuration entry with `${NAME}` variables, built from the values
+  /// current each time it is used (upstream keeps its `NotifyTemplate`).
+  Template(Arc<config::TemplateEntry>),
+}
+
+impl Entry {
+  fn tags(&self) -> Vec<String> {
+    match self {
+      Self::Service(svc) => svc.tags(),
+      Self::Template(t) => t.pending.tags(),
+    }
+  }
+}
+
+/// A loaded entry as the current template values make it (see
+/// [`Apprise::select`]).
+pub enum Selected<'a> {
+  /// A service ready to notify. `template` is the configuration entry it
+  /// was built from, if it was.
+  Service { service: Arc<dyn Notify>, template: Option<&'a config::PendingService> },
+  /// A configuration entry the current values cannot build: one is
+  /// missing, or the service refused the URL they made.
+  Unresolved(&'a config::PendingService),
+}
+
 /// Configuration and template settings of an [`Apprise`] instance.
 #[derive(Default, Clone)]
 struct ConfigState {
-  /// YAML entries still waiting for template values.
-  pending: Vec<config::PendingService>,
   /// Values for `${NAME}` template variables.
   template_values: std::collections::HashMap<String, String>,
   /// Ignore YAML `template:` sections (upstream `allow_templates=False`).
@@ -110,7 +139,7 @@ impl Apprise {
   pub fn with_asset(asset: AppriseAsset) -> Self {
     ensure_crypto_provider();
     Self {
-      services: Vec::new(),
+      entries: Vec::new(),
       asset,
       tag_filter: TagFilter::All,
       timeout: None,
@@ -149,7 +178,7 @@ impl Apprise {
         registry::from_parsed(&parsed)
       });
       match service {
-        Some(svc) => self.services.push(svc.into()),
+        Some(svc) => self.entries.push(Entry::Service(svc.into())),
         None => all = false,
       }
     }
@@ -159,18 +188,19 @@ impl Apprise {
   /// Add every URL in a list string (see [`Apprise::add`]). Returns the
   /// number of services added.
   pub fn add_urls(&mut self, raw: &str) -> usize {
-    let before = self.services.len();
+    let before = self.entries.len();
     self.add(raw);
-    self.services.len() - before
+    self.entries.len() - before
   }
 
   /// Load services from a configuration source: a local path, `file://`,
   /// `http://` or `https://` URL. `recursion` is how many levels of
   /// `include` to follow (zero ignores them).
   ///
-  /// Returns the number of services loaded. YAML entries still waiting for
-  /// a template value are kept aside (see [`Apprise::pending_templates`])
-  /// and load as soon as [`Apprise::set_template_values`] supplies one.
+  /// Returns the number of services loaded. A YAML entry with `${NAME}`
+  /// variables is kept as written and built from the values current each
+  /// time it is used (see [`Apprise::set_template_values`]); it counts
+  /// here when the current values build it.
   pub async fn add_config(&mut self, source: &str, recursion: u32) -> Result<usize, ConfigError> {
     let loaded = config::load_config(source, &self.load_options(recursion)).await?;
     Ok(self.take_loaded(loaded))
@@ -199,35 +229,79 @@ impl Apprise {
   }
 
   /// Supply values for `${NAME}` template variables (names are
-  /// case-insensitive). Pending YAML entries that now have every value are
-  /// loaded; returns how many were. A value not given here falls back to
-  /// the configuration default, then to `APPRISE_TEMPLATE_<NAME>`.
+  /// case-insensitive), replacing any given before. They apply to every
+  /// YAML entry with variables, loaded before or after; returns how many
+  /// of the loaded ones they build. A value not given here falls back to
+  /// the configuration default, then to `APPRISE_TEMPLATE_<NAME>`, read
+  /// each time an entry is used.
   pub fn set_template_values(&mut self, values: std::collections::HashMap<String, String>) -> Result<usize, ConfigError> {
     config::template::validate_overrides(&values).map_err(|e| ConfigError::Other(e.to_string()))?;
     self.config.template_values = values;
-    let pending = std::mem::take(&mut self.config.pending);
-    let before = self.services.len();
-    for entry in pending {
-      self.resolve_pending(entry);
-    }
-    Ok(self.services.len() - before)
+    Ok(self.entries.iter().filter(|e| matches!(e, Entry::Template(t) if self.build(t, false).is_some())).count())
   }
 
   /// Number of loaded services the current tag filter selects.
   pub fn filtered_len(&self) -> usize {
-    self.find().count()
+    self.services_for(&self.tag_filter, false).len()
   }
 
-  /// YAML entries waiting for a template value.
-  pub fn pending_templates(&self) -> &[config::PendingService] {
-    &self.config.pending
+  /// YAML entries the current template values cannot build.
+  pub fn pending_templates(&self) -> Vec<&config::PendingService> {
+    self.unresolved(&TagFilter::All).collect()
   }
 
-  /// The entries waiting for a template value that `filter` selects. A
-  /// notification counts each of them as a failed service, as upstream does
-  /// for an entry it cannot resolve.
+  /// The entries the current template values cannot build that `filter`
+  /// selects. A notification counts each of them as a failed service, as
+  /// upstream does for an entry it cannot resolve.
   pub fn pending_matching<'a>(&'a self, filter: &'a TagFilter) -> impl Iterator<Item = &'a config::PendingService> + 'a {
-    self.config.pending.iter().filter(move |p| filter.matches(&tag::parse_service_tags(&p.tags())))
+    self.unresolved(filter)
+  }
+
+  fn unresolved<'a>(&'a self, filter: &'a TagFilter) -> impl Iterator<Item = &'a config::PendingService> + 'a {
+    self.matching(filter).filter_map(|e| match e {
+      Entry::Template(t) if self.build(t, false).is_none() => Some(&t.pending),
+      _ => None,
+    })
+  }
+
+  /// The entries `filter` selects, in load order.
+  fn matching<'a>(&'a self, filter: &'a TagFilter) -> impl Iterator<Item = &'a Entry> + 'a {
+    self.entries.iter().filter(move |e| filter.matches(&tag::parse_service_tags(&e.tags())))
+  }
+
+  /// The service a template entry's current values build.
+  fn build(&self, template: &config::TemplateEntry, log: bool) -> Option<Arc<dyn Notify>> {
+    template.build(&self.config.template_values, &config::template::process_env, log)
+  }
+
+  /// Every entry `filter` selects, in load order, with each template entry
+  /// built from the current values (upstream `find()` with a report). Why
+  /// an entry cannot be built is logged.
+  pub fn select<'a>(&'a self, filter: &TagFilter) -> Vec<Selected<'a>> {
+    self
+      .entries
+      .iter()
+      .filter(|e| filter.matches(&tag::parse_service_tags(&e.tags())))
+      .map(|e| match e {
+        Entry::Service(svc) => Selected::Service { service: svc.clone(), template: None },
+        Entry::Template(t) => match self.build(t, true) {
+          Some(service) => Selected::Service { service, template: Some(&t.pending) },
+          None => Selected::Unresolved(&t.pending),
+        },
+      })
+      .collect()
+  }
+
+  /// The services `filter` selects, in load order, template entries built
+  /// from the current values; entries they cannot build are left out.
+  fn services_for(&self, filter: &TagFilter, log: bool) -> Vec<Arc<dyn Notify>> {
+    self
+      .matching(filter)
+      .filter_map(|e| match e {
+        Entry::Service(svc) => Some(svc.clone()),
+        Entry::Template(t) => self.build(t, log),
+      })
+      .collect()
   }
 
   /// Turn YAML `template:` sections on (the default) or off. With them off,
@@ -251,27 +325,27 @@ impl Apprise {
     }
   }
 
-  /// Keep what a configuration produced; returns the services added.
+  /// Keep what a configuration produced; returns the services added,
+  /// counting the template entries the current values build.
   fn take_loaded(&mut self, loaded: config::Loaded) -> usize {
     if let Some(asset) = loaded.asset {
       self.asset = asset;
     }
-    let before = self.services.len();
+    let mut count = 0;
     for item in loaded.items {
-      match item {
-        config::ConfigItem::Service(svc) => self.services.push(svc.into()),
-        config::ConfigItem::Pending(entry) => self.resolve_pending(*entry),
+      let entry = match item {
+        config::ConfigItem::Service(svc) => Entry::Service(svc.into()),
+        config::ConfigItem::Pending(pending) => Entry::Template(Arc::new(config::TemplateEntry::new(*pending))),
+      };
+      if match &entry {
+        Entry::Service(_) => true,
+        Entry::Template(t) => self.build(t, false).is_some(),
+      } {
+        count += 1;
       }
+      self.entries.push(entry);
     }
-    self.services.len() - before
-  }
-
-  /// Build a pending entry now if its values are available, else keep it.
-  fn resolve_pending(&mut self, entry: config::PendingService) {
-    match entry.resolve(&self.config.template_values, &config::template::process_env) {
-      Some(svc) => self.services.push(svc.into()),
-      None => self.config.pending.push(entry),
-    }
+    count
   }
 
   /// Set tag filter groups.
@@ -308,44 +382,48 @@ impl Apprise {
     Ok(())
   }
 
-  /// The services the current tag filter selects, in load order.
-  pub fn find(&self) -> impl Iterator<Item = &dyn Notify> {
-    self.services.iter().filter(|svc| self.tag_filter.matches(&tag::parse_service_tags(&svc.tags()))).map(|svc| svc.as_ref())
+  /// The services the current tag filter selects, in load order, with
+  /// template entries built from the current values (entries they cannot
+  /// build are left out; see [`select`](Self::select)).
+  pub fn find(&self) -> impl Iterator<Item = Arc<dyn Notify>> {
+    self.services_for(&self.tag_filter, false).into_iter()
   }
 
-  /// Every loaded service, in load order.
-  pub fn services(&self) -> impl Iterator<Item = &dyn Notify> {
-    self.services.iter().map(|svc| svc.as_ref())
+  /// Every loaded service, in load order, with template entries built from
+  /// the current values (entries they cannot build are left out).
+  pub fn services(&self) -> impl Iterator<Item = Arc<dyn Notify>> {
+    self.services_for(&TagFilter::All, false).into_iter()
   }
 
-  /// Get the current number of loaded services.
+  /// The number of loaded entries: services, and configuration entries
+  /// with template variables whether or not their values are known
+  /// (upstream `len()`).
   pub fn len(&self) -> usize {
-    self.services.len()
+    self.entries.len()
   }
 
-  /// Check if no services are loaded.
+  /// Whether nothing is loaded.
   pub fn is_empty(&self) -> bool {
-    self.services.is_empty()
+    self.entries.is_empty()
   }
 
-  /// Clear all loaded services.
+  /// Remove every loaded service and configuration entry.
   pub fn clear(&mut self) {
-    self.services.clear();
+    self.entries.clear();
   }
 
-  /// Move the services and pending template entries `other` loaded into
-  /// this instance, and take its asset (which a configuration may have
-  /// set). For loading configuration without holding this instance: start
-  /// `other` from a clone of this asset, load into it, then absorb it.
+  /// Move the entries `other` loaded into this instance, and take its
+  /// asset (which a configuration may have set). For loading configuration
+  /// without holding this instance: start `other` from a clone of this
+  /// asset, load into it, then absorb it.
   pub fn absorb(&mut self, other: Apprise) {
-    self.services.extend(other.services);
-    self.config.pending.extend(other.config.pending);
+    self.entries.extend(other.entries);
     self.asset = other.asset;
   }
 
   /// Get details of all loaded services.
   pub fn details(&self) -> Vec<ServiceDetails> {
-    self.services.iter().map(|s| s.details()).collect()
+    self.services().map(|s| s.details()).collect()
   }
 
   /// Get details of all supported services (static, doesn't require instances).
@@ -383,6 +461,11 @@ impl Apprise {
   /// the filter, services are tried by tag priority and lower-priority
   /// groups only run if a more urgent one failed. Plugins see the asset of
   /// this instance in `ctx.asset`.
+  ///
+  /// `ctx.body_format` says what the title and body are written in. Left
+  /// at its default (`Text`), the asset's `body_format` applies when it
+  /// sets one, so a call can give Markdown or HTML over an asset default
+  /// but not plain text.
   pub async fn notify(&self, ctx: &NotifyContext) -> SendResult {
     self.dispatch(ctx, &self.dispatch_options(), &self.tag_filter).await
   }
@@ -410,7 +493,7 @@ impl Apprise {
   async fn notify_attached(&self, ctx: &NotifyContext, sources: &[String], filter: &TagFilter) -> SendResult {
     let mut opts = self.dispatch_options();
     let mut ctx = ctx.clone();
-    if !self.services.is_empty() {
+    if !self.entries.is_empty() {
       let mut parsed = Vec::with_capacity(sources.len());
       for source in sources {
         match attachment::parse_attachment_from(source, self.location) {
@@ -461,27 +544,41 @@ impl Apprise {
 
   /// The persistent storage namespace (URL ID) of a loaded service, or
   /// `None` when it has no URL.
-  pub fn url_id(&self, svc: &dyn Notify) -> Option<String> {
-    notify::options::url_id(svc, &self.asset.storage_salt, self.asset.storage_idlen)
+  pub fn url_id<'a>(&self, svc: impl std::ops::Deref<Target = dyn Notify + 'a>) -> Option<String> {
+    notify::options::url_id(&*svc, &self.asset.storage_salt, self.asset.storage_idlen)
   }
 
   async fn dispatch(&self, ctx: &NotifyContext, opts: &dispatch::DispatchOptions, filter: &TagFilter) -> SendResult {
     let mut ctx = ctx.clone();
     ctx.asset = self.asset.clone();
     ctx.interpret_escapes |= self.asset.interpret_escapes;
+    // A call that leaves the input format at its default takes the asset's
+    // (upstream `notify(body_format=None)`).
+    if ctx.body_format == NotifyFormat::Text
+      && let Some(format) = self.asset.body_format.as_deref().and_then(|f| f.trim().parse::<NotifyFormat>().ok())
+    {
+      ctx.body_format = format;
+    }
     // Names reach MIME and multipart headers; attachments built by a
     // library caller have not been through the loaders' cleanup.
     for attachment in &mut ctx.attachments {
       attachment.name = attachment::safe_name(&attachment.name);
     }
-    let result = dispatch::notify(&self.services, filter, &ctx, opts).await;
-    self.with_unresolved(result, filter)
+    let mut services = Vec::new();
+    let mut pending = Vec::new();
+    for selected in self.select(filter) {
+      match selected {
+        Selected::Service { service, .. } => services.push(service),
+        Selected::Unresolved(entry) => pending.push(entry),
+      }
+    }
+    let result = dispatch::notify(&services, filter, &ctx, opts).await;
+    Self::with_unresolved(result, &pending)
   }
 
-  /// Add a failed result for every selected entry still waiting for a
-  /// template value: a run with one is partial at best, as upstream.
-  fn with_unresolved(&self, result: SendResult, filter: &TagFilter) -> SendResult {
-    let pending: Vec<&config::PendingService> = self.pending_matching(filter).collect();
+  /// Add a failed result for every selected entry the template values
+  /// could not build: a run with one is partial at best, as upstream.
+  fn with_unresolved(result: SendResult, pending: &[&config::PendingService]) -> SendResult {
     if pending.is_empty() {
       return result;
     }
@@ -583,5 +680,115 @@ mod tests {
     let a = Apprise::with_asset(AppriseAsset::default());
     assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     drop(a);
+  }
+
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_clear_removes_entries_waiting_for_template_values() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/notify")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = Apprise::new();
+    a.add_config_text("template:\n  host:\nurls:\n  - json://${HOST}/notify\n", None, 1).await.unwrap();
+    assert_eq!(a.pending_templates().len(), 1);
+
+    a.clear();
+    assert!(a.pending_templates().is_empty());
+    assert!(a.add(&format!("json://{}/notify", server.address())));
+    let result = a.notify(&NotifyContext { body: "x".into(), ..Default::default() }).await;
+    assert_eq!((result.status, result.total, result.succeeded), (ResultStatus::Success, 1, 1));
+
+    // A value supplied later brings nothing back
+    a.set_template_values([("host".to_string(), server.address().to_string())].into()).unwrap();
+    assert_eq!(a.len(), 1);
+  }
+
+  #[cfg(feature = "yaml")]
+  fn hosts(a: &Apprise) -> Vec<String> {
+    a.services().map(|s| s.url_base().and_then(|u| u.host.clone()).unwrap_or_default()).collect()
+  }
+
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_template_entries_follow_the_current_values() {
+    let mut a = Apprise::new();
+    a.add_config_text("version: 1\ntemplate:\n  host: old.example\nurls:\n - json://${HOST}\n", None, 0).await.unwrap();
+    assert_eq!(hosts(&a), vec!["old.example"]);
+    // A value given later replaces the default, and taking it away brings
+    // the default back
+    assert_eq!(a.set_template_values([("host".to_string(), "new.example".to_string())].into()).unwrap(), 1);
+    assert_eq!(hosts(&a), vec!["new.example"]);
+    assert_eq!(a.set_template_values([("HOST".to_string(), "other.example".to_string())].into()).unwrap(), 1);
+    assert_eq!(hosts(&a), vec!["other.example"]);
+    a.set_template_values(Default::default()).unwrap();
+    assert_eq!(hosts(&a), vec!["old.example"]);
+    // The same values hand back the same service, so what it remembers
+    // between notifications is kept
+    assert!(Arc::ptr_eq(&a.services().next().unwrap(), &a.services().next().unwrap()));
+    assert_eq!(a.len(), 1);
+
+    // A required value read from the environment is read again each time
+    let mut a = Apprise::new();
+    a.add_config_text("version: 1\ntemplate:\n - core1_env_host\nurls:\n - json://${CORE1_ENV_HOST}\n", None, 0).await.unwrap();
+    assert_eq!(a.len(), 1);
+    assert!(hosts(&a).is_empty());
+    assert_eq!(a.pending_templates().len(), 1);
+    // SAFETY: no other test reads or writes this variable.
+    unsafe { std::env::set_var("APPRISE_TEMPLATE_CORE1_ENV_HOST", "env-one.example") };
+    assert_eq!(hosts(&a), vec!["env-one.example"]);
+    assert!(a.pending_templates().is_empty());
+    unsafe { std::env::set_var("APPRISE_TEMPLATE_CORE1_ENV_HOST", "env-two.example") };
+    assert_eq!(hosts(&a), vec!["env-two.example"]);
+    unsafe { std::env::remove_var("APPRISE_TEMPLATE_CORE1_ENV_HOST") };
+    assert!(hosts(&a).is_empty());
+  }
+
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_select_lists_every_entry_in_load_order() {
+    let mut a = Apprise::new();
+    let yaml = "template:\n  - token\nurls:\n  - json://${TOKEN}@first.example\n  - json://second.example\n  - xml://third.example/${TOKEN}\n";
+    a.add_config_text(yaml, None, 0).await.unwrap();
+    let shown = |a: &Apprise| -> Vec<String> {
+      a.select(&TagFilter::All)
+        .into_iter()
+        .map(|s| match s {
+          Selected::Service { service, template } => {
+            format!("{}{}", service.url_base().unwrap().host.clone().unwrap(), if template.is_some() { " (template)" } else { "" })
+          }
+          Selected::Unresolved(entry) => format!("unresolved {}", entry.schema()),
+        })
+        .collect()
+    };
+    assert_eq!(shown(&a), vec!["unresolved json", "second.example", "unresolved xml"]);
+    a.set_template_values([("token".to_string(), "abc".to_string())].into()).unwrap();
+    assert_eq!(shown(&a), vec!["first.example (template)", "second.example", "third.example (template)"]);
+  }
+
+  /// The `message` of every JSON notification `server` received, in order.
+  async fn messages(server: &wiremock::MockServer) -> Vec<String> {
+    let posts = server.received_requests().await.unwrap().into_iter().filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == "/notify");
+    posts.map(|r| serde_json::from_slice::<serde_json::Value>(&r.body).unwrap()["message"].as_str().unwrap_or_default().to_string()).collect()
+  }
+
+  #[tokio::test]
+  async fn test_asset_body_format_is_the_default_input_format() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/notify")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let asset = AppriseAsset { body_format: Some("markdown".into()), ..Default::default() };
+    let mut a = Apprise::with_asset(asset);
+    assert!(a.add(&format!("json://{}/notify?format=html", server.address())));
+
+    // No format given: the body is the asset's Markdown
+    assert!(a.notify(&NotifyContext { body: "**Hello**".into(), ..Default::default() }).await.is_success());
+    // A format given for the call wins over the asset
+    let ctx = NotifyContext { body: "**Hello**".into(), body_format: NotifyFormat::Html, ..Default::default() };
+    assert!(a.notify(&ctx).await.is_success());
+    assert_eq!(messages(&server).await, vec!["<p><strong>Hello</strong></p>", "**Hello**"]);
   }
 }

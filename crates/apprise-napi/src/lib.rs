@@ -236,13 +236,14 @@ impl Apprise {
     Ok(count as i32)
   }
 
-  /// Get the number of loaded services.
+  /// Get the number of loaded entries: services, and configuration
+  /// entries with template variables whether or not their values are known.
   #[napi]
   pub fn len(&self) -> i32 {
     self.current().len() as i32
   }
 
-  /// Check if no services are loaded.
+  /// Check if nothing is loaded.
   #[napi]
   pub fn is_empty(&self) -> bool {
     self.current().is_empty()
@@ -273,7 +274,7 @@ impl Apprise {
     self.current().details().into_iter().map(service_info).collect()
   }
 
-  /// Clear all loaded services.
+  /// Remove every loaded service and configuration entry.
   #[napi]
   pub fn clear(&self) {
     Arc::make_mut(&mut self.current()).clear();

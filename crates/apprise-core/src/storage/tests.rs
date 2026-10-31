@@ -116,7 +116,7 @@ fn test_tampered_entries_are_dropped() {
     store.set("b", json!("two"), None, true);
   }
   let cache_file = tmp.path().join("abc").join("cache.psdata");
-  let mut content: Value = serde_json::from_slice(&read_gzip(&cache_file).unwrap()).unwrap();
+  let mut content: Value = serde_json::from_slice(&read_gzip(&cache_file, MAX_CACHE_SIZE).unwrap()).unwrap();
   content["a"]["v"] = json!("changed");
   let tmpfile = write_temp(&tmp.path().join("abc").join("tmp"), &serde_json::to_vec(&content).unwrap(), true).unwrap();
   fs::rename(tmpfile, &cache_file).unwrap();
@@ -134,18 +134,123 @@ fn test_tampered_entries_are_dropped() {
 // Values and hashes produced by upstream for the same entries.
 #[test]
 fn test_cache_format_matches_upstream() {
-  let co = CacheObject { value: json!("value"), class_name: "str".into(), expires: None, persistent: true };
+  let stored = |v: Value| Stored::from(&v);
+  let co = CacheObject::build(stored(json!("value")), "str".into(), None, true);
   assert_eq!(co.describe(), "str:+:value expires: never");
-  let co = CacheObject { value: json!({"a": [1, 2.5, null, true], "b": "it's"}), class_name: "dict".into(), expires: None, persistent: true };
+  let co = CacheObject::build(stored(json!({"a": [1, 2.5, null, true], "b": "it's"})), "dict".into(), None, true);
   assert_eq!(co.describe(), "dict:+:{'a': [1, 2.5, None, True], 'b': \"it's\"} expires: never");
-  let co = CacheObject { value: json!(3.0), class_name: "float".into(), expires: Some(Utc.timestamp_micros(1_800_000_000_123_456).unwrap()), persistent: true };
+  let co = CacheObject::build(stored(json!(3.0)), "float".into(), Some(Utc.timestamp_micros(1_800_000_000_123_456).unwrap()), true);
   assert_eq!(co.describe(), "float:+:3.0 expires: 2027-01-15T08:00:00.123456");
-  assert_eq!(co.to_json()["x"], json!(1_800_000_000.123456));
+  assert_eq!(serde_json::to_value(co.to_entry()).unwrap()["x"], json!(1_800_000_000.123456));
   assert_eq!(co.hash(), "2a487e");
-  let co = CacheObject { value: json!("value"), class_name: "str".into(), expires: None, persistent: true };
+  let co = CacheObject::build(stored(json!("value")), "str".into(), None, true);
   assert_eq!(co.hash(), "79fe7c");
-  let back = CacheObject::from_json(&co.to_json()).unwrap();
+  assert_eq!(serde_json::to_string(&co.to_entry()).unwrap(), r#"{"v":"value","x":null,"c":"str","!":"79fe7c"}"#);
+  let back = CacheObject::from_json(&serde_json::from_str(&serde_json::to_string(&co.to_entry()).unwrap()).unwrap()).unwrap();
   assert_eq!(back, co);
+  // A repeated member keeps its first place and its last value, as a
+  // Python dict does
+  let parsed: Stored = serde_json::from_str(r#"{"b":1,"a":2,"b":3}"#).unwrap();
+  assert_eq!(py_repr(&parsed), "{'b': 3, 'a': 2}");
+}
+
+// Upstream hashes a dictionary in insertion order. This is the cache file
+// upstream wrote for `set('obj', {'z': 1, 'a': 2})`, a nested dictionary
+// and a string.
+const UPSTREAM_DICT_CACHE: &str = concat!(
+  r#"{"obj":{"v":{"z":1,"a":2},"x":null,"c":"dict","!":"ba263c"},"#,
+  r#""nested":{"v":{"outer":{"y":[1,{"b":true,"a":null}],"x":1.5},"k":"v"},"x":null,"c":"dict","!":"ee1674"},"#,
+  r#""token":{"v":"secret","x":null,"c":"str","!":"8c9b0b"}}"#
+);
+
+#[test]
+fn test_upstream_dictionaries_keep_their_key_order() {
+  let tmp = tempfile::tempdir().unwrap();
+  let ns = tmp.path().join("test");
+  for dir in [ns.clone(), ns.join("tmp"), ns.join("var")] {
+    fs::create_dir_all(dir).unwrap();
+  }
+  let staged = write_temp(&ns.join("tmp"), UPSTREAM_DICT_CACHE.as_bytes(), true).unwrap();
+  fs::rename(staged, ns.join("cache.psdata")).unwrap();
+
+  let mut store = PersistentStore::new(Some(tmp.path()), "test", StorageMode::Auto).unwrap();
+  assert_eq!(store.get("obj"), Some(json!({"z": 1, "a": 2})));
+  assert_eq!(store.get("nested"), Some(json!({"outer": {"y": [1, {"b": true, "a": null}], "x": 1.5}, "k": "v"})));
+  assert_eq!(store.get("token"), Some(json!("secret")));
+
+  // Rewriting the cache keeps the order, so the hash still verifies (here
+  // and for upstream).
+  assert!(store.set("more", json!({"b": 1, "a": 2}), None, true));
+  assert!(store.flush());
+  let written = String::from_utf8(read_gzip(&ns.join("cache.psdata"), MAX_CACHE_SIZE).unwrap()).unwrap();
+  assert!(written.contains(r#""v":{"z":1,"a":2}"#), "{written}");
+  assert!(written.contains(r#""v":{"outer":{"y":[1,{"b":true,"a":null}],"x":1.5},"k":"v"}"#), "{written}");
+  let mut store = PersistentStore::new(Some(tmp.path()), "test", StorageMode::Auto).unwrap();
+  assert_eq!(store.keys(), vec!["more", "nested", "obj", "token"]);
+  assert_eq!(store.get("obj"), Some(json!({"z": 1, "a": 2})));
+}
+
+#[test]
+fn test_cache_never_grows_past_what_the_reader_takes() {
+  let tmp = tempfile::tempdir().unwrap();
+  // One value too large for the cache: refused, and the token survives
+  {
+    let mut store = PersistentStore::new(Some(tmp.path()), "large", StorageMode::Auto).unwrap();
+    assert!(store.set("token", json!("secret"), None, true));
+    assert!(!store.set("large", json!("x".repeat(MAX_CACHE_SIZE as usize + 10)), None, true));
+    assert_eq!(store.get("large"), None);
+    assert!(store.flush());
+  }
+  let mut store = PersistentStore::new(Some(tmp.path()), "large", StorageMode::Auto).unwrap();
+  assert_eq!(store.get("token"), Some(json!("secret")));
+  assert_eq!(store.keys(), vec!["token"]);
+
+  // Many small values: the one that would cross the limit is refused, and
+  // an earlier value it would have replaced is kept
+  {
+    let mut store = PersistentStore::new(Some(tmp.path()), "many", StorageMode::Auto).unwrap();
+    assert!(store.set("token", json!("secret"), None, true));
+    let mut accepted = 0;
+    while store.set(&format!("k{accepted:05}"), json!("v".repeat(1000)), None, true) {
+      accepted += 1;
+      assert!(accepted < 2000, "the limit was never reached");
+    }
+    assert!(accepted > 900, "{accepted}");
+    assert!(!store.set("token", json!("t".repeat(2000)), None, true));
+    assert_eq!(store.get("token"), Some(json!("secret")));
+    // A value that is not saved does not count
+    assert!(store.set("scratch", json!("s".repeat(4000)), None, false));
+    assert!(store.flush());
+    let written = read_gzip(&store.cache_file().unwrap(), MAX_CACHE_SIZE).unwrap();
+    assert!(written.len() as u64 <= MAX_CACHE_SIZE);
+  }
+  let mut store = PersistentStore::new(Some(tmp.path()), "many", StorageMode::Auto).unwrap();
+  assert_eq!(store.get("token"), Some(json!("secret")));
+  assert_eq!(store.get("k00000"), Some(json!("v".repeat(1000))));
+}
+
+#[test]
+fn test_oversized_cache_file_is_left_alone() {
+  // Upstream sets no limit, so its cache can be larger than this reader
+  // takes; that file is not ours to delete
+  let tmp = tempfile::tempdir().unwrap();
+  let ns = tmp.path().join("big");
+  for dir in [ns.clone(), ns.join("tmp"), ns.join("var")] {
+    fs::create_dir_all(dir).unwrap();
+  }
+  let big = Stored::String("x".repeat(MAX_CACHE_SIZE as usize));
+  let co = CacheObject::build(big, "str".into(), None, true);
+  let content = serde_json::to_vec(&BTreeMap::from([("large", co.to_entry())])).unwrap();
+  let staged = write_temp(&ns.join("tmp"), &content, true).unwrap();
+  fs::rename(staged, ns.join("cache.psdata")).unwrap();
+  let before = fs::read(ns.join("cache.psdata")).unwrap();
+
+  let mut store = PersistentStore::new(Some(tmp.path()), "big", StorageMode::Auto).unwrap();
+  assert_eq!(store.get("large"), None);
+  assert!(!store.set("token", json!("secret"), None, true));
+  assert!(store.flush());
+  drop(store);
+  assert_eq!(fs::read(ns.join("cache.psdata")).unwrap(), before);
 }
 
 #[test]
