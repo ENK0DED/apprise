@@ -414,6 +414,15 @@ mod tests {
     assert!(!String::from_utf8(g.notify_packet(&ctx)).unwrap().contains("Notification-Icon"));
   }
 
+  #[cfg(not(feature = "images"))]
+  #[test]
+  fn test_version_1_without_bundled_images_sends_no_icon() {
+    let g = parse("growl://growl.server?version=1").unwrap();
+    let packet = String::from_utf8(g.notify_packet(&NotifyContext::default())).unwrap();
+    assert!(!packet.contains("Notification-Icon") && !packet.contains("Identifier"), "{packet}");
+  }
+
+  #[cfg(feature = "images")]
   #[test]
   fn test_version_1_embeds_raw_icon() {
     // Upstream's GNTP client: Notification-Icon names x-growl-resource://{md5},
