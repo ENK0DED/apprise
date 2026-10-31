@@ -609,8 +609,9 @@ impl Notify for Discord {
   async fn send(&self, ctx: &NotifyContext) -> Result<bool, NotifyError> {
     let client = build_client(self.verify_certificate)?;
     let body = ctx.body.as_str();
-    // The title skips dialect_convert(), so protect it here too
-    let title = if self.escape_emojis { escape_emoji_names(&ctx.title) } else { ctx.title.clone() };
+    // The title skips dialect_convert(), so protect it here too, unless the
+    // content has no declared format and skipped it on purpose
+    let title = if self.escape_emojis && !ctx.body_passthrough { escape_emoji_names(&ctx.title) } else { ctx.title.clone() };
     // Embeds only when Markdown was asked for; Discord renders Markdown
     // sent as regular content on its own
     let use_embeds = self.format_override == Some(NotifyFormat::Markdown);
@@ -1047,6 +1048,37 @@ mod tests {
       let start = std::time::Instant::now();
       escape_emoji_names(&text);
       assert!(start.elapsed() < Duration::from_secs(2), "{prefix:?} + {piece:?} * {count}");
+    }
+  }
+
+  /// `?emojis=no` leaves a title with no declared format alone, as its body
+  /// (upstream skips the title's dialect_convert() for passthrough content).
+  #[tokio::test]
+  async fn test_passthrough_title_keeps_emoji_names() {
+    let server = mock(204).await;
+    let (title, body) = ("Disk :fire: at 10:30", "Body :smile: `:x:` <b>");
+    // What upstream sends for notify(body_format=None), then "markdown"
+    for (query, passthrough, sent) in [
+      ("?emojis=no", true, json!({"content": "Disk :fire: at 10:30\r\nBody :smile: `:x:` <b>"})),
+      ("?emojis=no", false, json!({"content": "Disk \\:fire: at 10:30\r\nBody \\:smile: `:x:` <b>"})),
+      ("?emojis=no&format=markdown", true, json!({"embeds": [{"title": "Disk :fire: at 10:30", "description": "Body :smile: `:x:` <b>"}]})),
+      ("?emojis=no&format=markdown", false, json!({"embeds": [{"title": "Disk \\:fire: at 10:30", "description": "Body \\:smile: `:x:` <b>"}]})),
+    ] {
+      server.reset().await;
+      Mock::given(method("POST")).and(path(HOOK)).respond_with(ResponseTemplate::new(204)).mount(&server).await;
+      let mut a = crate::Apprise::new();
+      assert!(a.add(&format!("discord://AAAA/BBBB/{query}")));
+      let format = if passthrough { NotifyFormat::Text } else { NotifyFormat::Markdown };
+      let c = NotifyContext { body_passthrough: passthrough, body_format: format, ..ctx(title, body) };
+      assert!(with_test_base(server.uri(), a.notify(&c)).await.is_success());
+      let got = json_of(&posts(&server).await[0]);
+      match sent.get("content") {
+        Some(content) => assert_eq!(&got["content"], content, "{query} passthrough={passthrough}"),
+        None => {
+          let (embed, want) = (&got["embeds"][0], &sent["embeds"][0]);
+          assert_eq!((&embed["title"], &embed["description"]), (&want["title"], &want["description"]), "{query} passthrough={passthrough}");
+        }
+      }
     }
   }
 
