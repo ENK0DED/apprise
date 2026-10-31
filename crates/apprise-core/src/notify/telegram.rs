@@ -6,7 +6,7 @@
 //! Rich Message (`sendRichMessage`).
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 use async_trait::async_trait;
 use regex_lite::Regex;
@@ -57,6 +57,85 @@ const TELEGRAM_HTML_HEADINGS: &[&str] = &["h1", "h2", "h3", "h4", "h5", "h6", "t
 
 /// Block tags that start and end their own line.
 const TELEGRAM_HTML_BLOCKS: &[&str] = &["p", "div", "table", "hr"];
+
+/// Upstream `__telegram_escape_html_entries`: the substitutions that make
+/// HTML with no declared format acceptable to Telegram, applied in order.
+/// Declared HTML goes through [`reduce_html`] instead.
+const TELEGRAM_ESCAPE_HTML_ENTRIES: &[(&str, &str)] = &[
+  // Comments
+  (r"\s*<!.+?-->\s*", ""),
+  // The following tags are not supported
+  (r"\s*<\s*(!?DOCTYPE|p|div|span|body|script|link|meta|html|font|head|label|form|input|textarea|select|iframe|source|script)([^a-z0-9>][^>]*)?>\s*", ""),
+  // All closing tags to be removed are put here
+  (r"\s*<\s*/(span|body|script|meta|html|font|head|label|form|input|textarea|select|ol|ul|link|iframe|source|script)([^a-z0-9>][^>]*)?>\s*", ""),
+  // Bold
+  (r"<\s*(strong)([^a-z0-9>][^>]*)?>", "<b>"),
+  (r"<\s*/\s*(strong)([^a-z0-9>][^>]*)?>", "</b>"),
+  (r"\s*<\s*(h[1-6]|title)([^a-z0-9>][^>]*)?>\s*", "<b>"),
+  (r"\s*<\s*/\s*(h[1-6]|title)([^a-z0-9>][^>]*)?>\s*", "</b>"),
+  // Italic
+  (r"<\s*(caption|em)([^a-z0-9>][^>]*)?>", "<i>"),
+  (r"<\s*/\s*(caption|em)([^a-z0-9>][^>]*)?>", "</i>"),
+  // Bullet lists
+  (r"<\s*li([^a-z0-9>][^>]*)?>\s*", " -"),
+  // New lines
+  (r"\s*<\s*/?\s*(ol|ul|br|hr)\s*/?>\s*", "\r\n"),
+  (r"\s*<\s*/\s*(br|p|hr|li|div)([^a-z0-9>][^>]*)?>\s*", "\r\n"),
+  // HTML spaces (&nbsp;) and tabs (&emsp;) are not supported; tabs
+  // become three spaces
+  (r"\&nbsp;?", " "),
+  (r"\&emsp;?", "   "),
+  // Telegram escapes these again, so they are turned back
+  (r"\&apos;?", "'"),
+  (r"\&quot;?", "\""),
+  // New line cleanup
+  (r"\r*\n[\r\n]+", "\r\n"),
+];
+
+static TELEGRAM_ESCAPE_HTML_RES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
+  TELEGRAM_ESCAPE_HTML_ENTRIES.iter().map(|(pattern, with)| (Regex::new(&py_ignorecase_pattern(pattern)).expect("Telegram HTML pattern"), *with)).collect()
+});
+
+/// One of upstream's `re.I | re.S` patterns for regex-lite, whose `\s` is
+/// ASCII and whose case folding is ASCII only. Python's `\s` also matches
+/// Unicode spaces, and under `re.I` the letters i, k and s also match
+/// İ, ı, K and ſ, so those are spelled out.
+fn py_ignorecase_pattern(pattern: &str) -> String {
+  const NOT_TAG_CHAR: &str = "[^a-z0-9>]";
+  let mut out = String::from("(?is)");
+  let mut rest = pattern;
+  while let Some(c) = rest.chars().next() {
+    if let Some(after) = rest.strip_prefix(NOT_TAG_CHAR) {
+      out.push_str(r"[^a-zA-Z0-9>\x{130}\x{131}\x{17F}\x{212A}]");
+      rest = after;
+      continue;
+    }
+    rest = &rest[c.len_utf8()..];
+    match c {
+      '\\' => {
+        let Some(escaped) = rest.chars().next() else { break };
+        rest = &rest[escaped.len_utf8()..];
+        if escaped == 's' {
+          out.push_str(r"[\t\n\x0B\x0C\r\x1C-\x20\x{85}\x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}]");
+        } else {
+          out.push('\\');
+          out.push(escaped);
+        }
+      }
+      'i' | 'I' => out.push_str(r"[iI\x{130}\x{131}]"),
+      'k' | 'K' => out.push_str(r"[kK\x{212A}]"),
+      's' | 'S' => out.push_str(r"[sS\x{17F}]"),
+      c => out.push(c),
+    }
+  }
+  out
+}
+
+/// Strip and rewrite the HTML Telegram rejects in a body with no declared
+/// format (upstream's `__telegram_escape_html_entries` loop in `send()`).
+fn escape_undeclared_html(body: &str) -> String {
+  TELEGRAM_ESCAPE_HTML_RES.iter().fold(body.to_string(), |body, (re, with)| re.replace_all(&body, regex_lite::NoExpand(with)).into_owned())
+}
 
 /// MarkdownV2 reserved characters escaped in literal text.
 const TELEGRAM_STRICT_CHARS: &str = "~#+=|{}.!<>-";
@@ -1482,8 +1561,12 @@ impl Notify for Telegram {
       return Ok(self.send_rich_message(&client, ctx, &targets).await);
     }
 
-    let parse_mode = if ctx.body_format == NotifyFormat::Markdown { self.markdown_ver.parse_mode() } else { "HTML" };
-    let text = ctx.body.as_str();
+    let markdown = ctx.body_format == NotifyFormat::Markdown;
+    let parse_mode = if markdown { self.markdown_ver.parse_mode() } else { "HTML" };
+    // Declared HTML was already reduced by dialect_convert(); only HTML with
+    // no declared format still needs the unsupported tags removed.
+    let text = if ctx.body_passthrough && !markdown { escape_undeclared_html(&ctx.body) } else { ctx.body.clone() };
+    let text = text.as_str();
     let has_body = !text.is_empty();
     let has_attach = !ctx.attachments.is_empty();
 
@@ -2113,6 +2196,39 @@ mod tests {
     let headers = &calls[0].1.headers;
     assert_eq!(headers.get("user-agent").unwrap(), APP_ID);
     assert_eq!(headers.get("content-type").unwrap(), "application/json");
+  }
+
+  /// HTML with no declared format loses the tags Telegram rejects, as
+  /// upstream's `__telegram_escape_html_entries` does. Each case is what
+  /// upstream sends for `Apprise().notify(body_format=None)`.
+  #[tokio::test]
+  async fn test_undeclared_html_loses_unsupported_tags() {
+    let server = MockServer::start().await;
+    let base = "tgram://123456789:abcdefg_hijklmnop/12345/";
+    for (query, title, body, mode, text) in [
+      (
+        "",
+        "T <b>",
+        "<div><p>Hello <strong>world</strong> &amp; <span>more</span></p><h1>Head</h1>a&nbsp;b &lt;x&gt; &quot;q&quot; <ul><li>one</li></ul></div>",
+        "HTML",
+        "<b>T <b></b>\r\nHello <b>world</b> &amp;more\r\n<b>Head</b>a b &lt;x&gt; \"q\"\r\n-one\r\n",
+      ),
+      // The comment pattern runs from "<!DOCTYPE" to the first "-->"
+      ("", "", "<!DOCTYPE html><html><head><title>Hi</title></head><body><!-- note --> <em>x</em>&emsp;y&APOS;z</body></html>", "HTML", "<i>x</i>   y'z"),
+      // Python's \s and re.IGNORECASE reach beyond ASCII
+      ("", "", "a\u{2003}<p>b</p>\u{2003}c <\u{17F}pan class=x>d</\u{17F}pan> <LINK rel=\u{212A}> <\u{130}nput>", "HTML", "ab\r\ncd"),
+      ("", "", "1 < 2 & 3 **bold** _u_\n\n\nend<br/>x<hr>y", "HTML", "1 < 2 & 3 **bold** _u_\r\nend\r\nx\r\ny"),
+      ("", "", "<b>keep</b> <i>it</i> <code>c</code> <caption>t</caption>", "HTML", "<b>keep</b> <i>it</i> <code>c</code> <i>t</i>"),
+      // Markdown is sent as written
+      ("?format=markdown", "Ti", "**md** <span>x</span> &nbsp;", "MARKDOWN", "Ti\r\n**md** <span>x</span> &nbsp;"),
+    ] {
+      server.reset().await;
+      mount_ok(&server).await;
+      let passthrough = NotifyContext { title: title.into(), body: body.into(), body_passthrough: true, ..NotifyContext::default() };
+      assert!(notify(&apprise(&format!("{base}{query}")), &server, &passthrough).await, "{body}");
+      let calls = calls(&server).await;
+      assert_eq!(body_json(&calls[0].1), payload(json!(12345), text, json!({"parse_mode": mode})), "{body}");
+    }
   }
 
   #[tokio::test]
