@@ -120,7 +120,7 @@ fn ordered_json(entries: &[(&str, Value)]) -> String {
 
 impl Bark {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     let qsd = |k: &str| url.get(k).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
 
     let mut targets = url.path_parts.clone();
@@ -421,6 +421,12 @@ mod tests {
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("bark://{h}/device");
   }
 
   #[test]

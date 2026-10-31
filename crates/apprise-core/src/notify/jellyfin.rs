@@ -59,6 +59,12 @@ mod tests {
     assert_eq!((details.service_url, details.setup_url), (Some("https://jellyfin.org/"), Some("https://appriseit.com/services/jellyfin/")));
   }
 
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("jellyfin://user@{h}");
+  }
+
   #[tokio::test]
   async fn test_send_uses_emby_api() {
     let server = MockServer::start().await;

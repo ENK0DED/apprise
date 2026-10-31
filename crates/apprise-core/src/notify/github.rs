@@ -97,7 +97,7 @@ fn truthy(value: &Value) -> bool {
 impl GitHub {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // The owner is stored in the host field
-    let owner = url.host.clone().filter(|h| !h.is_empty())?;
+    let owner = url.verified_host()?;
 
     // The token is stored in the user field; ?token= overrides it
     let mut token = url.user.clone();
@@ -475,6 +475,12 @@ mod tests {
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host(&format!("github://{TOKEN}@{{h}}/apprise"));
   }
 
   #[test]

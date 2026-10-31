@@ -78,7 +78,7 @@ impl RocketChat {
       None => (url.clone(), None, url.password.clone()),
     };
     let url = &parsed;
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     if let Some(w) = url.get("webhook").filter(|w| !w.is_empty()) {
       webhook = Some(unquote(w));
     }
@@ -348,6 +348,13 @@ mod tests {
     ] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("rocket://u:p@{h}/room");
+    crate::notify::custom_json::assert_verifies_host("rockets://user:web/token@{h}/@user/?mode=webhook");
   }
 
   #[test]

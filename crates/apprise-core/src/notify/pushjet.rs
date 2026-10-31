@@ -18,7 +18,7 @@ pub struct PushJet {
 impl PushJet {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // pjet[s]://[user:pass@]host[:port]/{secret_key}
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     // Upstream unquotes ?secret= once more
     let secret_key = url.get("secret").filter(|s| !s.is_empty()).map(unquote).or_else(|| url.path_parts.first().cloned());
     let Some(secret_key) = secret_key.as_deref().and_then(|s| s.split_whitespace().next()).map(str::to_string) else {
@@ -113,6 +113,12 @@ mod tests {
     {
       assert!(from_url(&url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("pjet://{h}/secret");
   }
 
   #[tokio::test]

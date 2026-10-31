@@ -35,7 +35,7 @@ pub struct Dot {
 
 impl Dot {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let device_id = url.host.clone()?;
+    let device_id = url.verified_host()?;
 
     // An explicit ?mode= wins; the first path element is kept for backward
     // compatibility (dot://apikey@device/image/).
@@ -277,6 +277,12 @@ mod tests {
     for url in ["dot://", "dot://@", "dot://apikey@"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("dot://apikey@{h}/text/");
   }
 
   #[test]

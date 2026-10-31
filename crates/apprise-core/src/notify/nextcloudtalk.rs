@@ -25,7 +25,7 @@ pub struct NextcloudTalk {
 
 impl NextcloudTalk {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     let secret = url.get("secret").filter(|s| !s.is_empty()).map(String::from);
     if secret.is_none() && (url.user.is_none() || url.password.is_none()) {
       tracing::warn!("Specify a Nextcloud Talk user and password or bot secret.");
@@ -194,6 +194,12 @@ mod tests {
     ] {
       assert!(from_url(url).is_some(), "Should parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("nctalk://u:p@{h}/room");
   }
 
   fn talk(url: &str) -> NextcloudTalk {

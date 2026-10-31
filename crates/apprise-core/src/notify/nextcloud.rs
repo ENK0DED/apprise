@@ -60,7 +60,7 @@ pub struct Nextcloud {
 
 impl Nextcloud {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
 
     let mut targets: Vec<String> = url.path_parts.clone();
     if let Some(to) = url.get("to").filter(|t| !t.is_empty()) {
@@ -321,6 +321,12 @@ mod tests {
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("ncloud://user:pass@{h}/bob");
   }
 
   fn nc(url: &str) -> Nextcloud {

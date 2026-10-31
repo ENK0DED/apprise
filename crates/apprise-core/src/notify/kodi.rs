@@ -38,7 +38,7 @@ pub struct Kodi {
 
 impl Kodi {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     let (protocol, port) =
       if url.schema.starts_with("xbmc") { (Protocol::Xbmc, Some(url.port.unwrap_or(XBMC_DEFAULT_PORT))) } else { (Protocol::Kodi, url.port) };
 
@@ -229,6 +229,13 @@ mod tests {
     for url in ["kodi://", "kodis://", "kodi://:@/", "xbmc://", "xbmcs://", "xbmc://:@/"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("kodi://{h}");
+    crate::notify::custom_json::assert_verifies_host("xbmc://{h}");
   }
 
   #[test]

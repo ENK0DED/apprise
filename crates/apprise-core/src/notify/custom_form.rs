@@ -73,7 +73,7 @@ pub struct Form {
 
 impl Form {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let host = url.host.clone().filter(|h| !h.is_empty())?;
+    let host = url.verified_host()?;
     let method = parse_method(url)?;
 
     let attach_as = match url.get("attach-as").filter(|v| !v.is_empty()) {
@@ -279,6 +279,12 @@ mod tests {
     for url in ["form://:@/", "form://", "forms://", "form://user@localhost?method=invalid", "form://localhost/?attach-as={", "form://localhost/?attach-as=*"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("form://{h}");
   }
 
   #[test]

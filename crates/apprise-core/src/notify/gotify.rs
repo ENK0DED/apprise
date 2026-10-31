@@ -41,7 +41,7 @@ impl Gotify {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // gotify://host/token  or  gotifys://host/token
     // gotify://host:port/path/token
-    let host = url.host.clone()?;
+    let host = url.verified_host()?;
     let token = url.path_parts.last()?.clone();
     if token.is_empty() {
       return None;
@@ -150,6 +150,12 @@ mod tests {
     for url in &urls {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }
+  }
+
+  #[test]
+  fn test_verifies_host() {
+    // Upstream parses this URL with host verification
+    crate::notify::custom_json::assert_verifies_host("gotify://{h}/token");
   }
 
   #[test]
