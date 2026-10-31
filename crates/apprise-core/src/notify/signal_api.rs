@@ -1,7 +1,8 @@
 use crate::conversion::commonmark::{
   EmphasisDelimiter, commonmark_can_close_emphasis, commonmark_can_open_emphasis, commonmark_decode_backslash_escapes, commonmark_emphasis_run,
   commonmark_find_backtick_run, commonmark_headings_to_bold, commonmark_index_backtick_runs, commonmark_match_emphasis, commonmark_new_scan_budget,
-  commonmark_pick_emphasis_sentinel, commonmark_scan_angle_dest, commonmark_scan_autolink_dest, commonmark_scan_paren_dest,
+  commonmark_open_link_label, commonmark_pick_emphasis_sentinel, commonmark_scan_angle_dest, commonmark_scan_autolink_dest, commonmark_scan_paren_dest,
+  commonmark_take_link_label,
 };
 use crate::delivery::{is_delivered, mark_delivered};
 use crate::error::{NotifyError, loggable_http_error};
@@ -118,10 +119,9 @@ fn commonmark_to_signal(body: &str) -> String {
   let mut budget = commonmark_new_scan_budget(&s);
 
   // `]` + "(" destination: replace the buffered label with `label (url)`
-  let append_link = |out: &mut String, open: usize, raw_url: &str| {
+  let append_link = |out: &mut String, link_stack: &mut Vec<usize>, raw_url: &str| {
     let url = escape(&commonmark_decode_backslash_escapes(raw_url), &backslash);
-    let text = out[open + 1..].to_string();
-    out.truncate(open);
+    let text = commonmark_take_link_label(out, link_stack);
     if text.is_empty() {
       out.push_str(&url);
     } else {
@@ -175,9 +175,8 @@ fn commonmark_to_signal(body: &str) -> String {
       continue;
     }
 
-    if ch == '[' {
-      link_stack.push(out.len());
-      out.push('[');
+    // A possible link-label opening; past the depth limit it is plain text
+    if ch == '[' && commonmark_open_link_label(&mut out, &mut link_stack) {
       i += 1;
       continue;
     }
@@ -187,8 +186,7 @@ fn commonmark_to_signal(body: &str) -> String {
       && !link_stack.is_empty()
       && let Some(close) = commonmark_scan_angle_dest(&s, i, n, Some(&mut budget))
     {
-      let open = link_stack.pop().unwrap_or_default();
-      append_link(&mut out, open, &s[i + 3..close].iter().collect::<String>());
+      append_link(&mut out, &mut link_stack, &s[i + 3..close].iter().collect::<String>());
       i = close + 2;
       continue;
     }
@@ -196,8 +194,7 @@ fn commonmark_to_signal(body: &str) -> String {
     // [label](url), without reading the URL as markup
     if starts(i, "](") && !link_stack.is_empty() {
       if let Some(close) = commonmark_scan_paren_dest(&s, i + 1, n, Some(&mut budget)) {
-        let open = link_stack.pop().unwrap_or_default();
-        append_link(&mut out, open, &s[i + 2..close].iter().collect::<String>());
+        append_link(&mut out, &mut link_stack, &s[i + 2..close].iter().collect::<String>());
         i = close + 1;
         continue;
       }
@@ -813,5 +810,17 @@ mod tests {
     assert!(apprise.notify(&ctx("body", NotifyFormat::Text)).await.is_success());
     let recipients: Vec<Value> = payloads(&server).await.iter().map(|p| p["recipients"][0].clone()).collect();
     assert_eq!(recipients, vec![json!("+12513333333"), json!("+12514444444"), json!("+12514444444")]);
+  }
+
+  #[test]
+  fn test_deeply_nested_links() {
+    // Upstream 27c4aa5f: deep nesting converts quickly and keeps its text
+    let depth = 20000;
+    let body = format!("{}x{}", "[".repeat(depth), "](u)".repeat(depth));
+    let start = std::time::Instant::now();
+    let result = commonmark_to_signal(&body);
+    assert!(start.elapsed().as_secs_f64() < 15.0, "took {:?}", start.elapsed());
+    // Only the outer labels become links; the rest stay as plain text
+    assert_eq!(result.matches("](u)").count(), depth - crate::conversion::MAX_LINK_DEPTH);
   }
 }

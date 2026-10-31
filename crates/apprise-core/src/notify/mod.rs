@@ -182,6 +182,7 @@ pub mod vonage;
 pub mod webexteams;
 pub mod wechat;
 pub mod wecombot;
+pub mod whapi;
 pub mod whatsapp;
 pub mod workflows;
 pub mod wpush;

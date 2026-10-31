@@ -121,6 +121,10 @@ const HTML_BLOCK_TAGS: &[&str] = &[
 /// Allow several full-body destination scans while keeping total work linear.
 pub const SCAN_BUDGET_MULTIPLIER: i64 = 4;
 
+/// How deeply link labels may nest; a deeper `[` is kept as plain text so
+/// heavily nested input cannot make the conversion slow.
+pub const MAX_LINK_DEPTH: usize = 32;
+
 /// After the shared scan budget is spent, allow a short probe for nearby URL
 /// endings without permitting an unbounded search.
 pub const MIN_SCAN_ALLOWANCE: usize = 256;
@@ -1154,6 +1158,38 @@ pub fn commonmark_new_scan_budget(body: &[char]) -> ScanBudget {
   ScanBudget(body.len() as i64 * SCAN_BUDGET_MULTIPLIER)
 }
 
+/// Start buffering a link label at a `[`.
+///
+/// - Records where the label starts in `out` (a byte offset) and adds the
+///   `[` to `out`.
+/// - Returns `false` once labels nest deeper than [`MAX_LINK_DEPTH`]; the
+///   caller then keeps the `[` as plain text.
+///
+/// Example: with `out = "a "`, the stack becomes `[2]` and `out` `"a ["`.
+pub fn commonmark_open_link_label(out: &mut String, link_stack: &mut Vec<usize>) -> bool {
+  if link_stack.len() >= MAX_LINK_DEPTH {
+    return false;
+  }
+  link_stack.push(out.len());
+  out.push('[');
+  true
+}
+
+/// Remove the innermost buffered link label from `out`.
+///
+/// - Drops the label's opening `[` and everything after it.
+/// - Returns the label text, without the `[`. With no label open, `out` is
+///   left alone and the text is empty.
+///
+/// Example: with `out = "a [label"` and the stack `[2]`, returns `"label"`
+/// and leaves `out` as `"a "`.
+pub fn commonmark_take_link_label(out: &mut String, link_stack: &mut Vec<usize>) -> String {
+  let Some(open) = link_stack.pop() else { return String::new() };
+  let text = out[open + 1..].to_string();
+  out.truncate(open);
+  text
+}
+
 /// Find where a `](<url>)` link ends. `i` is the index of the `]`. Returns
 /// the index of the closing `>`, or `None` if not found. Escaped characters
 /// such as `\>` are skipped.
@@ -2163,6 +2199,12 @@ mod tests {
     assert_eq!(commonmark_decode_backslash_escapes(r"C:\Users"), r"C:\Users");
     assert_eq!(commonmark_escape_link_url(r"a\|b&c"), "a%7Cb&amp;c");
     assert_eq!(commonmark_new_scan_budget(&chars("abc")), ScanBudget(12));
+    let (mut out, mut stack) = ("a ".to_string(), Vec::new());
+    assert!(commonmark_open_link_label(&mut out, &mut stack));
+    assert_eq!((out.as_str(), stack.as_slice()), ("a [", &[2][..]));
+    out.push_str("label");
+    assert_eq!(commonmark_take_link_label(&mut out, &mut stack), "label");
+    assert_eq!(out, "a ");
     assert_eq!(commonmark_scan_angle_dest(&chars("[x](<https://a>)"), 2, 16, None), Some(14));
     assert_eq!(commonmark_scan_paren_dest(&chars("[x](a_(b))"), 3, 10, None), Some(9));
     assert_eq!(commonmark_scan_autolink_dest(&chars("<https://a*b>"), 0, 13), (Some(12), true));

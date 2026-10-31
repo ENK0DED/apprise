@@ -6,8 +6,8 @@ use serde_json::json;
 
 use crate::conversion::{
   commonmark_decode_backslash_escapes, commonmark_emphasis_run, commonmark_find_backtick_run, commonmark_headings_to_bold, commonmark_index_backtick_runs,
-  commonmark_new_scan_budget, commonmark_pick_emphasis_sentinel, commonmark_render_emphasis_markers, commonmark_scan_angle_dest, commonmark_scan_autolink_dest,
-  commonmark_scan_paren_dest,
+  commonmark_new_scan_budget, commonmark_open_link_label, commonmark_pick_emphasis_sentinel, commonmark_render_emphasis_markers, commonmark_scan_angle_dest,
+  commonmark_scan_autolink_dest, commonmark_scan_paren_dest, commonmark_take_link_label,
 };
 use crate::delivery::{is_delivered, mark_delivered};
 use crate::error::{NotifyError, loggable_http_error};
@@ -58,12 +58,11 @@ fn collapse_backticks(text: &str) -> String {
   out
 }
 
-/// Upstream `_append_whatsapp_link`: replace the buffered link label
-/// starting at byte `open` of `out` with WhatsApp's `label (url)`.
-fn append_whatsapp_link(out: &mut String, open: usize, raw_url: &str) {
+/// Upstream `_append_whatsapp_link`: replace the innermost buffered link
+/// label in `out` with WhatsApp's `label (url)`.
+fn append_whatsapp_link(out: &mut String, link_stack: &mut Vec<usize>, raw_url: &str) {
   let url = commonmark_decode_backslash_escapes(raw_url);
-  let text = out[open + 1..].to_string();
-  out.truncate(open);
+  let text = commonmark_take_link_label(out, link_stack);
   // Protect the wrapping parentheses from the URL.
   let safe_url = url.replace(')', "%29");
   if text.is_empty() {
@@ -74,7 +73,8 @@ fn append_whatsapp_link(out: &mut String, open: usize, raw_url: &str) {
 }
 
 /// Upstream `_commonmark_to_whatsapp`: translate CommonMark to WhatsApp
-/// formatting.
+/// formatting. Whapi.Cloud uses it too: upstream gives `NotifyWhapi` an
+/// identical copy.
 ///
 /// ```text
 /// CommonMark          WhatsApp
@@ -85,7 +85,7 @@ fn append_whatsapp_link(out: &mut String, open: usize, raw_url: &str) {
 /// [label](<url>)      label (url)
 /// \*                  *
 /// ```
-fn commonmark_to_whatsapp(body: &str) -> String {
+pub(crate) fn commonmark_to_whatsapp(body: &str) -> String {
   // Headings become bold; code is left alone.
   let headed = commonmark_headings_to_bold(body);
   let chars: Vec<char> = headed.chars().collect();
@@ -129,9 +129,8 @@ fn commonmark_to_whatsapp(body: &str) -> String {
       continue;
     }
 
-    if ch == '[' {
-      link_stack.push(out.len());
-      out.push('[');
+    // A possible link-label opening; past the depth limit it is plain text.
+    if ch == '[' && commonmark_open_link_label(&mut out, &mut link_stack) {
       i += 1;
       continue;
     }
@@ -141,8 +140,7 @@ fn commonmark_to_whatsapp(body: &str) -> String {
       && !link_stack.is_empty()
       && let Some(close) = commonmark_scan_angle_dest(&chars, i, n, Some(&mut scan_budget))
     {
-      let open = link_stack.pop().unwrap_or_default();
-      append_whatsapp_link(&mut out, open, &collect(&chars[i + 3..close]));
+      append_whatsapp_link(&mut out, &mut link_stack, &collect(&chars[i + 3..close]));
       i = close + 2;
       continue;
     }
@@ -150,8 +148,7 @@ fn commonmark_to_whatsapp(body: &str) -> String {
     // Bare destinations convert without being scanned for emphasis.
     if starts_with_at(&chars, i, "](") && !link_stack.is_empty() {
       if let Some(close) = commonmark_scan_paren_dest(&chars, i + 1, n, Some(&mut scan_budget)) {
-        let open = link_stack.pop().unwrap_or_default();
-        append_whatsapp_link(&mut out, open, &collect(&chars[i + 2..close]));
+        append_whatsapp_link(&mut out, &mut link_stack, &collect(&chars[i + 2..close]));
         i = close + 1;
         continue;
       }
@@ -581,5 +578,17 @@ mod tests {
     assert!(a.notify(&NotifyContext { body: "x".into(), ..Default::default() }).await.is_success());
     let numbers: Vec<String> = posts(&server).await.into_iter().map(|p| p["number"].as_str().unwrap().to_string()).collect();
     assert_eq!(numbers, vec!["5511111111111", "5522222222222", "5522222222222"]);
+  }
+
+  #[test]
+  fn test_deeply_nested_links() {
+    // Upstream 27c4aa5f: deep nesting converts quickly and keeps its text
+    let depth = 20000;
+    let body = format!("{}x{}", "[".repeat(depth), "](u)".repeat(depth));
+    let start = std::time::Instant::now();
+    let result = commonmark_to_whatsapp(&body);
+    assert!(start.elapsed().as_secs_f64() < 15.0, "took {:?}", start.elapsed());
+    // Only the outer labels become links; the rest stay as plain text
+    assert_eq!(result.matches("](u)").count(), depth - crate::conversion::MAX_LINK_DEPTH);
   }
 }

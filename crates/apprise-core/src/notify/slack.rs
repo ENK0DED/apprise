@@ -23,8 +23,8 @@ use serde_json::{Value, json};
 use crate::asset::NotifyImageSize;
 use crate::conversion::{
   commonmark_emphasis_run, commonmark_escape_link_url, commonmark_find_backtick_run, commonmark_headings_to_bold, commonmark_index_backtick_runs,
-  commonmark_new_scan_budget, commonmark_pick_emphasis_sentinel, commonmark_render_emphasis_markers, commonmark_scan_angle_dest, commonmark_scan_autolink_dest,
-  commonmark_scan_paren_dest, pystr,
+  commonmark_new_scan_budget, commonmark_open_link_label, commonmark_pick_emphasis_sentinel, commonmark_render_emphasis_markers, commonmark_scan_angle_dest,
+  commonmark_scan_autolink_dest, commonmark_scan_paren_dest, commonmark_take_link_label, pystr,
 };
 use crate::delivery::{is_delivered, mark_delivered, recall, remember};
 use crate::error::{NotifyError, loggable_http_error};
@@ -608,9 +608,8 @@ fn commonmark_to_slack(body: &str) -> String {
       continue;
     }
 
-    if ch == '[' {
-      link_stack.push(out.len());
-      out.push('[');
+    // A possible link-label opening; past the depth limit it is plain text
+    if ch == '[' && commonmark_open_link_label(&mut out, &mut link_stack) {
       i += 1;
       continue;
     }
@@ -621,9 +620,7 @@ fn commonmark_to_slack(body: &str) -> String {
       && let Some(close) = commonmark_scan_angle_dest(&s, i, n, Some(&mut budget))
     {
       let url = commonmark_escape_link_url(&s[i + 3..close].iter().collect::<String>());
-      let open = link_stack.pop().unwrap_or_default();
-      let text = out[open + 1..].to_string();
-      out.truncate(open);
+      let text = commonmark_take_link_label(&mut out, &mut link_stack);
       out.push_str(&format!("<{url}|{text}>"));
       i = close + 2;
       continue;
@@ -633,9 +630,7 @@ fn commonmark_to_slack(body: &str) -> String {
     if starts(i, "](") && !link_stack.is_empty() {
       if let Some(close) = commonmark_scan_paren_dest(&s, i + 1, n, Some(&mut budget)) {
         let url = commonmark_escape_link_url(&s[i + 2..close].iter().collect::<String>());
-        let open = link_stack.pop().unwrap_or_default();
-        let text = out[open + 1..].to_string();
-        out.truncate(open);
+        let text = commonmark_take_link_label(&mut out, &mut link_stack);
         out.push_str(&format!("<{url}|{text}>"));
         i = close + 1;
         continue;
@@ -1540,5 +1535,17 @@ mod tests {
       block_text(text_of(&blocks, "**hello** &amp; <world>", NotifyFormat::Text).await),
       json!({"type": "plain_text", "text": "**hello** &amp;amp; &lt;world&gt;"})
     );
+  }
+
+  #[test]
+  fn test_deeply_nested_links() {
+    // Upstream 27c4aa5f: deep nesting converts quickly and keeps its text
+    let depth = 20000;
+    let body = format!("{}x{}", "[".repeat(depth), "](u)".repeat(depth));
+    let start = std::time::Instant::now();
+    let result = commonmark_to_slack(&body);
+    assert!(start.elapsed().as_secs_f64() < 15.0, "took {:?}", start.elapsed());
+    // Only the outer labels become links; the rest stay as plain text
+    assert_eq!(result.matches("](u)").count(), depth - crate::conversion::MAX_LINK_DEPTH);
   }
 }
