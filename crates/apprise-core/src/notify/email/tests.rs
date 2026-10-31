@@ -1212,6 +1212,51 @@ async fn test_pgp_encrypt_self_send_generates_keys() {
   assert!(inner.contains("self body"));
 }
 
+/// `pgp_autogen: false` uses existing keys only, as upstream's asset does: a
+/// self-send has no key to encrypt to and fails, and a mail encrypted to a
+/// stored recipient key goes out without the sender's Autocrypt pair,
+/// which is only generated when the asset allows it.
+#[cfg(feature = "pgp")]
+#[tokio::test]
+async fn test_pgp_autogen_off_generates_no_keys() {
+  let server = FakeSmtp::start(ServerConfig::default()).await;
+  let send = |url: &'static str, pgp_autogen: bool| {
+    let server = &server;
+    async move {
+      let store = tempfile::tempdir().unwrap();
+      let asset = crate::asset::AppriseAsset { storage_path: Some(store.path().to_path_buf()), pgp_autogen, ..Default::default() };
+      let mut apprise = crate::Apprise::with_asset(asset);
+      assert!(apprise.add(url));
+      // The recipient's key sits in the service's storage directory
+      let dir = store.path().join(apprise.url_id(apprise.services().next().unwrap()).unwrap());
+      std::fs::create_dir_all(&dir).unwrap();
+      std::fs::write(dir.join("friend-pub.asc"), PGPY_PUB).unwrap();
+      let sent = server.mails().len();
+      let (result, _) = against(server, apprise.notify(&ctx("t", "body", NotifyFormat::Text))).await;
+      let mail = server.mails().get(sent).map(|m| m.text.clone());
+      let mut names: Vec<String> = walk(&dir).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+      names.sort();
+      (result.is_success(), mail, names)
+    }
+  };
+
+  let (ok, mail, files) = send("mailto://user:pass@nuxref.com?pgp=encrypt", false).await;
+  assert!(!ok && mail.is_none());
+  assert_eq!(files, ["friend-pub.asc"]);
+
+  let to_friend = "mailto://user:pass@nuxref.com/friend@example.com?pgp=encrypt";
+  let (ok, mail, files) = send(to_friend, false).await;
+  let mail = mail.unwrap();
+  assert!(ok && mail.starts_with("Content-Type: multipart/encrypted;"));
+  assert!(!mail.contains("Autocrypt:"));
+  assert_eq!(files, ["friend-pub.asc"]);
+
+  // The default generates the sender's pair for the header
+  let (ok, mail, files) = send(to_friend, true).await;
+  assert!(ok && mail.unwrap().contains("Autocrypt: addr=user@nuxref.com;"));
+  assert_eq!(files, ["friend-pub.asc", "user-prv.asc", "user-pub.asc"]);
+}
+
 #[cfg(feature = "pgp")]
 fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
   let mut out = Vec::new();

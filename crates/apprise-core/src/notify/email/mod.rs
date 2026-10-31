@@ -399,7 +399,7 @@ impl Email {
     #[cfg(feature = "pgp")]
     let pgp = {
       let store_path = crate::storage::with_service_store(|s| s.path().map(std::path::Path::to_path_buf)).flatten();
-      self.pgp.with_path(store_path).with_app_id(&ctx.asset.app_id)
+      self.pgp.with_path(store_path).with_asset(&ctx.asset)
     };
     let title = protocol.subject.unwrap_or_else(|| ctx.title.clone());
     // A subject is one header line (RFC 5322 section 2.2.3)

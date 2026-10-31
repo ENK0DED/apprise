@@ -680,17 +680,8 @@ fn set_url_part(parsed: &mut ParsedUrl, key: &str, value: &Value) -> Result<(), 
 }
 
 /// Upstream asset keys the Rust asset does not model; accepted silently.
-const UNMODELLED_ASSET_KEYS: &[&str] = &[
-  "default_ascii_chars",
-  "default_extension",
-  "default_html_color",
-  "default_image_size",
-  "encoding",
-  "image_path_mask",
-  "pem_autogen",
-  "pgp_autogen",
-  "storage_mode",
-];
+const UNMODELLED_ASSET_KEYS: &[&str] =
+  &["default_ascii_chars", "default_extension", "default_html_color", "default_image_size", "encoding", "image_path_mask", "storage_mode"];
 
 /// Apply an `asset:` section on top of the current asset.
 fn parse_asset(tokens: &Mapping, base: &AppriseAsset) -> AppriseAsset {
@@ -736,7 +727,7 @@ fn parse_asset(tokens: &Mapping, base: &AppriseAsset) -> AppriseAsset {
     };
 
     match key {
-      "secure_logging" | "async_mode" | "abort_on_chain_failure" | "http_redirects" | "interpret_escapes" => {
+      "secure_logging" | "async_mode" | "abort_on_chain_failure" | "http_redirects" | "interpret_escapes" | "pgp_autogen" | "pem_autogen" => {
         let value = match v {
           Value::Bool(b) => *b,
           Value::String(_) | Value::Null => config_bool(text.as_deref().unwrap_or_default()),
@@ -750,6 +741,8 @@ fn parse_asset(tokens: &Mapping, base: &AppriseAsset) -> AppriseAsset {
           "async_mode" => asset.async_mode = value,
           "abort_on_chain_failure" => asset.abort_on_chain_failure = value,
           "http_redirects" => asset.http_redirects = value,
+          "pgp_autogen" => asset.pgp_autogen = value,
+          "pem_autogen" => asset.pem_autogen = value,
           _ => asset.interpret_escapes = value,
         }
       }
@@ -1080,13 +1073,18 @@ urls:
     assert!(parse("urls:\n  - json://localhost\n").asset.is_none());
 
     // Delivery settings the dispatcher reads
-    let out =
-      parse("asset:\n  async_mode: no\n  http_redirects: false\n  abort_on_chain_failure: yes\n  interpret_escapes: 'yes'\nurls:\n  - json://localhost\n");
+    let out = parse(
+      "asset:\n  async_mode: no\n  http_redirects: false\n  abort_on_chain_failure: yes\n  interpret_escapes: 'yes'\n  pem_autogen: no\n  pgp_autogen: 'off'\nurls:\n  - json://localhost\n",
+    );
     let asset = out.asset.unwrap();
     assert!(!asset.async_mode);
     assert!(!asset.http_redirects);
     assert!(asset.abort_on_chain_failure);
     assert!(asset.interpret_escapes);
+    assert!(!asset.pem_autogen);
+    assert!(!asset.pgp_autogen);
+    let asset = parse("asset:\n  pem_autogen: no\nurls:\n  - json://localhost\n").asset.unwrap();
+    assert!(!asset.pem_autogen && asset.pgp_autogen);
   }
 
   // Each case checked against upstream's ConfigBase.config_parse_yaml().

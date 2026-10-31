@@ -58,6 +58,7 @@ use pgp::ser::Serialize;
 use pgp::types::{CompressionAlgorithm, KeyDetails, Password};
 use sha1::{Digest, Sha1};
 
+use crate::asset::AppriseAsset;
 use crate::utils::cwe312::cwe312_loggable;
 use crate::utils::wkd::WkdController;
 
@@ -142,9 +143,11 @@ impl PgpController {
     Self { path, ..self.clone() }
   }
 
-  /// This controller with another application name for generated keys.
-  pub fn with_app_id(&self, app_id: &str) -> Self {
-    Self { app_id: app_id.to_string(), ..self.clone() }
+  /// This controller for an Apprise using `asset` (upstream gives the
+  /// controller the service's asset): generated keys are named after its
+  /// `app_id`, and are only generated when its `pgp_autogen` allows it.
+  pub fn with_asset(&self, asset: &AppriseAsset) -> Self {
+    Self { app_id: asset.app_id.clone(), autogen: asset.pgp_autogen, ..self.clone() }
   }
 
   /// The WKD controller, if WKD discovery is on.

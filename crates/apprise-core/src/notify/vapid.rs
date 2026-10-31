@@ -7,8 +7,9 @@
 //!
 //! Without `?keyfile=` / `?subfile=` the private key and `subscriptions.json`
 //! live in the plugin's persistent storage directory, as upstream keeps
-//! them: a missing key pair is generated there and a starter subscription
-//! file written for the user to fill in. Endpoints that expired in a
+//! them: unless the asset's `pem_autogen` is off, a missing key pair is
+//! generated there and a starter subscription file written for the user
+//! to fill in. Endpoints that expired in a
 //! subscription file that cannot be rewritten are remembered in the
 //! persistent store for 30 days (in memory when there is no store).
 
@@ -493,16 +494,16 @@ fn pem_encode(label: &str, der: &[u8]) -> String {
   out
 }
 
-/// The private key kept in `dir` (upstream `ApprisePEMController` with
-/// `pem_autogen`): a missing key pair is generated and written there as
-/// `private_key.pem` (PKCS#8) and `public_key.pem`. Nothing is generated
-/// when a public key is already there on its own.
-fn store_private_key(dir: &Path) -> Option<EcdsaKeyPair> {
+/// The private key kept in `dir` (upstream `ApprisePEMController`). With
+/// `autogen` (the asset's `pem_autogen`) a missing key pair is generated
+/// and written there as `private_key.pem` (PKCS#8) and `public_key.pem`.
+/// Nothing is generated when a public key is already there on its own.
+fn store_private_key(dir: &Path, autogen: bool) -> Option<EcdsaKeyPair> {
   let dir_str = dir.to_str()?;
   if let Some(path) = find_private_keyfile(dir_str, None) {
     return std::fs::read(path).ok().and_then(|data| load_private_key(&data));
   }
-  if find_public_keyfile(dir_str, None).is_some() {
+  if !autogen || find_public_keyfile(dir_str, None).is_some() {
     return None;
   }
   let rng = SystemRandom::new();
@@ -690,14 +691,16 @@ impl Notify for Vapid {
     if !state.key_attempted {
       // The key is only loaded on the first notification
       state.key_attempted = true;
-      if self.subfile.is_none()
+      // Upstream only writes the starter file and keys with pem_autogen
+      if ctx.asset.pem_autogen
+        && self.subfile.is_none()
         && let Some(dir) = &dir
       {
         autogen_subscriptions(dir);
       }
       state.key = match (&self.keyfile, &dir) {
         (Some(keyfile), _) => read_source(keyfile, MAX_KEYFILE_SIZE).await.and_then(|(data, _)| load_private_key(&data)),
-        (None, Some(dir)) => store_private_key(dir),
+        (None, Some(dir)) => store_private_key(dir, ctx.asset.pem_autogen),
         (None, None) => None,
       };
       if state.key.is_none() {
@@ -1332,6 +1335,34 @@ Oc4My77ylXst/I1fVk62i06E2YwM//ZmgQ==
     assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
     // The key was not replaced
     assert_eq!(std::fs::read(dir.join("private_key.pem")).unwrap(), private);
+  }
+
+  /// `pem_autogen: false` writes nothing (upstream skips both the key pair
+  /// and the starter subscription file) and only uses a key already there.
+  #[tokio::test]
+  async fn test_pem_autogen_off_uses_existing_keys_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let asset = crate::AppriseAsset { storage_path: Some(tmp.path().to_path_buf()), pem_autogen: false, ..Default::default() };
+    let mut a = crate::Apprise::with_asset(asset);
+    assert!(a.add("vapid://user@example.com"));
+    let ctx = NotifyContext { body: "hello".into(), ..Default::default() };
+    assert!(!a.notify(&ctx).await.is_success());
+    let dir = tmp.path().join(a.url_id(a.services().next().unwrap()).unwrap());
+    let files: Vec<_> = std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| e.file_name()).collect()).unwrap_or_default();
+    assert!(!files.iter().any(|f| f.to_string_lossy().ends_with(".pem") || *f == DEFAULT_SUBFILE), "{files:?}");
+
+    // A key the user put there is still used
+    let server = MockServer::builder().start().await;
+    Mock::given(method("POST")).and(path("/fcm/send/abc123")).respond_with(ResponseTemplate::new(201)).expect(1).mount(&server).await;
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("private_key.pem"), SEC1_KEY).unwrap();
+    let b = browser();
+    let endpoint = "https://fcm.googleapis.com/fcm/send/abc123";
+    std::fs::write(dir.join(DEFAULT_SUBFILE), serde_json::json!({ "user@example.com": subscription_json(endpoint, &b) }).to_string()).unwrap();
+    a.clear();
+    assert!(a.add("vapid://user@example.com"));
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    assert!(!dir.join("public_key.pem").exists());
   }
 
   #[tokio::test]

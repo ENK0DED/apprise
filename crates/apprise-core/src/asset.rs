@@ -83,6 +83,15 @@ pub struct AppriseAsset {
   /// Interpret backslash escapes (`\n`, `\t`, ...) in every notification,
   /// as if each set `NotifyContext::interpret_escapes`.
   pub interpret_escapes: bool,
+  /// Generate a PGP key pair in a service's storage directory when one is
+  /// needed and missing (email and Delta Chat `?pgp=`: a self-addressed
+  /// encrypted mail, the sender's Autocrypt key). `false` uses existing
+  /// keys only.
+  pub pgp_autogen: bool,
+  /// Generate PEM keys in a service's storage directory when missing
+  /// (VAPID's key pair, and its starter `subscriptions.json`). `false`
+  /// uses existing files only.
+  pub pem_autogen: bool,
   /// Seconds one service may take, retries and waits included; it reports
   /// a timeout after that. `0` disables the limit.
   pub service_timeout: f64,
@@ -121,6 +130,8 @@ impl Default for AppriseAsset {
       abort_on_chain_failure: false,
       http_redirects: true,
       interpret_escapes: false,
+      pgp_autogen: true,
+      pem_autogen: true,
       service_timeout: DEFAULT_SERVICE_TIMEOUT,
       storage_path: None,
       storage_mode: StorageMode::Auto,
@@ -283,6 +294,7 @@ mod tests {
     assert_eq!(asset.service_timeout(), Some(std::time::Duration::from_secs(60)));
     assert_eq!(asset.storage_idlen, 8);
     assert!(asset.timezone.is_none());
+    assert!(asset.pgp_autogen && asset.pem_autogen);
   }
 
   // Values checked against upstream's AppriseAsset.
