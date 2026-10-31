@@ -115,8 +115,8 @@ impl TemplateSchema {
   /// Read a `template:` section: a list of `- name` / `- name: default`
   /// entries, or a mapping of `name: default`.
   #[cfg(feature = "yaml")]
-  pub fn parse(entries: &serde_yaml::Value) -> Result<Self, TemplateError> {
-    use serde_yaml::Value;
+  pub fn parse(entries: &super::yaml::Value) -> Result<Self, TemplateError> {
+    use super::yaml::Value;
 
     let mut items: Vec<(Value, Value)> = Vec::new();
     match entries {
@@ -147,7 +147,8 @@ impl TemplateSchema {
         Value::Null => None,
         Value::String(s) => Some(validate_value(&key, &s)?),
         Value::Bool(b) => Some(if b { "yes" } else { "no" }.to_string()),
-        Value::Number(n) => Some(validate_value(&key, &n.to_string())?),
+        Value::Int(n) => Some(validate_value(&key, &n.to_string())?),
+        Value::Float(f) => Some(validate_value(&key, &super::yaml::python_float(f))?),
         _ => return Err(TemplateError::for_var(format!("Template variable '{}' must be text.", key), &key)),
       };
       variables.insert(key, default);
@@ -175,8 +176,8 @@ impl TemplateSchema {
 }
 
 #[cfg(feature = "yaml")]
-fn yaml_repr(v: &serde_yaml::Value) -> String {
-  serde_yaml::to_string(v).map(|s| s.trim().to_string()).unwrap_or_default()
+fn yaml_repr(v: &super::yaml::Value) -> String {
+  v.python_str()
 }
 
 /// Swaps declared variables for parse-safe placeholders and back
@@ -363,8 +364,8 @@ impl PlaceholderMap {
 /// YAML value, looking into mapping values and into keys that look like
 /// URLs.
 #[cfg(feature = "yaml")]
-pub fn template_references(value: &serde_yaml::Value, out: &mut BTreeSet<String>) {
-  use serde_yaml::Value;
+pub fn template_references(value: &super::yaml::Value, out: &mut BTreeSet<String>) {
+  use super::yaml::Value;
   match value {
     Value::String(s) => {
       for c in template_var_re().captures_iter(s) {
@@ -382,7 +383,6 @@ pub fn template_references(value: &serde_yaml::Value, out: &mut BTreeSet<String>
         template_references(v, out);
       }
     }
-    Value::Tagged(t) => template_references(&t.value, out),
     _ => {}
   }
 }

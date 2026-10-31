@@ -14,7 +14,7 @@ tokio.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml = { workspace = true, optional = true }
+serde-saphyr = { workspace = true, optional = true }
 url.workspace = true
 pgp = { workspace = true, optional = true }
 rand_core06 = { workspace = true, optional = true }
@@ -62,7 +62,7 @@ default = ["mqtt", "amqp", "email", "yaml", "images", "simplepush-encryption", "
 mqtt = []
 amqp = ["dep:fe2o3-amqp"]
 email = ["dep:pgp", "dep:rand_core06"]
-yaml = ["dep:serde_yaml"]
+yaml = ["dep:serde-saphyr"]
 desktop = ["dep:png", "dep:zbus", "dep:windows-sys"]
 blink1 = ["dep:hidapi"]
 # Bundle the default theme's PNG icons for AppriseAsset::image_raw() (~280 KB).

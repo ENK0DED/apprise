@@ -336,12 +336,12 @@ The package has the default features; the desktop and Blink(1) services are not 
 
 ## Cargo Features
 
-`apprise-core` has the features below, and the CLI forwards each of them under the same name. The size column is how much each one adds to the x86-64 Linux release binary of the CLI, which is about 10.5 MB with the default features and 7.3 MB with none of them. Sizes vary by platform.
+`apprise-core` has the features below, and the CLI forwards each of them under the same name. The size column is how much each one adds to the x86-64 Linux release binary of the CLI, which is about 10.9 MB with the default features and 7.3 MB with none of them. Sizes vary by platform.
 
 | Feature | Default | What it enables | Release size |
 | ------- | ------- | --------------- | ------------ |
 | `email` | on | `mailto://`, `mailtos://` (SMTP) and `deltachat://`, with PGP/MIME signing and encryption through rPGP | about 1.8 MB |
-| `yaml` | on | YAML configuration files (TEXT configuration always works) | about 202 KB |
+| `yaml` | on | YAML configuration files (TEXT configuration always works) | about 574 KB |
 | `mqtt` | on | `mqtt://` and `mqtts://` (a built-in client; no extra crates) | about 29 KB |
 | `amqp` | on | `amqp://` and `amqps://`: AMQP 0-9-1 is built in, AMQP 1.0 comes from fe2o3-amqp | about 590 KB |
 | `images` | on | Bundles the default theme's PNG icons, which Telegram (`?image=yes`) uploads and desktop notifications show | about 176 KB (only the icon sizes in use are kept; all of them are 286 KB) |
@@ -893,6 +893,7 @@ This port aims to behave like upstream Apprise 2.1. Where it does not:
 
 * **Not ported**: upstream's `url()` serialisation (turning a loaded service back into a URL, including the privacy URL; `--dry-run` and `storage` listings mask the URL you gave instead, hiding the user, password, path, query values and token-like hosts), and custom Python plugins (the `@notify` decorator, `--plugin-path` and `APPRISE_PLUGIN_PATH`, which the CLI accepts but ignores with a warning).
 * **Time zones**: `?tz=` understands UTC and fixed offsets (`+05:00`, `UTC-8`). An IANA name such as `Europe/Paris` is accepted but treated as UTC for now.
+* **YAML values**: a number given as `user`, `password` or `host` (`password: 123456`) is used as its text, where upstream cannot load the entry. A YAML 1.1 timestamp (`2001-12-14 21:59:43`) stays the text as written, where upstream passes a `datetime` on.
 * **Upstream bugs fixed deliberately** (several following the Go port, [apprise-go](https://github.com/unraid/apprise-go)):
   * Matrix: every event gets its own transaction ID, so Synapse no longer drops repeats; a room whose encryption cannot be confirmed, or an encrypted room in a build without `matrix-e2ee`, receives nothing rather than plaintext.
   * Viber: `?to=` is split into receiver IDs, not single characters.
