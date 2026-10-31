@@ -32,6 +32,9 @@ const BODY_MAXLEN: usize = 67;
 /// Servers that are not ready yet otherwise send incomplete responses.
 const REQUEST_RATE: f64 = 0.8;
 
+/// The longest APRS-IS line, line break included.
+const MAX_LINE: usize = 512;
+
 /// `?delay=` must be at least 0 and below this.
 const MAX_DELAY: f64 = 5.0;
 
@@ -142,20 +145,31 @@ impl Aprs {
     // The server greets with a banner line and answers the login with a
     // logresp line; wait for the latter.
     let deadline = tokio::time::Instant::now() + self.timeout;
-    let mut received: Vec<u8> = Vec::new();
-    let logresp = loop {
-      // Responses are latin-1; only complete lines count.
-      let complete = received.iter().rposition(|&b| b == b'\n').map(|i| &received[..i]).unwrap_or(&[]);
-      let text: String = complete.iter().map(|&b| b as char).collect();
-      if let Some(line) = text.lines().find(|l| l.starts_with("# logresp")) {
-        break line.trim_end().to_string();
+    let timed_out = || "timed out waiting for the login response".to_string();
+    // The unfinished last line; complete lines are checked and dropped.
+    let mut partial: Vec<u8> = Vec::new();
+    let logresp = 'read: loop {
+      // A read that always has data ready completes before its timeout is
+      // looked at, so a server that keeps sending would keep us here
+      if tokio::time::Instant::now() >= deadline {
+        return Err(timed_out());
       }
       let mut buf = [0u8; 512];
       match tokio::time::timeout_at(deadline, stream.read(&mut buf)).await {
         Ok(Ok(0)) => return Err("connection closed before the login response".into()),
-        Ok(Ok(n)) => received.extend_from_slice(&buf[..n]),
+        Ok(Ok(n)) => partial.extend_from_slice(&buf[..n]),
         Ok(Err(e)) => return Err(e.to_string()),
-        Err(_) => return Err("timed out waiting for the login response".into()),
+        Err(_) => return Err(timed_out()),
+      }
+      while let Some(end) = partial.iter().position(|&b| b == b'\n') {
+        // Responses are latin-1
+        let line: String = partial.drain(..=end).map(|b| b as char).collect();
+        if line.starts_with("# logresp") {
+          break 'read line.trim_end().to_string();
+        }
+      }
+      if partial.len() > MAX_LINE {
+        return Err("received invalid response from APRS-IS".into());
       }
     };
     tracing::debug!("Received content: {}", logresp);
@@ -547,6 +561,37 @@ mod tests {
     let svc = from_url("aprs://DF1JSL-15:12345@DF1ABC").unwrap();
     let ctx = NotifyContext { body: "test".into(), ..Default::default() };
     assert!(!crate::notify::with_test_base(addr, svc.send(&ctx)).await.unwrap());
+  }
+
+  /// A server that greets, reads the login, then keeps sending lines (or
+  /// one endless line) and never answers: the login deadline must hold.
+  /// Upstream reads once and gives up on the reply it got.
+  #[tokio::test]
+  async fn test_login_deadline_holds_while_data_arrives() {
+    for chunk in [&b"# keepalive line\r\n"[..], &b"x"[..]] {
+      let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+      let addr = listener.local_addr().unwrap().to_string();
+      tokio::spawn(async move {
+        loop {
+          let (mut stream, _) = listener.accept().await.unwrap();
+          let _ = stream.write_all(b"# aprsc 2.1.4\r\n").await;
+          let mut buf = [0u8; 256];
+          let n = stream.read(&mut buf).await.unwrap_or(0);
+          if !buf[..n].starts_with(b"user ") {
+            continue;
+          }
+          let burst = chunk.repeat(4096 / chunk.len());
+          while stream.write_all(&burst).await.is_ok() {}
+          break;
+        }
+      });
+      let svc = from_url("aprs://DF1JSL-15:12345@DF1ABC?cto=0.3").unwrap();
+      let ctx = NotifyContext { body: "test".into(), ..Default::default() };
+      let start = std::time::Instant::now();
+      let sent = tokio::time::timeout(Duration::from_secs(10), crate::notify::with_test_base(addr, svc.send(&ctx))).await;
+      assert!(matches!(sent, Ok(Ok(false))), "{sent:?}");
+      assert!(start.elapsed() < Duration::from_secs(3), "took {:?}", start.elapsed());
+    }
   }
 
   #[tokio::test]
