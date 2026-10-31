@@ -24,9 +24,12 @@ export declare class Apprise {
    * of services loaded.
    */
   addConfig(path: string): Promise<number>
-  /** Get the number of loaded services. */
+  /**
+   * Get the number of loaded entries: services, and configuration
+   * entries with template variables whether or not their values are known.
+   */
   len(): number
-  /** Check if no services are loaded. */
+  /** Check if nothing is loaded. */
   isEmpty(): boolean
   /**
    * Send a notification to the loaded services the tag filter selects
@@ -35,7 +38,7 @@ export declare class Apprise {
   notify(body: string, options?: NotifyOptions | undefined | null): Promise<SendResult>
   /** Get details of all loaded services. */
   details(): Array<ServiceInfo>
-  /** Clear all loaded services. */
+  /** Remove every loaded service and configuration entry. */
   clear(): void
 }
 export type JsApprise = Apprise
