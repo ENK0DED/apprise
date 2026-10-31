@@ -1,6 +1,7 @@
 mod args;
 mod help;
 mod logging;
+mod url_templates;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -107,11 +108,43 @@ fn sorted_tags(svc: &dyn Notify) -> Vec<String> {
 }
 
 fn print_details() {
+  for line in details_lines() {
+    println!("{line}");
+  }
+}
+
+/// The `--details` listing, as upstream prints it: each service by name,
+/// its schemas when it has more than one, and the URL forms it accepts
+/// (with `{schema}` filled in when there is only one).
+fn details_lines() -> Vec<String> {
   let mut all = Apprise::all_service_details();
   all.sort_by(|a, b| a.service_name.cmp(b.service_name));
+  let mut lines = Vec::new();
   for d in all {
-    println!("+ {:<30} | Schema(s): {}", d.service_name, d.protocols.join(", "));
-    println!();
+    let protocols = &d.protocols;
+    if protocols.len() == 1 {
+      lines.push(format!("+ {:<30} ", d.service_name));
+    } else {
+      lines.push(format!("+ {:<30} | Schema(s): {}", d.service_name, protocols.join(", ")));
+    }
+    let templates = protocols.iter().map(|p| url_templates::url_templates(&p.to_lowercase())).find(|t| !t.is_empty()).unwrap_or_default();
+    for template in templates {
+      let shown = match protocols.as_slice() {
+        [only] => with_schema(template, only),
+        _ => template.to_string(),
+      };
+      lines.push(format!("   - {shown}"));
+    }
+    lines.push(String::new());
+  }
+  lines
+}
+
+/// Upstream's `re.sub(r"^[^}]+}://", "<schema>://", template)`.
+fn with_schema(template: &str, schema: &str) -> String {
+  match template.find('}') {
+    Some(end) if end > 0 && template[end + 1..].starts_with("://") => format!("{schema}://{}", &template[end + 4..]),
+    _ => template.to_string(),
   }
 }
 
@@ -581,6 +614,46 @@ mod tests {
     assert_eq!(lines.iter().filter(|l| *l == "  template: token (required)").count(), 2);
     assert!(!lines[1].contains("unresolved"));
     assert_eq!(status, ResultStatus::Success);
+  }
+
+  #[test]
+  fn test_details_show_url_templates_like_upstream() {
+    let lines = details_lines();
+    let block = |name: &str| -> Vec<String> {
+      let start = lines.iter().position(|l| l.starts_with(&format!("+ {name} "))).unwrap_or_else(|| panic!("{name} is not listed"));
+      lines[start..].iter().take_while(|l| !l.is_empty()).cloned().collect()
+    };
+    // Several schemas: listed, and templates keep {schema}
+    assert_eq!(
+      block("46elks"),
+      vec![
+        "+ 46elks                         | Schema(s): 46elks, elks",
+        "   - {schema}://{user}:{password}@{from_phone}",
+        "   - {schema}://{user}:{password}@{from_phone}/{targets}",
+      ]
+    );
+    // One schema: no schema list, and {schema} is filled in
+    assert_eq!(block("Africas Talking"), vec!["+ Africas Talking                ", "   - atalk://{appuser}@{apikey}/{targets}"]);
+    // A template that names its schema is kept as written
+    assert_eq!(
+      block("AWS Simple Email Service (SES)"),
+      vec![
+        "+ AWS Simple Email Service (SES) ",
+        "   - ses://{from_email}/{access_key_id}/{secret_access_key}/{region}/{targets}",
+        "   - ses://{from_email}/{access_key_id}/{secret_access_key}/{region}",
+      ]
+    );
+    // Every service this build supports has upstream's templates
+    for d in Apprise::all_service_details() {
+      assert!(d.protocols.iter().any(|p| !url_templates::url_templates(p).is_empty()), "{} has no URL templates", d.service_name);
+    }
+  }
+
+  #[test]
+  fn test_with_schema() {
+    assert_eq!(with_schema("{schema}://{host}/{token}", "gotify"), "gotify://{host}/{token}");
+    assert_eq!(with_schema("ses://{from_email}/{region}", "ses"), "ses://{from_email}/{region}");
+    assert_eq!(with_schema("{host}", "x"), "{host}");
   }
 
   #[test]
