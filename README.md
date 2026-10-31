@@ -300,7 +300,7 @@ To build without installing, run `cargo build --release -p apprise-cli`; the bin
 
 ## Docker
 
-The repository's `Dockerfile` builds the CLI (default features) on Alpine and copies it into a small Alpine image whose entry point is `apprise`:
+The repository's `Dockerfile` builds the CLI on Alpine with the default features plus `pgp` and `amqp`, and copies it into a small Alpine image whose entry point is `apprise`. The image includes Alpine's `tzdata`, so named time zones (`?tz=Europe/Paris`) work in it:
 ```bash
 docker build -t apprise .
 docker run --rm apprise -vv -t 'my title' -b 'my notification body' \
