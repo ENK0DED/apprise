@@ -341,7 +341,7 @@ The package is built with every feature the binding has, which includes PGP/MIME
 | Feature | Default | What it enables | Release size |
 | ------- | ------- | --------------- | ------------ |
 | `email` | on | `mailto://`, `mailtos://` (SMTP) and `deltachat://` | about 98 KB |
-| `yaml` | on | YAML configuration files (TEXT configuration always works) | about 202 KB |
+| `yaml` | on | YAML configuration files (TEXT configuration always works) | about 574 KB |
 | `mqtt` | on | `mqtt://` and `mqtts://` (a built-in client; no extra crates) | about 29 KB |
 | `images` | on | Bundles the default theme's PNG icons, which Telegram (`?image=yes`) uploads and desktop notifications show | about 176 KB (only the icon sizes in use are kept; all of them are 286 KB) |
 | `simplepush-encryption` | on | Simplepush end-to-end encryption (`spush://password@...`); without it, encrypted Simplepush URLs cannot send | about 57 KB |
@@ -893,7 +893,8 @@ For more information on persistent storage, [visit here](https://appriseit.com/l
 This port aims to behave like upstream Apprise 2.1. Where it does not:
 
 * **Not ported**: upstream's `url()` serialisation (turning a loaded service back into a URL, including the privacy URL; `--dry-run` and `storage` listings mask the URL you gave instead, hiding the user, password, path, query values and token-like hosts), and custom Python plugins (the `@notify` decorator, `--plugin-path` and `APPRISE_PLUGIN_PATH`, which the CLI accepts but ignores with a warning).
-* **Time zones**: `?tz=` understands UTC and fixed offsets (`+05:00`, `UTC-8`). An IANA name such as `Europe/Paris` is accepted but treated as UTC for now.
+* **Time zones** (`?tz=`, YAML `asset: timezone:`) come from the system's tz database on Linux and macOS (`$TZDIR`, else `/usr/share/zoneinfo`; small container images may need the `tzdata` package) and from a copy built into Windows binaries. Where one location names several zones (`Pacific`, on systems that keep the old `Canada/` and `US/` links), the first in alphabetical order is used; upstream's pick is arbitrary.
+* **YAML values**: a number given as `user`, `password` or `host` (`password: 123456`) is used as its text, where upstream cannot load the entry. A YAML 1.1 timestamp (`2001-12-14 21:59:43`) stays the text as written, where upstream passes a `datetime` on.
 * **Upstream bugs fixed deliberately** (several following the Go port, [apprise-go](https://github.com/unraid/apprise-go)):
   * Matrix: every event gets its own transaction ID, so Synapse no longer drops repeats; a room whose encryption cannot be confirmed, or an encrypted room in a build without `matrix-e2ee`, receives nothing rather than plaintext.
   * Viber: `?to=` is split into receiver IDs, not single characters.
@@ -909,6 +910,7 @@ This port aims to behave like upstream Apprise 2.1. Where it does not:
   * Synology Chat: the token and path are split by path segment, so an encoded token or a trailing `/` no longer breaks the request URL.
   * Plivo: requests go to the account's Auth ID, not to the literal `{auth_id}` URL template.
   * Pingram: every phone number keeps its leading `+`.
+  * YAML: an `asset: timezone:` that is a path (`/etc/localtime`) is ignored with a warning; upstream raises out of the configuration loader.
 
 # Want To Learn More?
 

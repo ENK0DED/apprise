@@ -36,7 +36,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use indexmap::IndexMap;
-use serde_yaml::{Mapping, Value};
+
+mod value;
+pub use value::{Mapping, Value, python_float};
 
 use super::template::{PendingService, PlaceholderMap, TemplateSchema, template_in_schema, template_references};
 use super::{
@@ -50,82 +52,6 @@ use crate::utils::parse::{ParsedUrl, parse_list, parse_urls, unquote};
 /// Settings written for one service, in YAML order.
 type Tokens = IndexMap<String, Value>;
 
-/// Load YAML the way PyYAML's SafeLoader does where it matters here: a
-/// key repeated in one mapping keeps its last value (serde_yaml would
-/// reject the document), and `<<` merge keys are applied.
-fn load_yaml(content: &str) -> Result<Value, serde_yaml::Error> {
-  use serde::de::{self, Deserialize, Deserializer, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
-
-  struct Lenient(Value);
-
-  impl<'de> Deserialize<'de> for Lenient {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-      d.deserialize_any(LenientVisitor).map(Lenient)
-    }
-  }
-
-  struct LenientVisitor;
-
-  impl<'de> Visitor<'de> for LenientVisitor {
-    type Value = Value;
-
-    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      f.write_str("any YAML value")
-    }
-    fn visit_bool<E: de::Error>(self, v: bool) -> Result<Value, E> {
-      Ok(Value::Bool(v))
-    }
-    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Value, E> {
-      Ok(Value::Number(v.into()))
-    }
-    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Value, E> {
-      Ok(Value::Number(v.into()))
-    }
-    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Value, E> {
-      Ok(Value::Number(v.into()))
-    }
-    fn visit_str<E: de::Error>(self, v: &str) -> Result<Value, E> {
-      Ok(Value::String(v.to_string()))
-    }
-    fn visit_string<E: de::Error>(self, v: String) -> Result<Value, E> {
-      Ok(Value::String(v))
-    }
-    fn visit_unit<E: de::Error>(self) -> Result<Value, E> {
-      Ok(Value::Null)
-    }
-    fn visit_none<E: de::Error>(self) -> Result<Value, E> {
-      Ok(Value::Null)
-    }
-    fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Value, D::Error> {
-      Lenient::deserialize(d).map(|l| l.0)
-    }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
-      let mut out = Vec::new();
-      while let Some(Lenient(v)) = seq.next_element()? {
-        out.push(v);
-      }
-      Ok(Value::Sequence(out))
-    }
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
-      let mut out = Mapping::new();
-      while let Some((Lenient(k), Lenient(v))) = map.next_entry()? {
-        // Like a Python dict: the first position, the last value
-        out.insert(k, v);
-      }
-      Ok(Value::Mapping(out))
-    }
-    fn visit_enum<A: EnumAccess<'de>>(self, data: A) -> Result<Value, A::Error> {
-      // A !tagged value: keep the value, drop the tag
-      let (_tag, variant): (Lenient, _) = data.variant()?;
-      variant.newtype_variant::<Lenient>().map(|l| l.0)
-    }
-  }
-
-  let mut value = Lenient::deserialize(serde_yaml::Deserializer::from_str(content))?.0;
-  value.apply_merge()?;
-  Ok(value)
-}
-
 /// Upstream `parse_list(value, cast=str)` for a YAML value: strings are
 /// split, sequences flattened, numbers converted; booleans, nulls and
 /// mappings give nothing.
@@ -134,9 +60,8 @@ fn yaml_list(v: &Value) -> Vec<String> {
   fn walk(v: &Value, out: &mut Vec<String>) {
     match v {
       Value::String(s) => out.extend(parse_list(s)),
-      Value::Number(n) => out.extend(parse_list(&n.to_string())),
+      Value::Int(_) | Value::Float(_) => out.extend(yaml_text(v).as_deref().map(parse_list).unwrap_or_default()),
       Value::Sequence(seq) => seq.iter().for_each(|e| walk(e, out)),
-      Value::Tagged(t) => walk(&t.value, out),
       _ => {}
     }
   }
@@ -146,17 +71,18 @@ fn yaml_list(v: &Value) -> Vec<String> {
   out
 }
 
-/// A YAML scalar as the text a query argument carries.
+/// A YAML scalar as the text a query argument carries (numbers as
+/// Python's `str()` writes them).
 fn yaml_text(v: &Value) -> Option<String> {
   match v {
     Value::String(s) => Some(s.clone()),
     Value::Bool(b) => Some(if *b { "yes" } else { "no" }.to_string()),
-    Value::Number(n) => Some(n.to_string()),
+    Value::Int(n) => Some(n.to_string()),
+    Value::Float(f) => Some(value::python_float(*f)),
     Value::Sequence(seq) => {
       let parts: Vec<String> = seq.iter().filter_map(yaml_text).collect();
       (!parts.is_empty()).then(|| parts.join(","))
     }
-    Value::Tagged(t) => yaml_text(&t.value),
     Value::Null | Value::Mapping(_) => None,
   }
 }
@@ -168,7 +94,6 @@ fn encode_value(v: &Value, map: &PlaceholderMap) -> Value {
     Value::String(s) => Value::String(map.encode(s)),
     Value::Sequence(seq) => Value::Sequence(seq.iter().map(|e| encode_value(e, map)).collect()),
     Value::Mapping(m) => Value::Mapping(m.iter().map(|(k, v)| (k.clone(), encode_value(v, map))).collect()),
-    Value::Tagged(t) => encode_value(&t.value, map),
     other => other.clone(),
   }
 }
@@ -190,7 +115,7 @@ fn tokens_of(m: &Mapping, skip: &dyn Fn(&str) -> bool, entry: usize) -> Tokens {
 }
 
 fn yaml_scalar(v: &Value) -> String {
-  serde_yaml::to_string(v).map(|s| s.trim().to_string()).unwrap_or_default()
+  v.python_str()
 }
 
 /// Upstream `_special_token_handler()` aliases: `pass` fills `password`
@@ -247,7 +172,7 @@ type CollectOutput = (ParseOutput, Vec<Collected>, Option<Arc<PlaceholderMap>>);
 
 /// Read the document into resolved URLs; services are not built yet.
 fn collect(content: &str, opts: &LoadOptions) -> Result<CollectOutput, ConfigError> {
-  let doc = match load_yaml(content) {
+  let doc = match value::load(content) {
     Ok(v) => v,
     Err(e) => {
       tracing::error!("Invalid Apprise YAML data specified.");
@@ -260,12 +185,13 @@ fn collect(content: &str, opts: &LoadOptions) -> Result<CollectOutput, ConfigErr
     tracing::error!("Invalid Apprise YAML based configuration specified.");
     return Err(ConfigError::InvalidFormat("YAML configuration must be a mapping".into()));
   };
-  let get = |k: &str| root.get(Value::String(k.into()));
+  let get = |k: &str| root.get(k);
 
   // Python compares with ==, so 1.0 and true also pass.
   let version_ok = match get("version") {
     None => true,
-    Some(Value::Number(n)) => n.as_f64() == Some(1.0),
+    Some(Value::Int(n)) => *n == 1,
+    Some(Value::Float(f)) => *f == 1.0,
     Some(Value::Bool(b)) => *b,
     _ => false,
   };
@@ -544,7 +470,11 @@ fn collect(content: &str, opts: &LoadOptions) -> Result<CollectOutput, ConfigErr
         continue;
       }
 
-      apply_tokens(&mut parsed, tokens, no, item);
+      if let Err(e) = apply_tokens(&mut parsed, tokens, no, item) {
+        tracing::error!("Could not load Apprise YAML configuration entry #{}, item #{}", no, item);
+        tracing::debug!("Loading Exception: {}", e);
+        continue;
+      }
       preloaded.push(Preloaded { parsed, tags, entry: no, item });
     }
   }
@@ -581,8 +511,10 @@ fn dropped_template(url: &str, parsed: &ParsedUrl, map: Option<&PlaceholderMap>)
 }
 
 /// Apply YAML settings to the parsed URL (upstream merges them into the
-/// plugin's keyword arguments, over what the URL gave).
-fn apply_tokens(parsed: &mut ParsedUrl, tokens: Tokens, entry: usize, item: usize) {
+/// plugin's keyword arguments, over what the URL gave). `Err` where
+/// upstream's `URLBase` raises on a value (`user: yes`); the entry does
+/// not load then.
+fn apply_tokens(parsed: &mut ParsedUrl, tokens: Tokens, entry: usize, item: usize) -> Result<(), String> {
   for (key, value) in tokens {
     if key == "asset" || key == "schema" {
       continue;
@@ -592,6 +524,10 @@ fn apply_tokens(parsed: &mut ParsedUrl, tokens: Tokens, entry: usize, item: usiz
       tracing::warn!("Ignoring invalid token ({}) found in YAML configuration entry #{}, item #{}", key, entry, item);
       continue;
     }
+    if matches!(key.as_str(), "user" | "password" | "host" | "port") {
+      set_url_part(parsed, &key, &value)?;
+      continue;
+    }
     if value.is_null() {
       continue;
     }
@@ -599,23 +535,55 @@ fn apply_tokens(parsed: &mut ParsedUrl, tokens: Tokens, entry: usize, item: usiz
       tracing::warn!("The {} setting in YAML configuration entry #{}, item #{} can not be expressed as a URL argument; ignoring it.", key, entry, item);
       continue;
     };
-    match key.as_str() {
-      // URLBase decodes these parts.
-      "user" => parsed.user = Some(unquote(&text)).filter(|s| !s.is_empty()),
-      "password" => parsed.password = Some(unquote(&text)).filter(|s| !s.is_empty()),
-      "host" => parsed.host = Some(unquote(&text)).filter(|s| !s.is_empty()),
-      "port" => {
-        parsed.port = match text.trim().parse::<u16>() {
-          Ok(p) => Some(p),
-          Err(_) => {
-            tracing::warn!("Invalid port number specified {}", text);
-            None
-          }
-        }
-      }
-      _ => parsed.set_arg(&key, &text),
-    }
+    parsed.set_arg(&key, &text);
   }
+  Ok(())
+}
+
+/// A YAML `user`, `password`, `host` or `port`, taken the way upstream's
+/// `URLBase` takes it: a false-like value (null, `no`, `0`, an empty
+/// list) leaves the part unset, text is percent-decoded, and `port` is
+/// `int()` of what it is given (`yes` is port 1, `8080.9` is 8080).
+/// Upstream raises on any other value for the other parts, so `user: yes`
+/// is an error; a number is kept as its text, where upstream raises too.
+fn set_url_part(parsed: &mut ParsedUrl, key: &str, value: &Value) -> Result<(), String> {
+  let unset = match value {
+    Value::Null => true,
+    Value::Bool(b) => !b,
+    Value::Int(n) => *n == 0,
+    Value::Float(f) => *f == 0.0,
+    Value::String(s) => s.is_empty(),
+    Value::Sequence(seq) => seq.is_empty(),
+    Value::Mapping(m) => m.is_empty(),
+  };
+  if key == "port" {
+    let port = match value {
+      _ if unset => None,
+      Value::Bool(_) => Some(1),
+      Value::Int(n) => u16::try_from(*n).ok(),
+      Value::Float(f) if f.is_finite() => u16::try_from(f.trunc() as i128).ok(),
+      Value::String(s) => s.trim().parse::<u16>().ok(),
+      _ => None,
+    };
+    if port.is_none() && !unset {
+      tracing::warn!("Invalid port number specified {}", yaml_scalar(value));
+    }
+    parsed.port = port;
+    return Ok(());
+  }
+  let text = match value {
+    _ if unset => None,
+    // URLBase decodes these parts
+    Value::String(s) => Some(unquote(s)).filter(|s| !s.is_empty()),
+    Value::Int(_) | Value::Float(_) => yaml_text(value),
+    other => return Err(format!("the {} setting must be text, not {}", key, yaml_scalar(other))),
+  };
+  match key {
+    "user" => parsed.user = text,
+    "password" => parsed.password = text,
+    _ => parsed.host = text,
+  }
+  Ok(())
 }
 
 /// Upstream asset keys the Rust asset does not model; accepted silently.
@@ -635,12 +603,14 @@ const UNMODELLED_ASSET_KEYS: &[&str] = &[
 fn parse_asset(tokens: &Mapping, base: &AppriseAsset) -> AppriseAsset {
   let mut asset = base.clone();
 
-  let get = |k: &str| tokens.get(Value::String(k.into()));
+  let get = |k: &str| tokens.get(k);
   match get("timezone").or_else(|| get("tz")) {
     Some(Value::String(tz)) => {
+      // Upstream keeps only word characters, '/' and '-' (so not '+')
       let cleaned: String = tz.chars().filter(|c| c.is_alphanumeric() || matches!(c, '_' | '/' | '-')).collect();
-      if crate::utils::time::zoneinfo(&cleaned).is_none() {
-        tracing::warn!("Ignored invalid timezone \"{}\"", tz);
+      match crate::utils::time::zoneinfo(&cleaned) {
+        Some(zone) => asset.timezone = Some(zone),
+        None => tracing::warn!("Ignored invalid timezone \"{}\"", tz),
       }
     }
     Some(Value::Null) | None => {}
@@ -782,8 +752,10 @@ mod tests {
     assert_eq!(got[0].get("format"), Some("html"));
     assert_eq!(got[0].get("retry"), Some("1"));
     assert_eq!(got[1].tags(), vec!["shared"]);
-    // A tagged scalar keeps its value
-    assert_eq!(tags("urls:\n  - json://a:\n      tag: !custom mine\n"), vec![vec!["mine"]]);
+    // An explicit core tag is honoured; PyYAML's SafeLoader refuses the
+    // whole document for any other tag
+    assert_eq!(tags("urls:\n  - json://a:\n      tag: !!str yes\n"), vec![vec!["yes"]]);
+    assert!(parse_yaml("urls:\n  - json://a:\n      tag: !custom mine\n", &LoadOptions::default()).is_err());
   }
 
   #[test]
@@ -908,14 +880,14 @@ urls:
     let mut parsed = ParsedUrl::parse("json://user@localhost/?format=text&to=url").unwrap();
     let mut tokens = Tokens::new();
     tokens.insert("format".into(), Value::String("markdown".into()));
-    tokens.insert("retry".into(), Value::Number(3.into()));
+    tokens.insert("retry".into(), Value::Int(3));
     tokens.insert("optional".into(), Value::Bool(true));
     tokens.insert("to".into(), Value::Sequence(vec![Value::String("a".into()), Value::String("b".into())]));
     tokens.insert("password".into(), Value::String("p%40ss".into()));
-    tokens.insert("port".into(), Value::Number(8080.into()));
+    tokens.insert("port".into(), Value::Int(8080));
     tokens.insert("x".into(), Value::String("too short".into()));
     tokens.insert("+X-Header".into(), Value::String("h".into()));
-    apply_tokens(&mut parsed, tokens, 1, 1);
+    apply_tokens(&mut parsed, tokens, 1, 1).unwrap();
     let args = args_of(&parsed);
     assert_eq!(args.get("format").map(String::as_str), Some("markdown"));
     assert_eq!(args.get("retry").map(String::as_str), Some("3"));
@@ -962,6 +934,75 @@ urls:
     assert!(!asset.http_redirects);
     assert!(asset.abort_on_chain_failure);
     assert!(asset.interpret_escapes);
+  }
+
+  // Each case checked against upstream's ConfigBase.config_parse_yaml().
+  #[test]
+  fn test_asset_time_zone() {
+    use crate::utils::time::Timezone;
+    let zone = |content: &str| parse(&format!("asset:\n{}\nurls:\n  - json://localhost\n", content)).asset.unwrap().timezone;
+    assert_eq!(zone("  tz: ' Z '"), Some(Timezone::utc()));
+    assert_eq!(zone("  timezone: etc/utc"), Some(Timezone::utc()));
+    // Invalid values are ignored: unknown names, paths, non-text
+    for content in ["  tz: invalid", "  tz: /etc/passwd", "  tz: ../../etc/passwd", "  tz: 5", "  tz: [utc]"] {
+      assert_eq!(zone(content), None, "{}", content);
+    }
+    // `timezone` wins over `tz`, even when it is null
+    assert_eq!(zone("  timezone: ~\n  tz: utc"), None);
+    // A named zone, where this machine has a database
+    if crate::utils::time::zoneinfo("America/Toronto").is_some() {
+      assert_eq!(zone("  tz: '  america/toronto  '").map(|z| z.name().to_string()).as_deref(), Some("America/Toronto"));
+    }
+    // The base asset's zone stays when the section sets none
+    let base = AppriseAsset { timezone: Some(Timezone::utc()), ..Default::default() };
+    let opts = LoadOptions { asset: base, ..Default::default() };
+    let out = parse_yaml("asset:\n  tz: invalid\n  app_id: x\nurls: []\n", &opts).unwrap();
+    assert_eq!(out.asset.unwrap().timezone, Some(Timezone::utc()));
+  }
+
+  // Each case checked against upstream (PyYAML's YAML 1.1 scalars).
+  #[test]
+  fn test_yaml_1_1_scalars_in_settings() {
+    // A bare yes is a boolean and tags nothing; a quoted one is the tag
+    let none: Vec<String> = Vec::new();
+    assert_eq!(tags("urls:\n  - json://a:\n      tag: yes\n  - json://b:\n      tag: 'yes'\n"), vec![none.clone(), vec!["yes".to_string()]]);
+    assert_eq!(tags("tag: [yes, glob]\nurls:\n  - json://a:\n      tag: [on, x, 7, 1.5, 0755]\n"), vec![vec!["1.5", "493", "7", "glob", "x"]]);
+    assert_eq!(tags("tag: no\nurls:\n  - json://a\n"), vec![none]);
+    // Numbers reach the plugin as Python writes them; digit strings that
+    // are not YAML 1.1 numbers (a phone number) stay as written
+    let got =
+      resolved("urls:\n  - json://localhost:\n      to: 0612345678\n      retry: 0x2\n      wait: 1_0.5\n      cto: 1e5\n      rto: 2.0\n      region: y\n");
+    assert_eq!(got[0].get("to"), Some("0612345678"));
+    assert_eq!(got[0].get("retry"), Some("2"));
+    assert_eq!(got[0].get("wait"), Some("10.5"));
+    assert_eq!(got[0].get("cto"), Some("1e5"));
+    assert_eq!(got[0].get("rto"), Some("2.0"));
+    assert_eq!(got[0].get("region"), Some("y"));
+  }
+
+  // Each case checked against upstream's URLBase.__init__().
+  #[test]
+  fn test_typed_url_parts() {
+    // False-like values unset the part, over what the URL gave
+    let got = resolved("urls:\n  - json://u:p@example.com:8080/a:\n      user: ~\n      password: no\n      port: ~\n      host: ''\n");
+    let p = &got[0];
+    assert_eq!((p.user.as_deref(), p.password.as_deref(), p.host.as_deref(), p.port), (None, None, None, None));
+    let got = resolved("urls:\n  - json://u:p@localhost/a:\n      pass: off\n      user: []\n");
+    assert_eq!((got[0].user.as_deref(), got[0].password.as_deref()), (None, None));
+    // Other values that are not text: the entry does not load
+    for setting in ["user: yes", "password: on", "pass: true", "host: yes", "user: [a]", "host: {a: 1}"] {
+      assert!(resolved(&format!("urls:\n  - json://u@localhost/x:\n      {}\n  - json://localhost/y\n", setting)).len() == 1, "{}", setting);
+    }
+    // port is int() of the value
+    for (setting, port) in
+      [("yes", Some(1)), ("no", None), ("0x1F", Some(31)), ("1:30", Some(90)), ("8080.9", Some(8080)), ("'8080'", Some(8080)), ("abc", None)]
+    {
+      let got = resolved(&format!("urls:\n  - json://localhost:\n      port: {}\n", setting));
+      assert_eq!(got[0].port, port, "{}", setting);
+    }
+    // A number is kept as its text (upstream cannot load the entry)
+    let got = resolved("urls:\n  - json://localhost:\n      user: 123\n      password: 4.5\n");
+    assert_eq!((got[0].user.as_deref(), got[0].password.as_deref()), (Some("123"), Some("4.5")));
   }
 
   #[test]

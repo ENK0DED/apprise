@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 
 use crate::types::{NotifyType, StorageMode};
+use crate::utils::time::Timezone;
 
 /// Upstream's default image URL mask (the GitHub-hosted theme icons).
 pub const DEFAULT_IMAGE_URL_MASK: &str = "https://github.com/caronc/apprise/raw/master/apprise/assets/themes/{THEME}/apprise-{TYPE}-{XY}{EXTENSION}";
@@ -93,6 +94,11 @@ pub struct AppriseAsset {
   pub storage_salt: Vec<u8>,
   /// Length of storage namespace names (URL IDs); `0` keeps the full hash.
   pub storage_idlen: usize,
+  /// Zone for the times services render (the email `Date` header) when a
+  /// URL sets no `?tz=`. `None` is the system's local zone, upstream's
+  /// default. Build one with [`zoneinfo`](crate::utils::time::zoneinfo)
+  /// or set it from a YAML `asset: timezone:`.
+  pub timezone: Option<Timezone>,
 }
 
 impl Default for AppriseAsset {
@@ -120,6 +126,7 @@ impl Default for AppriseAsset {
       storage_mode: StorageMode::Auto,
       storage_salt: Vec::new(),
       storage_idlen: 8,
+      timezone: None,
     }
   }
 }
@@ -275,6 +282,7 @@ mod tests {
     assert_eq!(asset.default_service_wait, 0.5);
     assert_eq!(asset.service_timeout(), Some(std::time::Duration::from_secs(60)));
     assert_eq!(asset.storage_idlen, 8);
+    assert!(asset.timezone.is_none());
   }
 
   // Values checked against upstream's AppriseAsset.

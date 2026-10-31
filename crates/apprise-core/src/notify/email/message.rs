@@ -51,7 +51,8 @@ pub(crate) struct MessageSpec<'a> {
   pub pgp: Option<&'a PgpController>,
   pub pgp_mode: PgpMode,
   pub inline: bool,
-  pub tz: Option<Timezone>,
+  /// Zone of the `Date` header; `None` is the system's local zone.
+  pub tz: Option<&'a Timezone>,
   pub app_id: &'a str,
 }
 
@@ -85,13 +86,13 @@ fn is_image(attachment: &Attachment) -> bool {
   attachment.mime_type.to_lowercase().starts_with("image/")
 }
 
-/// `email.utils.format_datetime()`: `Fri, 30 Oct 2026 06:01:00 -0400`.
-fn format_date(tz: Option<Timezone>) -> String {
+/// `email.utils.format_datetime(datetime.now(tz))`:
+/// `Fri, 30 Oct 2026 06:01:00 -0400`.
+fn format_date(tz: Option<&Timezone>, now: chrono::DateTime<chrono::Utc>) -> String {
   const FORMAT: &str = "%a, %d %b %Y %H:%M:%S %z";
   match tz {
-    Some(Timezone::Utc) => chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(0).expect("zero offset")).format(FORMAT).to_string(),
-    Some(Timezone::Fixed(offset)) => chrono::Utc::now().with_timezone(&offset).format(FORMAT).to_string(),
-    None => chrono::Local::now().format(FORMAT).to_string(),
+    Some(tz) => tz.at(now).format(FORMAT).to_string(),
+    None => now.with_timezone(&chrono::Local).format(FORMAT).to_string(),
   }
 }
 
@@ -216,7 +217,7 @@ pub(crate) async fn prepare_email(spec: &MessageSpec<'_>, to_name: Option<&str>,
   base.add_header("From", &from_hdr);
   base.add_header("To", &address(to_name, to_addr)?);
   base.add_header("Message-ID", &make_msgid(spec.smtp_host));
-  base.add_header("Date", &format_date(spec.tz));
+  base.add_header("Date", &format_date(spec.tz, chrono::Utc::now()));
   if !cc_hdr.is_empty() {
     base.add_header("Cc", &cc_hdr.join(","));
   }
@@ -305,4 +306,26 @@ fn encrypted_container(encrypted: &str) -> Part {
   container.attach(version_part());
   container.attach(Part::base("application/octet-stream", encrypted));
   container
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::utils::time::testing::zone;
+
+  #[test]
+  fn test_date_header_zone() {
+    // 2026-07-15 12:00:00 UTC
+    let now = chrono::DateTime::from_timestamp(1_784_116_800, 0).unwrap();
+    assert_eq!(format_date(Some(&Timezone::utc()), now), "Wed, 15 Jul 2026 12:00:00 +0000");
+    let toronto = zone("America/Toronto", "EST5EDT,M3.2.0,M11.1.0", -5 * 3600, "EST");
+    assert_eq!(format_date(Some(&toronto), now), "Wed, 15 Jul 2026 08:00:00 -0400");
+    let winter = chrono::DateTime::from_timestamp(1_768_478_400, 0).unwrap();
+    assert_eq!(format_date(Some(&toronto), winter), "Thu, 15 Jan 2026 07:00:00 -0500");
+    let kolkata = zone("Asia/Kolkata", "IST-5:30", 19800, "IST");
+    assert_eq!(format_date(Some(&kolkata), now), "Wed, 15 Jul 2026 17:30:00 +0530");
+    // Without a zone: the system's own, whatever it is
+    let local = format_date(None, now);
+    assert!(regex_lite::Regex::new(r"^\w{3}, \d{2} \w{3} 2026 \d{2}:\d{2}:\d{2} [+-]\d{4}$").unwrap().is_match(&local), "{}", local);
+  }
 }

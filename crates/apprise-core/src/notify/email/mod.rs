@@ -422,7 +422,7 @@ impl Email {
       pgp: (self.pgp_mode != PgpMode::None).then_some(&pgp),
       pgp_mode: self.pgp_mode,
       inline: self.inline,
-      tz: self.tz,
+      tz: self.tz.as_ref().or(ctx.asset.timezone.as_ref()),
       app_id: &ctx.asset.app_id,
     };
 

@@ -47,10 +47,6 @@ pub enum ConfigError {
   #[error("I/O error reading config: {0}")]
   Io(#[from] std::io::Error),
 
-  #[cfg(feature = "yaml")]
-  #[error("YAML parse error: {0}")]
-  Yaml(#[from] serde_yaml::Error),
-
   #[error("HTTP error fetching config: {0}")]
   Http(#[from] reqwest::Error),
 

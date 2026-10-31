@@ -14,7 +14,7 @@ tokio.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml = { workspace = true, optional = true }
+serde-saphyr = { workspace = true, optional = true }
 url.workspace = true
 pgp = { workspace = true, optional = true }
 rand_core06 = { workspace = true, optional = true }
@@ -26,6 +26,7 @@ flate2.workspace = true
 mime_guess.workspace = true
 rand.workspace = true
 chrono.workspace = true
+tz-rs.workspace = true
 async-trait.workspace = true
 urlencoding.workspace = true
 regex-lite.workspace = true
@@ -67,7 +68,7 @@ email = []
 # PGP/MIME signing and encryption for email (?pgp=, ?wkd=, rPGP); without
 # it a PGP mode fails the send, as upstream does without PGPy
 pgp = ["email", "dep:pgp", "dep:rand_core06"]
-yaml = ["dep:serde_yaml"]
+yaml = ["dep:serde-saphyr"]
 desktop = ["dep:png", "dep:zbus", "dep:windows-sys"]
 blink1 = ["dep:hidapi"]
 # Bundle the default theme's PNG icons for AppriseAsset::image_raw() (~280 KB).
@@ -83,6 +84,8 @@ zbus = { workspace = true, optional = true, features = ["p2p"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, optional = true }
+# Windows has no system tz database
+jiff-tzdb.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
