@@ -3,7 +3,9 @@
 //! Publishes to brokers such as RabbitMQ, ActiveMQ Artemis, Apache Qpid or
 //! Azure Service Bus, over AMQP 0-9-1 (most brokers, RabbitMQ's default) or
 //! AMQP 1.0 (the OASIS standard). Select one with `?version=`; 0.9.1 is the
-//! default.
+//! default. AMQP 0-9-1 is built in; AMQP 1.0 needs the `amqp` feature, and
+//! without it a `?version=1.0` URL does not load (upstream refuses it when
+//! python-qpid-proton is missing).
 //!
 //!   amqp://user:password@hostname/target
 //!   amqps://user:password@hostname:port/target1/target2
@@ -13,6 +15,7 @@
 //! are addresses; put ones with slashes (RabbitMQ's `/queues/name`) in `?to=`.
 
 mod v091;
+#[cfg(feature = "amqp")]
 mod v10;
 
 use std::collections::BTreeMap;
@@ -131,6 +134,11 @@ impl Amqp {
         }
       },
     };
+    #[cfg(not(feature = "amqp"))]
+    if version == Version::V10 {
+      tracing::warn!("AMQP 1.0 requires the amqp feature; build Apprise with --features amqp");
+      return None;
+    }
 
     // Options only AMQP 0-9-1 understands
     let exchange = given("exchange");
@@ -290,7 +298,11 @@ impl Notify for Amqp {
 
     let mut publisher = match self.version {
       Version::V091 => Publisher::V091(v091::Publisher::new(self.config.clone())),
+      #[cfg(feature = "amqp")]
       Version::V10 => Publisher::V10(v10::Publisher::new(self.config.clone())),
+      // from_url() refuses AMQP 1.0 without the feature
+      #[cfg(not(feature = "amqp"))]
+      Version::V10 => return Err(amqp_error("AMQP 1.0 requires the amqp feature")),
     };
     if let Err(e) = publisher.connect().await {
       tracing::warn!("Could not connect to AMQP server {}.", url);
@@ -325,6 +337,7 @@ impl Notify for Amqp {
 /// The client for our protocol version.
 enum Publisher {
   V091(v091::Publisher),
+  #[cfg(feature = "amqp")]
   V10(v10::Publisher),
 }
 
@@ -333,6 +346,7 @@ impl Publisher {
   async fn connect(&mut self) -> Result<(), NotifyError> {
     match self {
       Self::V091(p) => p.connect().await,
+      #[cfg(feature = "amqp")]
       Self::V10(p) => p.connect().await,
     }
   }
@@ -341,6 +355,7 @@ impl Publisher {
   async fn publish(&mut self, target: &str, message: &Message) -> Result<(), NotifyError> {
     match self {
       Self::V091(p) => p.publish(target, message).await,
+      #[cfg(feature = "amqp")]
       Self::V10(p) => p.publish(target, message).await,
     }
   }
@@ -349,6 +364,7 @@ impl Publisher {
   async fn close(&mut self) {
     match self {
       Self::V091(p) => p.close().await,
+      #[cfg(feature = "amqp")]
       Self::V10(p) => p.close().await,
     }
   }
@@ -450,10 +466,14 @@ pub(crate) mod tests {
       "amqps://user@localhost/queue?verify=no",
       "amqp://localhost/?exchange=alerts",
       "amqp://localhost/key?exchange=amq.topic&mandatory=no&persistent=no&priority=5&ttl=60000&vhost=home&+source=nas",
-      "amqp://localhost/?version=1.0&to=/queues/alerts",
-      "amqps://user:pass@localhost/queue?ver=1&vhost=vhost:home",
+      "amqp://localhost/?version=0.9.1",
     ] {
       assert!(from_url(url).is_some(), "should load: {}", url);
+    }
+    // AMQP 1.0 loads only with the amqp feature, as upstream needs
+    // python-qpid-proton for it
+    for url in ["amqp://localhost/?version=1.0&to=/queues/alerts", "amqps://user:pass@localhost/queue?ver=1&vhost=vhost:home"] {
+      assert_eq!(from_url(url).is_some(), cfg!(feature = "amqp"), "{}", url);
     }
   }
 
@@ -495,6 +515,7 @@ pub(crate) mod tests {
 
     // version= wins over ver=, and either selects the protocol
     assert_eq!(parse("amqp://localhost/a?ver=1&version=0.9").unwrap().version, Version::V091);
+    #[cfg(feature = "amqp")]
     assert_eq!(parse("amqp://localhost/a?ver=1").unwrap().version, Version::V10);
     assert_eq!(parse("amqp://localhost/a").unwrap().version, Version::V091);
   }
@@ -553,6 +574,7 @@ pub(crate) mod tests {
     assert_eq!(parse("amqp://localhost/q?priority=255&ttl=4294967295").unwrap().ttl, Some(u32::MAX));
   }
 
+  #[cfg(feature = "amqp")]
   #[test]
   fn test_v10_ignores_v091_options() {
     let a = parse("amqp://localhost/?to=/queues/q&version=1.0&exchange=x&mandatory=no").unwrap();
@@ -574,9 +596,12 @@ pub(crate) mod tests {
     assert_eq!(a.targets, vec!["ok"]);
 
     // AMQP 1.0 has no such limit
-    let a = parse(&format!("amqp://localhost/{}?version=1.0&vhost={}", long, long)).unwrap();
-    assert_eq!(a.targets, vec![long.clone()]);
-    assert_eq!(a.config.vhost, Some(long));
+    #[cfg(feature = "amqp")]
+    {
+      let a = parse(&format!("amqp://localhost/{}?version=1.0&vhost={}", long, long)).unwrap();
+      assert_eq!(a.targets, vec![long.clone()]);
+      assert_eq!(a.config.vhost, Some(long));
+    }
   }
 
   #[test]
@@ -624,8 +649,11 @@ pub(crate) mod tests {
     assert!(!svc.send(&NotifyContext::default()).await.unwrap());
 
     // AMQP 1.0 has no exchange to fall back on
-    let svc = from_url("amqp://localhost/?exchange=x&ver=1").unwrap();
-    assert!(!svc.send(&NotifyContext::default()).await.unwrap());
+    #[cfg(feature = "amqp")]
+    {
+      let svc = from_url("amqp://localhost/?exchange=x&ver=1").unwrap();
+      assert!(!svc.send(&NotifyContext::default()).await.unwrap());
+    }
   }
 
   // ── Shared by the protocol tests ──────────────────────────────────────────

@@ -11,7 +11,7 @@ pub mod keyfile;
 pub mod locale;
 pub mod parse;
 pub mod pem;
-#[cfg(feature = "email")]
+#[cfg(feature = "pgp")]
 pub mod pgp;
 pub mod phone;
 pub mod plugin_args;
@@ -22,5 +22,5 @@ pub mod templates;
 pub mod time;
 pub mod url_args;
 pub mod validate;
-#[cfg(feature = "email")]
+#[cfg(feature = "pgp")]
 pub mod wkd;

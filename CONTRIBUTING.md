@@ -61,9 +61,13 @@ features, with none, and with the ones that are off by default:
 ```bash
 cargo test -p apprise-core                             # default features
 cargo test -p apprise-core --no-default-features       # every optional feature off
-cargo test -p apprise-core --features desktop,blink1   # adds the default-off features
+cargo test -p apprise-core --features desktop,blink1   # adds desktop notifications and Blink(1)
+cargo test -p apprise-core --features pgp,amqp         # adds PGP/MIME email and AMQP 1.0
 cargo test -p apprise-cli                              # the command line tool
 ```
+
+The PGP tests (`utils::pgp`, and the PGP/MIME email and Delta Chat tests)
+and the AMQP 1.0 tests (`notify::amqp::v10`) only run with `pgp,amqp`.
 
 While working on one plugin, run just its tests:
 ```bash
@@ -83,7 +87,7 @@ when the binding's API or the package version changed.
 CI runs `cargo test --workspace --exclude apprise-napi`, the
 `--no-default-features` core tests and the lint steps, builds the bindings for
 every platform they ship for, and tests them on Linux, macOS and Windows. It
-does not test `desktop,blink1`, so run that one locally.
+does not test `desktop,blink1` or `pgp,amqp`, so run those locally.
 
 ---
 
@@ -134,7 +138,7 @@ tests (`apprise/plugins/<name>.py`, `tests/test_plugin_<name>.py`).
   `service_base("https://api.example.com")` so tests can redirect it.
 - **Secrets**: never log tokens, passwords or keys at any level; log request
   errors with `crate::error::loggable_http_error(&e)`.
-- **Heavy dependencies** go behind a Cargo feature, as `email`, `amqp` and
+- **Heavy dependencies** go behind a Cargo feature, as `pgp`, `amqp` and
   `matrix-e2ee` do.
 
 ### Tests

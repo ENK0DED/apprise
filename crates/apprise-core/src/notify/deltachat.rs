@@ -164,6 +164,7 @@ mod tests {
 
   /// Upstream test_plugin_deltachat_autocrypt_and_pgp_inherited: signed,
   /// with the generated key advertised once and no body in the subject.
+  #[cfg(feature = "pgp")]
   #[tokio::test]
   async fn test_signed_with_autocrypt() {
     let store = tempfile::tempdir().unwrap();
@@ -186,6 +187,7 @@ mod tests {
   }
 
   /// Upstream test_plugin_deltachat_encrypt_subject_privacy.
+  #[cfg(feature = "pgp")]
   #[tokio::test]
   async fn test_encrypted_subject_privacy() {
     let dir = tempfile::tempdir().unwrap();
