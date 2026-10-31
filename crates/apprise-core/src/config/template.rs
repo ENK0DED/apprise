@@ -541,10 +541,12 @@ impl PendingService {
 /// notifications is kept (upstream `NotifyTemplate.resolve()`).
 pub struct TemplateEntry {
   pub pending: PendingService,
-  /// What each set of values built (`None` when the service refused the
-  /// URL), by a hash of the values, most recently used last.
-  built: std::sync::Mutex<Vec<(String, Option<Arc<dyn Notify>>)>>,
+  built: std::sync::Mutex<Vec<Built>>,
 }
+
+/// What one set of values built (`None` when the service refused the
+/// URL), by a hash of the values; the most recently used is last.
+type Built = (String, Option<Arc<dyn Notify>>);
 
 impl std::fmt::Debug for TemplateEntry {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
