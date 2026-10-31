@@ -327,6 +327,12 @@ pub fn url_templates(schema: &str) -> &'static [&'static str] {
       "{schema}://{user}:{password}@{host}",
       "{schema}://{user}:{password}@{host}:{port}",
     ],
+    "kakao" | "kakaotalk" => &[
+      "{schema}://{client_id}/{refresh_token}",
+      "{schema}://{client_id}/{refresh_token}/{targets}",
+      "{schema}://{client_secret}@{client_id}/{refresh_token}",
+      "{schema}://{client_secret}@{client_id}/{refresh_token}/{targets}",
+    ],
     "kaleyra" | "klr" => &[
       "{schema}://{sid}:{apikey}@{sender}/{targets}",
     ],
@@ -810,6 +816,9 @@ pub fn url_templates(schema: &str) -> &'static [&'static str] {
     "wecombot" => &[
       "{schema}://{key}",
     ],
+    "whapi" => &[
+      "{schema}://{token}/{targets}",
+    ],
     "whatsapp" => &[
       "{schema}://{token}@{from_phone_id}/{targets}",
       "{schema}://{template}:{token}@{from_phone_id}/{targets}",
@@ -827,6 +836,12 @@ pub fn url_templates(schema: &str) -> &'static [&'static str] {
     ],
     "wxpusher" => &[
       "{schema}://{token}/{targets}",
+    ],
+    "xmatters" => &[
+      "{schema}://{apikey}@{host}/{integration_id}",
+      "{schema}://{apikey}@{host}/{integration_id}/{targets}",
+      "{schema}://{user}:{password}@{host}/{integration_id}",
+      "{schema}://{user}:{password}@{host}/{integration_id}/{targets}",
     ],
     "xml" | "xmls" => &[
       "{schema}://{host}",
