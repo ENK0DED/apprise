@@ -9,7 +9,7 @@ use apprise_core::storage::{PersistentStore, StoreState};
 use apprise_core::utils::cwe312::{cwe312_loggable, privacy_url};
 use apprise_core::utils::disk::path_decode;
 use apprise_core::utils::parse::parse_urls;
-use apprise_core::{Apprise, AppriseAsset, Notify, NotifyContext, NotifyFormat, NotifyType, ResultStatus, StorageMode, TagFilter};
+use apprise_core::{Apprise, AppriseAsset, Notify, NotifyContext, NotifyFormat, NotifyType, ResultStatus, Selected, StorageMode, TagFilter};
 
 /// Recursion depth for configuration includes.
 const DEFAULT_RECURSION_DEPTH: i64 = 1;
@@ -377,46 +377,58 @@ async fn run(argv: &[String]) -> i32 {
 }
 
 /// `--dry-run`: list what would be notified, with its storage UID and tags.
-/// Entries still waiting for a template value are listed too, and count as
-/// failures, as a real run would count them.
 fn dry_run_listing(apprise: &Apprise) -> ResultStatus {
-  let columns = columns();
-  let mut listed = 0usize;
-  for svc in apprise.find() {
-    listed += 1;
-    println!("{:>4}. {}", listed, fit(&shown_url(&*svc), columns.saturating_sub(8), columns.saturating_sub(9)));
-    println!("{:>10}: {}", "uid", apprise.url_id(&*svc).unwrap_or_else(|| "- n/a -".to_string()));
-    let tags = sorted_tags(&*svc);
-    if !tags.is_empty() {
-      println!("{:>10}: {}", "tags", tags.join(", "));
-    }
+  let (lines, status) = dry_run_lines(apprise, columns());
+  for line in lines {
+    println!("{line}");
   }
+  status
+}
+
+/// The `--dry-run` listing: every entry the tag filter selects, in
+/// configuration order, as upstream lists them. Entries the template
+/// values cannot build are listed where they are and count as failures,
+/// as a real run would count them; entries with template variables also
+/// show which ones they use.
+fn dry_run_lines(apprise: &Apprise, columns: usize) -> (Vec<String>, ResultStatus) {
+  let mut lines = Vec::new();
+  let mut listed = 0usize;
   let mut unresolved = 0usize;
-  for entry in apprise.pending_matching(apprise.tag_filter()) {
+  for selected in apprise.select(apprise.tag_filter()) {
     listed += 1;
-    unresolved += 1;
-    let url = privacy_url(&entry.display_url());
-    println!("{:>4}. {}", listed, fit(&url, columns.saturating_sub(8), columns.saturating_sub(9)));
-    println!("{:>10}: - template; unresolved, would not send -", "uid");
-    let mut tags: Vec<String> = apprise_core::tag::parse_service_tags(&entry.tags()).iter().map(|t| t.name().to_string()).collect();
-    tags.sort();
+    let (url, uid, tags, template) = match &selected {
+      Selected::Service { service, template } => {
+        (shown_url(&**service), apprise.url_id(&**service).unwrap_or_else(|| "- n/a -".to_string()), sorted_tags(&**service), *template)
+      }
+      Selected::Unresolved(entry) => {
+        unresolved += 1;
+        let mut tags: Vec<String> = apprise_core::tag::parse_service_tags(&entry.tags()).iter().map(|t| t.name().to_string()).collect();
+        tags.sort();
+        (privacy_url(&entry.display_url()), "- template; unresolved, would not send -".to_string(), tags, Some(*entry))
+      }
+    };
+    lines.push(format!("{:>4}. {}", listed, fit(&url, columns.saturating_sub(8), columns.saturating_sub(9))));
+    lines.push(format!("{:>10}: {}", "uid", uid));
     if !tags.is_empty() {
-      println!("{:>10}: {}", "tags", tags.join(", "));
+      lines.push(format!("{:>10}: {}", "tags", tags.join(", ")));
     }
-    let required = entry.required();
-    let names: Vec<String> = entry.names.iter().map(|n| format!("{} ({})", n, if required.contains(n) { "required" } else { "has default" })).collect();
-    println!("{:>10}: {}", "template", names.join(", "));
+    if let Some(entry) = template {
+      let required = entry.required();
+      let names: Vec<String> = entry.names.iter().map(|n| format!("{} ({})", n, if required.contains(n) { "required" } else { "has default" })).collect();
+      lines.push(format!("{:>10}: {}", "template", names.join(", ")));
+    }
   }
   if unresolved > 0 {
-    println!();
-    println!("{} of {} matched entries could not be resolved and would not be sent. Check the log for the reason.", unresolved, listed);
+    lines.push(String::new());
+    lines.push(format!("{} of {} matched entries could not be resolved and would not be sent. Check the log for the reason.", unresolved, listed));
   }
-  match (listed, unresolved) {
+  let status = match (listed, unresolved) {
     (0, _) => ResultStatus::NoMatch,
     (_, 0) => ResultStatus::Success,
     (l, u) if l == u => ResultStatus::Failure,
     _ => ResultStatus::Partial,
-  }
+  };
+  (lines, status)
 }
 
 /// `apprise storage [list|prune|clear] [UID-prefix|URL]...`.
@@ -542,6 +554,33 @@ mod tests {
     assert_eq!(template_vars(&["bad".into()]), Err(2));
     assert_eq!(template_vars(&["a-b=1".into()]), Err(2));
     assert_eq!(template_vars(&["a=1".into(), "A=2".into()]), Err(2));
+  }
+
+  #[tokio::test]
+  async fn test_dry_run_lists_entries_in_configuration_order() {
+    let yaml = "template:\n  - token\nurls:\n  - json://${TOKEN}@first.example\n  - json://second.example\n  - xml://third.example/${TOKEN}\n";
+    let mut apprise = Apprise::new();
+    if apprise.add_config_text(yaml, Some(apprise_core::config::ConfigFormat::Yaml), 0).await.is_err() {
+      return; // a build without YAML support
+    }
+    let urls = |lines: &[String]| -> Vec<String> {
+      lines.iter().filter_map(|l| l.trim_start().split_once(". ").filter(|(n, _)| n.parse::<usize>().is_ok())).map(|(_, url)| url.to_string()).collect()
+    };
+    let (lines, status) = dry_run_lines(&apprise, 200);
+    assert_eq!(urls(&lines), vec!["json://$...}@first.example", "json://second.example", "xml://third.example/$...}"]);
+    assert_eq!(lines[1], "       uid: - template; unresolved, would not send -");
+    assert_eq!(lines[2], "  template: token (required)");
+    assert!(!lines[4].contains("template"), "{lines:?}");
+    assert_eq!(lines.last().unwrap(), "2 of 3 matched entries could not be resolved and would not be sent. Check the log for the reason.");
+    assert_eq!(status, ResultStatus::Partial);
+
+    // Once built, a template entry still says which variables it uses
+    apprise.set_template_values([("token".to_string(), "abc".to_string())].into()).unwrap();
+    let (lines, status) = dry_run_lines(&apprise, 200);
+    assert_eq!(urls(&lines), vec!["json://a...c@first.example", "json://second.example", "xml://third.example/a...c"]);
+    assert_eq!(lines.iter().filter(|l| *l == "  template: token (required)").count(), 2);
+    assert!(!lines[1].contains("unresolved"));
+    assert_eq!(status, ResultStatus::Success);
   }
 
   #[test]
