@@ -1,26 +1,28 @@
-.\" generated with Ronn-NG/v0.10.1
-.\" http://github.com/apjanke/ronn-ng/tree/0.10.1
-.TH "APPRISE" "1" "March 2026" "Chris Caron <lead2gold@gmail.com>"
+.\" generated with Ronn-NG/v0.9.1
+.\" http://github.com/apjanke/ronn-ng/tree/0.9.1
+.TH "APPRISE" "1" "October 2026" "Chris Caron <lead2gold@gmail.com>"
 .SH "NAME"
 \fBapprise\fR \- Push Notifications that work with just about every platform!
 .SH "SYNOPSIS"
 \fBapprise\fR [\fIoptions\fR\|\.\|\.\|\.] \fIservice\-url\fR\|\.\|\.\|\.
 .br
-\fBapprise\fR storage [\fIoptions\fR\|\.\|\.\|\.] [\fIaction\fR] \fIurl\-id\fR\|\.\|\.\|\.
+\fBapprise\fR storage [\fIoptions\fR\|\.\|\.\|\.] [\fIaction\fR] [\fIurl\-or\-uid\fR\|\.\|\.\|\.]
 .br
 .SH "DESCRIPTION"
 \fBApprise\fR allows you to send a notification to \fIalmost all\fR of the most popular notification services available to us today such as: Discord, Telegram, Pushbullet, Slack, Twitter, etc\.
-.IP "\(bu" 4
+.IP "\[ci]" 4
 One notification library to rule them all\.
-.IP "\(bu" 4
+.IP "\[ci]" 4
 A common and intuitive notification syntax\.
-.IP "\(bu" 4
+.IP "\[ci]" 4
 Supports the handling of images (to the notification services that will accept them)\.
-.IP "\(bu" 4
-It's incredibly lightweight\.
-.IP "\(bu" 4
+.IP "\[ci]" 4
+It\'s incredibly lightweight\.
+.IP "\[ci]" 4
 Amazing response times because all messages sent asynchronously\.
 .IP "" 0
+.P
+This is the Rust port of Apprise\. It accepts the same service URLs, configuration files, options and exit codes as upstream Apprise 2\.1\.0\.
 .SH "OPTIONS"
 The Apprise options are as follows:
 .P
@@ -32,9 +34,7 @@ The Apprise options are as follows:
 .P
 \fB\-a\fR, \fB\-\-attach=\fR\fIATTACH\-URL\fR: Specify one or more file attachment locations\.
 .P
-\fB\-P\fR, \fB\-\-plugin\-path=\fR\fIPATH\fR: Specify a path to scan for custom notification plugin support\. You can create your own notification by simply creating a Python file that contains the \fB@notify("schema")\fR decorator\.
-.P
-You can optionally choose to specify more than one \fB\-\-plugin\-path\fR (\fB\-P\fR) to increase the modules included\.
+\fB\-P\fR, \fB\-\-plugin\-path=\fR\fIPATH\fR: Accepted for compatibility with upstream Apprise, whose custom plugins are Python files\. This build cannot load them, so the option is ignored with a warning\.
 .P
 \fB\-n\fR, \fB\-\-notification\-type=\fR\fIVALUE\fR: Specify the message type (default=info)\. Possible values are "info", "success", "failure", and "warning"\.
 .P
@@ -42,26 +42,43 @@ You can optionally choose to specify more than one \fB\-\-plugin\-path\fR (\fB\-
 .P
 \fB\-T\fR, \fB\-\-theme=\fR\fIVALUE\fR: Specify the default theme\.
 .P
+\fB\-tv\fR, \fB\-\-template\-var=\fR\fINAME=VALUE\fR: Supply a value used by a YAML configuration written with \fB${NAME}\fR\. Specify this option more than once to supply more than one value, but name each one only once\. A value not provided here uses the default in the configuration\'s \fBtemplate:\fR section, then \fBAPPRISE_TEMPLATE_<NAME>\fR\. A URL that still has no value available is not loaded\.
+.P
 \fB\-g\fR, \fB\-\-tag=\fR\fIVALUE\fR: Specify one or more tags to filter which services to notify:
-.IP "\(bu" 4
+.IP "\[ci]" 4
 \fB\-g "tagA" \-g "tagB"\fR: Match tagA \fBOR\fR tagB (Union)\.
-.IP "\(bu" 4
+.IP "\[ci]" 4
 \fB\-g "tagA,tagB"\fR: Match tagA \fBAND\fR tagB (Strict)\.
-.IP "\(bu" 4
+.IP "\[ci]" 4
 \fB\-g "all"\fR: Notify \fBALL\fR services\.
-.IP "\(bu" 4
+.IP "\[ci]" 4
 \fB(Omitted)\fR: Notify \fBuntagged\fR services only\.
 .IP "" 0
 .P
+Tag values may include an optional priority prefix and/or retry suffix:
+.IP "\[ci]" 4
+\fB\-g "2:tagA"\fR: Match \fBonly\fR entries for tagA assigned priority 2\.
+.IP "\[ci]" 4
+\fB\-g "tagA:3"\fR: Match all tagA entries, retrying each up to 3 times\.
+.IP "\[ci]" 4
+\fB\-g "2:tagA:3"\fR: Priority\-2 tagA entries only, with up to 3 retries\.
+.IP "" 0
+.P
+Tags only filter services loaded from configuration; they are ignored (with a warning) when service URLs are given on the command line\.
+.P
 \fB\-Da\fR, \fB\-\-disable\-async\fR: Send notifications synchronously (one after the other) instead of all at once\.
 .P
-\fB\-R\fR, \fB\-\-recursion\-depth\fR\fIINTEGER\fR: The number of recursive import entries that can be loaded from within Apprise configuration\. By default this is set to 1\. If this is set to zero, then import statements found in any configuration is ignored\.
+\fB\-L\fR, \fB\-\-limit=\fR\fISECONDS\fR: Give up on the whole run if it\'s taking too long, e\.g\. \fB\-L 10\fR or \fB\-L 2\.5\fR\. By default (\fB0\fR) there\'s no limit; see \fB\-\-service\-limit\fR below to cap each service on its own instead\. Services still running when the limit is reached are reported as timed out, and if nothing else went wrong \fBapprise\fR exits with status \fB5\fR\.
 .P
-\fB\-e\fR, \fB\-\-interpret\-escapes\fR Enable interpretation of backslash escapes\. For example, this would convert sequences such as \en and \er to their respected ascii new\-line and carriage return characters prior to the delivery of the notification\.
+\fB\-SL\fR, \fB\-\-service\-limit=\fR\fISECONDS\fR: Give up on any single service if it\'s taking too long, e\.g\. \fB\-SL 10\fR or \fB\-SL 2\.5\fR, or \fB0\fR to turn this off entirely\. Leave it unset to use Apprise\'s own default of 60 seconds\.
 .P
-\fB\-j\fR, \fB\-\-interpret\-emojis\fR Enable interpretation of emoji strings\. For example, this would convert sequences such as :smile: or :grin: to their respected unicode emoji character\.
+\fB\-R\fR, \fB\-\-recursion\-depth=\fR\fIINTEGER\fR: The number of recursive import entries that can be loaded from within Apprise configuration\. By default this is set to 1\. If this is set to zero, then import statements found in any configuration is ignored\.
 .P
-\fB\-S\fR, \fB\-\-storage\-path=\fR\fIPATH\fR: Specify the path to the persistent storage caching location
+\fB\-e\fR, \fB\-\-interpret\-escapes\fR: Enable interpretation of backslash escapes\. For example, this would convert sequences such as \en and \er to their respected ascii new\-line and carriage return characters prior to the delivery of the notification\.
+.P
+\fB\-j\fR, \fB\-\-interpret\-emojis\fR: Enable interpretation of emoji strings\. For example, this would convert sequences such as :smile: or :grin: to their respected unicode emoji character\.
+.P
+\fB\-S\fR, \fB\-\-storage\-path=\fR\fIPATH\fR: Specify the path to the persistent storage caching location\.
 .P
 \fB\-SM\fR, \fB\-\-storage\-mode=\fR\fIMODE\fR: Specify the persistent storage operational mode\. Possible values are "auto", "flush", and "memory"\. The default is "auto" if not specified\.
 .P
@@ -71,7 +88,7 @@ You can optionally choose to specify more than one \fB\-\-plugin\-path\fR (\fB\-
 .P
 \fB\-d\fR, \fB\-\-dry\-run\fR: Perform a trial run but only prints the notification services to\-be triggered to \fBstdout\fR\. Notifications are never sent using this mode\.
 .P
-\fB\-l\fR, \fB\-\-details\fR Prints details about the current services supported by Apprise\.
+\fB\-l\fR, \fB\-\-details\fR: Prints details about the current services supported by Apprise\.
 .P
 \fB\-v\fR, \fB\-\-verbose\fR: The more of these you specify, the more verbose the output is\. e\.g: \-vvvv
 .P
@@ -81,12 +98,14 @@ You can optionally choose to specify more than one \fB\-\-plugin\-path\fR (\fB\-
 .P
 \fB\-h\fR, \fB\-\-help\fR: Show this message and exit\.
 .SH "PERSISTENT STORAGE"
-Persistent storage by default writes to the following location unless the environment variable \fBAPPRISE_STORAGE_PATH\fR overrides it and/or \fB\-\-storage\-path\fR (\fB\-SP\fR) is specified to override it:
+Persistent storage by default writes to the following location unless the environment variable \fBAPPRISE_STORAGE_PATH\fR overrides it and/or \fB\-\-storage\-path\fR (\fB\-S\fR) is specified to override it:
 .IP "" 4
 .nf
 ~/\.local/share/apprise/cache
 .fi
 .IP "" 0
+.P
+On Windows the default is \fB%APPDATA%/Apprise/cache\fR\.
 .P
 To utilize the persistent storage \fIhttps://appriseit\.com/cli/persistent\-storage/\fR element associated with Apprise, simply specify the keyword \fBstorage\fR
 .IP "" 4
@@ -97,28 +116,34 @@ $ apprise storage
 .P
 The \fBstorage\fR action has the following sub actions:
 .P
-\fBlist\fR: List all of the detected persistent storage elements and their state (\fBstale\fR, \fBactive\fR, or \fBunused\fR)\. This is the default action if nothing further is identified\.
+\fBlist\fR: List all of the detected persistent storage elements and their state (\fBstale\fR, \fBactive\fR, or \fBunused\fR)\. This is the default action if nothing further is identified\. Results may be filtered by passing one or more 8\-character UID prefix strings, or by passing full Apprise service URLs \(em each URL is resolved to its storage namespace automatically, making it easy to look up a specific plugin\'s cache entry without knowing the hash in advance\.
 .P
 \fBprune\fR: Removes all persistent storage that has not been referenced for more than 30 days\. You can optionally set the \fB\-\-storage\-prune\-days\fR to alter this default value\.
 .P
-\fBclean\fR: Removes all persistent storage regardless of age\.
+\fBclean\fR: Removes all persistent storage regardless of age\. \fBclear\fR is accepted as well\.
+.P
+Like \fBlist\fR, \fBprune\fR and \fBclean\fR can be limited with UID prefixes, service URLs or \fB\-\-tag\fR\.
 .SH "EXIT STATUS"
 \fBapprise\fR exits with a status of:
-.IP "\(bu" 4
+.IP "\[ci]" 4
 \fB0\fR if all of the notifications were sent successfully\.
-.IP "\(bu" 4
-\fB1\fR if one or more notifications could not be sent\.
-.IP "\(bu" 4
-\fB2\fR if there was an error specified on the command line such as not providing an valid argument\.
-.IP "\(bu" 4
-\fB3\fR if there was one or more Apprise Service URLs successfully loaded but none could be notified due to user filtering (via tags)\.
+.IP "\[ci]" 4
+\fB1\fR if every notification failed, or the notification could not start\.
+.IP "\[ci]" 4
+\fB2\fR if there was an error specified on the command line such as not providing a valid argument\.
+.IP "\[ci]" 4
+\fB3\fR if one or more Apprise Service URLs were successfully loaded but none could be notified due to user filtering (via tags)\.
+.IP "\[ci]" 4
+\fB4\fR if at least one notification was sent successfully and at least one other was not (whether it failed outright or ran out of time)\.
+.IP "\[ci]" 4
+\fB5\fR if no notification was sent, and the only problem was that one or more services ran out of time\.
 .IP "" 0
 .SH "SERVICE URLS"
-There are too many service URL and combinations to list here\. It's best to visit the Apprise GitHub page \fIhttps://appriseit\.com/services/\fR and see what's available\.
+There are too many service URL and combinations to list here\. It\'s best to visit the Apprise service list \fIhttps://appriseit\.com/services/\fR and see what\'s available\. Also try out the Apprise URL Builder \fIhttps://appriseit\.com/tools/url\-builder/\fR to easily construct the URLS this tool supports and works with\. \fBapprise \-\-details\fR lists every service this build supports\.
 .P
 The \fBenvironment variable\fR of \fBAPPRISE_URLS\fR (comma/space delimited) can be specified to provide the default set of URLs you wish to notify if none are otherwise specified\.
 .SH "EXAMPLES"
-Send a notification to as many servers as you want to specify as you can easily chain them together:
+Send a notification to multiple services by chaining their URLs:
 .IP "" 4
 .nf
 $ apprise \-vv \-t "my title" \-b "my notification body" \e
@@ -127,7 +152,7 @@ $ apprise \-vv \-t "my title" \-b "my notification body" \e
 .fi
 .IP "" 0
 .P
-If you don't specify a \fB\-\-body\fR (\fB\-b\fR) then stdin is used allowing you to use the tool as part of your every day administration:
+If you don\'t specify a \fB\-\-body\fR (\fB\-b\fR) then stdin is used allowing you to use the tool as part of your every day administration:
 .IP "" 4
 .nf
 $ cat /proc/cpuinfo | apprise \-vv \-t "cpu info" \e
@@ -148,7 +173,7 @@ Load in a configuration file from a remote server that identifies all of your no
 .nf
 $ apprise \-vv \-t "my title" \-b "my notification body" \e
    \-\-config=https://localhost/my/apprise/config \e
-   \-t devops
+   \-g devops
 .fi
 .IP "" 0
 .P
@@ -169,6 +194,24 @@ Notify only services tagged with BOTH "devops" AND "critical" (Intersection):
 $ apprise \-vv \-t "Intersection Test" \e
    \-\-config=~/apprise\.yml \e
    \-g devops,critical
+.fi
+.IP "" 0
+.P
+Notify only priority\-2 "alerts" services (exclusive priority filter):
+.IP "" 4
+.nf
+$ apprise \-vv \-t "High Alert" \e
+   \-\-config=~/apprise\.yml \e
+   \-g "2:alerts"
+.fi
+.IP "" 0
+.P
+Notify all "alerts" services and retry each up to 3 times on failure:
+.IP "" 4
+.nf
+$ apprise \-vv \-t "Critical Event" \e
+   \-\-config=~/apprise\.yml \e
+   \-g "alerts:3"
 .fi
 .IP "" 0
 .P
@@ -194,6 +237,13 @@ $ apprise storage list
 .fi
 .IP "" 0
 .P
+Look up the storage namespace for a specific notification URL (shows the UID even when no data has been written yet):
+.IP "" 4
+.nf
+$ apprise storage list "mailtos://user:pass@example\.com"
+.fi
+.IP "" 0
+.P
 Prune all persistent storage that has not been referenced for at least 10 days or more
 .IP "" 4
 .nf
@@ -201,60 +251,40 @@ $ apprise storage prune \-\-storage\-prune\-days=10
 .fi
 .IP "" 0
 .SH "CUSTOM PLUGIN/NOTIFICATIONS"
-Apprise can additionally allow you to define your own custom \fBschema://\fR entries that you can trigger on and call services you've defined\.
-.P
-By default \fBapprise\fR looks in the following local locations for custom plugin files and loads them:
-.IP "" 4
-.nf
-~/\.apprise/plugins
-~/\.config/apprise/plugins
-/var/lib/apprise/plugins
-.fi
-.IP "" 0
-.P
-The \fBenvironment variable\fR of \fBAPPRISE_PLUGIN_PATH\fR can be specified to override the list identified above with one of your own\. use a semi\-colon (\fB;\fR), line\-feed (\fB\en\fR), and/or carriage return (\fB\er\fR) to delimit multiple entries\.
-.P
-Simply create your own python file with the following bare minimum content in it:
-.IP "" 4
-.nf
-from apprise\.decorators import notify
-
-# This example assumes you want your function to trigger on foobar://
-# references:
-@notify(on="foobar", name="My Custom Notification")
-def my_wrapper(body, title, notify_type, *args, **kwargs):
-
-     print("Define your custom code here")
-
-     # Returning True/False will relay your status back through Apprise
-     # Returning nothing (None by default) is always interpreted as True
-     return True
-.fi
-.IP "" 0
+Upstream Apprise can load custom \fBschema://\fR handlers written in Python with its \fB@notify\fR decorator\. This build has no Python runtime, so it does not load them: \fB\-\-plugin\-path\fR (\fB\-P\fR) and \fBAPPRISE_PLUGIN_PATH\fR are accepted and ignored with a warning\.
 .SH "CONFIGURATION"
 An Apprise configuration file \fIhttps://appriseit\.com/getting\-started/configuration/\fR can be in the format of either \fBTEXT\fR or \fBYAML\fR where TEXT is the easiest and most ideal solution for most users\. However YAML configuration files grants the user a bit more leverage and access to some of the internal features of Apprise\. Regardless of which format you choose, both provide the users the ability to leverage \fBtagging\fR which adds a more rich and powerful notification environment\.
 .P
 Configuration files can be directly referenced via \fBapprise\fR when referencing the \fB\-\-config=\fR (\fB\-c\fR) CLI directive\. You can identify as many as you like on the command line and all of them will be loaded\. You can also point your configuration to a cloud location (by referencing \fBhttp://\fR or \fBhttps://\fR\. By default \fBapprise\fR looks in the following local locations for configuration files and loads them:
 .IP "" 4
 .nf
+~/\.apprise
 ~/\.apprise\.conf
+~/\.apprise\.yml
 ~/\.apprise\.yaml
+~/\.config/apprise
 ~/\.config/apprise\.conf
+~/\.config/apprise\.yml
 ~/\.config/apprise\.yaml
 
+~/\.apprise/apprise
 ~/\.apprise/apprise\.conf
+~/\.apprise/apprise\.yml
 ~/\.apprise/apprise\.yaml
+~/\.config/apprise/apprise
 ~/\.config/apprise/apprise\.conf
+~/\.config/apprise/apprise\.yml
 ~/\.config/apprise/apprise\.yaml
 
-/etc/apprise\.conf
+/etc/apprise
+/etc/apprise\.yml
 /etc/apprise\.yaml
+/etc/apprise/apprise
 /etc/apprise/apprise\.conf
+/etc/apprise/apprise\.yml
 /etc/apprise/apprise\.yaml
 .fi
 .IP "" 0
-.P
-The \fBconfiguration files\fR specified above can also be identified with a \fB\.yml\fR extension or even just entirely removing the \fB\.conf\fR extension altogether\.
 .P
 The \fBenvironment variable\fR of \fBAPPRISE_CONFIG_PATH\fR can be specified to override the list identified above with one of your own\. use a semi\-colon (\fB;\fR), line\-feed (\fB\en\fR), and/or carriage return (\fB\er\fR) to delimit multiple entries\.
 .P
@@ -273,17 +303,59 @@ $ apprise \-vv \-\-title "Will Be Late Getting Home" \e
     \-\-tag=family
 .fi
 .IP "" 0
+.SS "TEMPLATE VARIABLES"
+A \fBYAML\fR configuration can leave a value out of a URL and have it filled in later\. Write \fB${NAME}\fR where the value belongs and declare every name you use in a \fBtemplate:\fR section:
+.IP "" 4
+.nf
+template:
+  # A value written here is used when nothing else supplies one
+  smtp_host: smtp\.example\.com
+  # No value, so this one must always be supplied
+  api_key:
+
+urls:
+  \- sendgrid://${API_KEY}:noreply@example\.com/you@example\.com:
+      \- tag: alerts
+.fi
+.IP "" 0
+.P
+Values are looked for in this order, stopping at the first that answers:
+.IP "\[ci]" 4
+a value given with \fB\-\-template\-var\fR (\fB\-tv\fR)
+.IP "\[ci]" 4
+the default written in the \fBtemplate:\fR section
+.IP "\[ci]" 4
+the environment variable \fBAPPRISE_TEMPLATE_<NAME>\fR
+.IP "" 0
+.P
+A URL with no value available is not loaded: \fBapprise\fR logs an error naming the missing variable and still notifies the other services\. \fB\-\-dry\-run\fR logs the same error and lists only the services that loaded\.
+.P
+\fB${NAME}\fR only means something when \fBNAME\fR appears in the \fBtemplate:\fR section\. Anywhere else it is ordinary text and is sent exactly as written, so a password containing \fB${\|\.\|\.\|\.}\fR is never altered\. Names ignore case, and a name may be used as often as you like\. Values may be up to 1,024 characters\. Extra supplied names are accepted and ignored\.
+.P
+The configuration author may place a variable directly in a URL or in a named YAML setting below it\. URL markers can change any field, including the destination; whole\-host markers also accept \fBuser@host\fR and \fBuser:pass@host\fR\. A named setting changes only its option, so prefer it for values supplied by less\-trusted callers\.
+.P
+A variable may not appear before \fB://\fR, may not be used for \fBtag:\fR/\fBtags:\fR, and may not be used as a setting\'s name\. The service and tags are selected before values are filled in, so neither can be dynamic\.
+.P
+This applies to \fBYAML\fR configuration only; \fBTEXT\fR configuration is passed through unchanged\.
 .SH "ENVIRONMENT VARIABLES"
 \fBAPPRISE_URLS\fR: Specify the default URLs to notify IF none are otherwise specified on the command line explicitly\. If the \fB\-\-config\fR (\fB\-c\fR) is specified, then this will override any reference to this variable\. Use white space and/or a comma (\fB,\fR) to delimit multiple entries\.
 .P
 \fBAPPRISE_CONFIG_PATH\fR: Explicitly specify the config search path to use (overriding the default)\. Use a semi\-colon (\fB;\fR), line\-feed (\fB\en\fR), and/or carriage return (\fB\er\fR) to delimit multiple entries\.
 .P
-\fBAPPRISE_PLUGIN_PATH\fR: Explicitly specify the custom plugin search path to use (overriding the default)\. Use a semi\-colon (\fB;\fR), line\-feed (\fB\en\fR), and/or carriage return (\fB\er\fR) to delimit multiple entries\.
+\fBAPPRISE_PLUGIN_PATH\fR: Ignored with a warning; see \fBCUSTOM PLUGIN/NOTIFICATIONS\fR\.
 .P
-\fBAPPRISE_STORAGE_PATH\fR: Explicitly specify the persistent storage path to use (overriding the default)\.
+\fBAPPRISE_STORAGE_PATH\fR: Explicitly specify the persistent storage path to use (overriding the default)\. \fB\-\-storage\-path\fR (\fB\-S\fR) takes priority over it\.
+.P
+\fBAPPRISE_STORAGE_PRUNE_DAYS\fR: The default for \fB\-\-storage\-prune\-days\fR (\fB\-SPD\fR); 30 if unset\.
+.P
+\fBAPPRISE_STORAGE_UID_LENGTH\fR: The default for \fB\-\-storage\-uid\-length\fR (\fB\-SUL\fR); 8 if unset\.
+.P
+\fBAPPRISE_TEMPLATE_<NAME>\fR: Supply a value for a \fB${NAME}\fR used by a YAML configuration\. For example \fBAPPRISE_TEMPLATE_API_KEY\fR fills in \fB${API_KEY}\fR\. A value supplied with \fB\-\-template\-var\fR (\fB\-tv\fR) and a configuration default both take priority\. Blank values are ignored\.
+.P
+\fBHTTP_PROXY\fR, \fBHTTPS_PROXY\fR, \fBNO_PROXY\fR: Standard proxy variables honored by the HTTP client\. Set \fBHTTP_PROXY\fR/\fBHTTPS_PROXY\fR to route outbound notifications through a proxy, and \fBNO_PROXY\fR to exempt specific hosts\. SOCKS proxies are not supported\.
 .SH "BUGS"
-If you find any bugs, please make them known at: \fIhttps://github\.com/caronc/apprise/issues\fR
+If you find any bugs in this port, please make them known at: \fIhttps://github\.com/ENK0DED/apprise/issues\fR
 .SH "DONATIONS"
-If you found Apprise useful at all, please consider sponsoring \fIhttps://github\.com/sponsors/caronc\fR or donating \fIhttps://www\.paypal\.com/donate/?hosted_button_id=CR6YF7KLQWQ5E\fR!
+If you found Apprise useful at all, please consider sponsoring \fIhttps://github\.com/sponsors/caronc\fR or donating \fIhttps://www\.paypal\.com/donate/?hosted_button_id=CR6YF7KLQWQ5E\fR to its creator!
 .SH "COPYRIGHT"
 Apprise is Copyright (C) 2026 Chris Caron \fIlead2gold@gmail\.com\fR
