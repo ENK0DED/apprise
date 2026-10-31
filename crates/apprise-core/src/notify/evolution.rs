@@ -73,7 +73,8 @@ fn append_whatsapp_link(out: &mut String, link_stack: &mut Vec<usize>, raw_url: 
 }
 
 /// Upstream `_commonmark_to_whatsapp`: translate CommonMark to WhatsApp
-/// formatting.
+/// formatting. Whapi.Cloud uses it too: upstream gives `NotifyWhapi` an
+/// identical copy.
 ///
 /// ```text
 /// CommonMark          WhatsApp
@@ -84,7 +85,7 @@ fn append_whatsapp_link(out: &mut String, link_stack: &mut Vec<usize>, raw_url: 
 /// [label](<url>)      label (url)
 /// \*                  *
 /// ```
-fn commonmark_to_whatsapp(body: &str) -> String {
+pub(crate) fn commonmark_to_whatsapp(body: &str) -> String {
   // Headings become bold; code is left alone.
   let headed = commonmark_headings_to_bold(body);
   let chars: Vec<char> = headed.chars().collect();
