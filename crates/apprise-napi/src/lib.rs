@@ -168,7 +168,10 @@ pub async fn send(options: SendOptions) -> napi::Result<SendResult> {
     return Err(napi::Error::from_reason("No notification services specified"));
   }
 
-  Ok(to_js(apprise.notify_tagged(&msg.ctx, &msg.filter, &msg.attach).await))
+  let result = apprise.notify_tagged(&msg.ctx, &msg.filter, &msg.attach).await;
+  // The instance ends here: let its services give back what they hold.
+  apprise.close().await;
+  Ok(to_js(result))
 }
 
 /// Parse a notification URL and return service info, or null if invalid.
@@ -276,6 +279,16 @@ impl Apprise {
   #[napi]
   pub fn details(&self) -> Vec<ServiceInfo> {
     self.current().details().into_iter().map(service_info).collect()
+  }
+
+  /// Let every loaded service give back what it holds on the remote end
+  /// (a Matrix login kept only in memory is logged out). Call it when the
+  /// instance is no longer needed; the services stay usable, and a later
+  /// notification starts over.
+  #[napi]
+  pub async fn close(&self) {
+    let snapshot = self.current().clone();
+    snapshot.close().await;
   }
 
   /// Remove every loaded service and configuration entry.

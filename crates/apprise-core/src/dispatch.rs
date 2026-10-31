@@ -402,6 +402,34 @@ async fn run_service(call: &Call<'_>, ctx: &NotifyContext, opts: &DispatchOption
   crate::storage::with_store_slot(store_slot(call, opts), run).await
 }
 
+/// Let every service give back what it holds on the remote end
+/// ([`Notify::close`]), all at once, each with the store, HTTP settings and
+/// throttle of its sends and within the per-service time limit.
+pub(crate) async fn close(services: &[std::sync::Arc<dyn Notify>], opts: &DispatchOptions) {
+  let closes = services
+    .iter()
+    .map(|svc| {
+      let call = Call { svc: svc.as_ref(), tags: Vec::new(), retry_override: None };
+      let slot = store_slot(&call, opts);
+      let http = http_options(&call, opts);
+      let clock = svc.throttle_clock().unwrap_or_default();
+      let close = with_throttle(svc.request_rate_per_sec(), clock, with_http_options(http, svc.close()));
+      async move {
+        let close = crate::storage::with_store_slot(slot, close);
+        match opts.service_timeout {
+          Some(limit) => {
+            if tokio::time::timeout(limit, close).await.is_err() {
+              tracing::debug!("Gave up closing '{}' after {:.2}s.", svc.service_name(), limit.as_secs_f64());
+            }
+          }
+          None => close.await,
+        }
+      }
+    })
+    .collect();
+  join_all(closes).await;
+}
+
 /// Where this service's persistent store lives: its URL ID's namespace, in
 /// memory only with `?store=no`.
 fn store_slot(call: &Call<'_>, opts: &DispatchOptions) -> crate::storage::StoreSlot {

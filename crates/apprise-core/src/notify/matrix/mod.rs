@@ -14,7 +14,11 @@
 //!
 //! Login state, joined rooms, discovery results and the encryption device
 //! are kept in the service's persistent store, as upstream keeps them; a
-//! private in-memory cache stands in when no store is available.
+//! private in-memory cache stands in when no store is available. A login
+//! the store cannot keep for the next run (memory mode, `?store=no`) is
+//! given back with `POST /logout` when the service is closed
+//! ([`Notify::close`], upstream `__del__`), or, as a best effort, when it is
+//! dropped on a tokio runtime without being closed.
 //!
 //! Deliberate differences from upstream, each a bug upstream still has:
 //!
@@ -27,8 +31,6 @@
 //! - Without the `matrix-e2ee` feature an encrypted room fails closed
 //!   instead of receiving plaintext.
 //! - A rotated Megolm session is shared before an attachment uses it.
-//! - Upstream logs out of an in-memory login when the object is destroyed;
-//!   `Drop` cannot make that request here, so the device stays logged in.
 
 mod sizing;
 
@@ -52,8 +54,12 @@ use crate::asset::NotifyImageSize;
 use crate::conversion::{html_to_text, markdown_to_html_with};
 use crate::delivery::{is_delivered, mark_delivered, recall, remember};
 use crate::error::{NotifyError, loggable_http_error};
-use crate::notify::{APP_ID, Attachment, ClientDefaults, Notify, NotifyContext, ServiceDetails, client_builder, service_base, throttle, throttle_for};
-use crate::types::NotifyFormat;
+use crate::notify::{
+  APP_ID, Attachment, ClientDefaults, HttpOptions, Notify, NotifyContext, ServiceDetails, client_builder, current_http_options, service_base, throttle,
+  throttle_for, with_http_options,
+};
+use crate::storage::StoreSlot;
+use crate::types::{NotifyFormat, StorageMode};
 use crate::utils::parse::{ParsedUrl, parse_bool, parse_list, quote};
 
 const MATRIX_V1_WEBHOOK_PATH: &str = "/api/v1/matrix/hook";
@@ -143,6 +149,52 @@ enum Txn {
   Fresh,
 }
 
+/// Store entries of a login, cleared by a logout (upstream `_logout()`).
+const LOGIN_KEYS: &[&str] = &["access_token", "home_server", "user_id", "transaction_id", "device_id", "e2ee_keys_uploaded"];
+
+/// The context of the last send, so a login can be given back after it.
+struct LastUse {
+  /// HTTP settings of the send (`?cto=`, `?rto=`, `?verify=`).
+  http: HttpOptions,
+  /// The service's store, cleared again by the logout.
+  store: Option<StoreSlot>,
+  /// The store keeps nothing for the next run (upstream
+  /// `store.mode == MEMORY`): memory mode, `?store=no`, no storage path or
+  /// an unusable one, or no store at all.
+  memory_store: bool,
+}
+
+/// A logout to make: everything the request needs, so a dropped service
+/// can still make it.
+struct Logout {
+  url: String,
+  token: String,
+  verify_certificate: bool,
+  http: HttpOptions,
+  store: Option<StoreSlot>,
+}
+
+impl Logout {
+  /// Give the access token back (upstream `_logout()`). True once the
+  /// server no longer knows it: logged out, or it had expired already.
+  async fn run(self) -> bool {
+    let Self { url, token, verify_certificate, http, store } = self;
+    let logout = async move {
+      let reply = with_http_options(http, request(verify_certificate, &url, &Req::post("/logout", json!({})), Some(&token))).await;
+      if !reply.ok && reply.errcode() != Some("M_UNKNOWN_TOKEN") {
+        return false;
+      }
+      crate::storage::with_service_store(|s| s.clear(LOGIN_KEYS));
+      tracing::debug!("Unauthenticated successfully with Matrix server.");
+      true
+    };
+    match store {
+      Some(slot) => crate::storage::with_store_slot(slot, logout).await,
+      None => logout.await,
+    }
+  }
+}
+
 /// Login state and caches, shared by every send of this service.
 struct Session {
   /// The persisted state was read.
@@ -159,6 +211,9 @@ struct Session {
   /// Stand-in for the persistent store when none is available (upstream
   /// always has at least an in-memory store).
   local: HashMap<String, (Value, Option<Instant>)>,
+  /// The homeserver base URL requests last went to.
+  base_url: Option<String>,
+  last_use: Option<LastUse>,
 }
 
 impl Default for Session {
@@ -174,6 +229,8 @@ impl Default for Session {
       #[cfg(feature = "matrix-e2ee")]
       account: None,
       local: HashMap::new(),
+      base_url: None,
+      last_use: None,
     }
   }
 }
@@ -210,6 +267,21 @@ impl Session {
       for key in keys {
         self.local.remove(*key);
       }
+    }
+  }
+
+  /// Forget a login the server took back (upstream `_logout()`).
+  fn forget_login(&mut self) {
+    self.access_token = None;
+    self.home_server = None;
+    self.user_id = None;
+    self.device_id = None;
+    #[cfg(feature = "matrix-e2ee")]
+    {
+      self.account = None;
+    }
+    for key in LOGIN_KEYS {
+      self.local.remove(*key);
     }
   }
 
@@ -707,6 +779,7 @@ impl Run<'_> {
   /// Send a request to the homeserver (upstream `_fetch()`).
   async fn fetch(&mut self, req: Req<'_>) -> Reply {
     let Ok(base) = self.base_url().await else { return Reply::failed(500) };
+    self.s.base_url = Some(base.clone());
     let url = if req.upload.is_some() { format!("{base}{}/upload", self.m.media_path()) } else { format!("{base}{}{}", self.m.api_path(), req.path) };
     let token = if req.auth { self.s.access_token.clone() } else { None };
     self.m.request(&url, &req, token.as_deref()).await
@@ -1222,6 +1295,11 @@ impl Run<'_> {
   /// Deliver to every target (upstream `_send_server_notification()`).
   async fn send(&mut self) -> bool {
     self.restore();
+    self.s.last_use = Some(LastUse {
+      http: current_http_options(),
+      store: crate::storage::current_store_slot(),
+      memory_store: crate::storage::with_service_store(|s| s.mode() == StorageMode::Memory).unwrap_or(true),
+    });
     if self.m.token_auth() {
       if self.s.access_token.is_none() {
         self.s.access_token = self.m.password.clone();
@@ -1449,124 +1527,185 @@ fn room_encryption_key(room_id: &str) -> String {
 }
 
 impl Matrix {
-  /// Send one request and normalize its answer (the HTTP half of upstream
-  /// `_fetch()`): JSON in, `(ok, body, status)` out, 429s retried within the
-  /// shared wait budget.
+  /// [`request`] with this service's certificate setting.
   async fn request(&self, url: &str, req: &Req<'_>, token: Option<&str>) -> Reply {
-    let mut builder = client_builder(self.verify_certificate, ClientDefaults::default());
-    if req.credentials {
-      // Never let a redirect carry the password elsewhere.
-      builder = builder.redirect(reqwest::redirect::Policy::none());
+    request(self.verify_certificate, url, req, token).await
+  }
+
+  /// The logout upstream's `__del__` makes for this session, if one is
+  /// due: for a login this process made (with a password, or by
+  /// registering) that the store does not keep for the next run. Never for
+  /// t2bot, nor for an access token the URL gave.
+  fn logout_due(&self, s: &Session) -> Option<Logout> {
+    if self.mode == Mode::T2Bot {
+      return None;
     }
-    if let Some(timeout) = req.timeout {
-      builder = builder.connect_timeout(timeout).read_timeout(timeout);
+    let token = s.access_token.clone()?;
+    let used = s.last_use.as_ref().filter(|u| u.memory_store)?;
+    if self.user.is_none() && self.password.as_ref() == Some(&token) {
+      return None;
     }
-    let client = match builder.build() {
-      Ok(c) => c,
-      Err(e) => {
-        tracing::warn!("A Connection error occurred while registering with Matrix server.");
-        tracing::debug!("Socket Exception: {}", loggable_http_error(&e));
-        return Reply::failed(500);
+    Some(Logout {
+      url: format!("{}{}/logout", s.base_url.as_deref()?, self.api_path()),
+      token,
+      verify_certificate: self.verify_certificate,
+      http: used.http.clone(),
+      store: used.store.clone(),
+    })
+  }
+}
+
+#[cfg(test)]
+tokio::task_local! {
+  static DROP_LOGOUT_IN_TESTS: ();
+}
+
+/// Let a Matrix service dropped inside `fut` log out (see `Drop for Matrix`).
+#[cfg(test)]
+async fn with_drop_logout_in_tests<F: std::future::Future>(fut: F) -> F::Output {
+  DROP_LOGOUT_IN_TESTS.scope((), fut).await
+}
+
+impl Drop for Matrix {
+  /// A best-effort logout for a service dropped without being closed: it
+  /// is spawned on the current tokio runtime, and lost if the runtime ends
+  /// first. Without a runtime the login stays active until it expires.
+  fn drop(&mut self) {
+    // Tests opt in: a dropped service would otherwise log out against the
+    // next test's pooled mock server.
+    #[cfg(test)]
+    if DROP_LOGOUT_IN_TESTS.try_with(|_| ()).is_err() {
+      return;
+    }
+    let Ok(session) = self.session.try_lock() else { return };
+    let Some(logout) = self.logout_due(&session) else { return };
+    match tokio::runtime::Handle::try_current() {
+      Ok(runtime) => {
+        tracing::debug!("Matrix service dropped without being closed; logging out in the background.");
+        runtime.spawn(logout.run());
+      }
+      Err(_) => tracing::debug!("Matrix service dropped without being closed, outside an async runtime; its login stays active."),
+    }
+  }
+}
+
+/// Send one request and normalize its answer (the HTTP half of upstream
+/// `_fetch()`): JSON in, `(ok, body, status)` out, 429s retried within the
+/// shared wait budget.
+async fn request(verify_certificate: bool, url: &str, req: &Req<'_>, token: Option<&str>) -> Reply {
+  let mut builder = client_builder(verify_certificate, ClientDefaults::default());
+  if req.credentials {
+    // Never let a redirect carry the password elsewhere.
+    builder = builder.redirect(reqwest::redirect::Policy::none());
+  }
+  if let Some(timeout) = req.timeout {
+    builder = builder.connect_timeout(timeout).read_timeout(timeout);
+  }
+  let client = match builder.build() {
+    Ok(c) => c,
+    Err(e) => {
+      tracing::warn!("A Connection error occurred while registering with Matrix server.");
+      tracing::debug!("Socket Exception: {}", loggable_http_error(&e));
+      return Reply::failed(500);
+    }
+  };
+
+  throttle().await;
+  let mut status = 500;
+  let deadline = req.max_retry_wait.map(|w| Instant::now() + w);
+  let mut retries = DEFAULT_RETRIES.max(1);
+  while retries > 0 {
+    retries -= 1;
+    tracing::debug!("Matrix {} URL: {} (cert_verify={})", req.method, crate::utils::cwe312::cwe312_loggable(url, true), verify_certificate);
+    let mut builder = client.request(req.method.clone(), url).header("User-Agent", APP_ID).header("Accept", "application/json");
+    if let Some(token) = token {
+      builder = builder.header("Authorization", format!("Bearer {token}"));
+    }
+    if !req.params.is_empty() {
+      builder = builder.query(&req.params);
+    }
+    builder = match req.upload {
+      Some((data, mime)) => builder.header("Content-Type", mime).body(data.to_vec()),
+      None => {
+        // A request without a payload still sends JSON `null`, as upstream.
+        let payload = req.payload.as_ref().map(|p| p.to_string()).unwrap_or_else(|| "null".into());
+        if !req.credentials {
+          tracing::debug!("Matrix Payload: {}", payload);
+        }
+        builder.header("Content-Type", "application/json").body(payload)
       }
     };
 
-    throttle().await;
-    let mut status = 500;
-    let deadline = req.max_retry_wait.map(|w| Instant::now() + w);
-    let mut retries = DEFAULT_RETRIES.max(1);
-    while retries > 0 {
-      retries -= 1;
-      tracing::debug!("Matrix {} URL: {} (cert_verify={})", req.method, crate::utils::cwe312::cwe312_loggable(url, true), self.verify_certificate);
-      let mut builder = client.request(req.method.clone(), url).header("User-Agent", APP_ID).header("Accept", "application/json");
-      if let Some(token) = token {
-        builder = builder.header("Authorization", format!("Bearer {token}"));
+    let response = match builder.send().await {
+      Ok(r) => r,
+      Err(e) => {
+        tracing::warn!("A Connection error occurred while registering with Matrix server.");
+        tracing::debug!("Socket Exception: {}", loggable_http_error(&e));
+        return Reply::failed(status);
       }
-      if !req.params.is_empty() {
-        builder = builder.query(&req.params);
-      }
-      builder = match req.upload {
-        Some((data, mime)) => builder.header("Content-Type", mime).body(data.to_vec()),
-        None => {
-          // A request without a payload still sends JSON `null`, as upstream.
-          let payload = req.payload.as_ref().map(|p| p.to_string()).unwrap_or_else(|| "null".into());
-          if !req.credentials {
-            tracing::debug!("Matrix Payload: {}", payload);
-          }
-          builder.header("Content-Type", "application/json").body(payload)
+    };
+    status = response.status().as_u16();
+    let content = match req.max_response_bytes {
+      Some(max) => match crate::utils::http::read_bounded_response(response, max).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+          tracing::warn!("Matrix response exceeded {} bytes; discarding it.", max);
+          return Reply::failed(status);
         }
-      };
-
-      let response = match builder.send().await {
-        Ok(r) => r,
         Err(e) => {
           tracing::warn!("A Connection error occurred while registering with Matrix server.");
           tracing::debug!("Socket Exception: {}", loggable_http_error(&e));
           return Reply::failed(status);
         }
-      };
-      status = response.status().as_u16();
-      let content = match req.max_response_bytes {
-        Some(max) => match crate::utils::http::read_bounded_response(response, max).await {
-          Ok(Some(c)) => c,
-          Ok(None) => {
-            tracing::warn!("Matrix response exceeded {} bytes; discarding it.", max);
-            return Reply::failed(status);
-          }
-          Err(e) => {
-            tracing::warn!("A Connection error occurred while registering with Matrix server.");
-            tracing::debug!("Socket Exception: {}", loggable_http_error(&e));
-            return Reply::failed(status);
-          }
-        },
-        None => match response.bytes().await {
-          Ok(c) => c.to_vec(),
-          Err(e) => {
-            tracing::warn!("A Connection error occurred while registering with Matrix server.");
-            tracing::debug!("Socket Exception: {}", loggable_http_error(&e));
-            return Reply::failed(status);
-          }
-        },
-      };
-      let loggable = || if req.credentials { "<hidden>".to_string() } else { String::from_utf8_lossy(&content[..content.len().min(2000)]).into_owned() };
-      tracing::debug!("Matrix Response: code={}, {}", status, loggable());
-      let Ok(body) = serde_json::from_slice::<Value>(&content) else {
-        tracing::warn!("Invalid response from Matrix server.");
-        tracing::debug!("Response Details:\r\n{}", loggable());
-        return Reply::failed(status);
-      };
+      },
+      None => match response.bytes().await {
+        Ok(c) => c.to_vec(),
+        Err(e) => {
+          tracing::warn!("A Connection error occurred while registering with Matrix server.");
+          tracing::debug!("Socket Exception: {}", loggable_http_error(&e));
+          return Reply::failed(status);
+        }
+      },
+    };
+    let loggable = || if req.credentials { "<hidden>".to_string() } else { String::from_utf8_lossy(&content[..content.len().min(2000)]).into_owned() };
+    tracing::debug!("Matrix Response: code={}, {}", status, loggable());
+    let Ok(body) = serde_json::from_slice::<Value>(&content) else {
+      tracing::warn!("Invalid response from Matrix server.");
+      tracing::debug!("Response Details:\r\n{}", loggable());
+      return Reply::failed(status);
+    };
 
-      if status == 429 {
-        let retry_after = body.get("retry_after_ms").or_else(|| body.get("error").and_then(|e| e.get("retry_after_ms")));
-        let mut wait_ms = retry_after.and_then(Value::as_f64).unwrap_or(DEFAULT_WAIT_MS).max(0.0);
-        if let Some(deadline) = deadline {
-          // Every 429 of this request draws from one wait budget.
-          let remaining = deadline.saturating_duration_since(Instant::now());
-          if remaining.is_zero() {
-            tracing::warn!("Matrix server requested we throttle back, but our retry budget is exhausted; giving up.");
-            return Reply { ok: false, body, status };
-          }
-          wait_ms = wait_ms.min(remaining.as_secs_f64() * 1000.0);
-        }
-        tracing::warn!("Matrix server requested we throttle back {}ms; retries left {}.", wait_ms, retries);
-        throttle_for(Some(Duration::from_secs_f64(wait_ms / 1000.0))).await;
-        if deadline.is_some_and(|d| Instant::now() >= d) {
+    if status == 429 {
+      let retry_after = body.get("retry_after_ms").or_else(|| body.get("error").and_then(|e| e.get("retry_after_ms")));
+      let mut wait_ms = retry_after.and_then(Value::as_f64).unwrap_or(DEFAULT_WAIT_MS).max(0.0);
+      if let Some(deadline) = deadline {
+        // Every 429 of this request draws from one wait budget.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+          tracing::warn!("Matrix server requested we throttle back, but our retry budget is exhausted; giving up.");
           return Reply { ok: false, body, status };
         }
-        continue;
+        wait_ms = wait_ms.min(remaining.as_secs_f64() * 1000.0);
       }
-      if !matches!(status, 200 | 202) {
-        if req.ok_status.contains(&status) {
-          return Reply { ok: false, body, status };
-        }
-        let reason = status_message(status);
-        tracing::warn!("Failed to handshake with Matrix server: {}{}error={}.", reason, if reason.is_empty() { "" } else { ", " }, status);
-        tracing::debug!("Response Details:\r\n{}", loggable());
+      tracing::warn!("Matrix server requested we throttle back {}ms; retries left {}.", wait_ms, retries);
+      throttle_for(Some(Duration::from_secs_f64(wait_ms / 1000.0))).await;
+      if deadline.is_some_and(|d| Instant::now() >= d) {
         return Reply { ok: false, body, status };
       }
-      return Reply { ok: true, body, status };
+      continue;
     }
-    Reply::failed(status)
+    if !matches!(status, 200 | 202) {
+      if req.ok_status.contains(&status) {
+        return Reply { ok: false, body, status };
+      }
+      let reason = status_message(status);
+      tracing::warn!("Failed to handshake with Matrix server: {}{}error={}.", reason, if reason.is_empty() { "" } else { ", " }, status);
+      tracing::debug!("Response Details:\r\n{}", loggable());
+      return Reply { ok: false, body, status };
+    }
+    return Reply { ok: true, body, status };
   }
+  Reply::failed(status)
 }
 
 #[async_trait]
@@ -1647,5 +1786,15 @@ impl Notify for Matrix {
     }
     let mut session = self.session.lock().await;
     Ok(Run { m: self, s: &mut session, ctx }.send().await)
+  }
+
+  /// Log out of a login the store does not keep (upstream `__del__`).
+  async fn close(&self) {
+    // Held throughout, so no send uses the token while it is given back.
+    let mut session = self.session.lock().await;
+    let Some(logout) = self.logout_due(&session) else { return };
+    if logout.run().await {
+      session.forget_login();
+    }
   }
 }

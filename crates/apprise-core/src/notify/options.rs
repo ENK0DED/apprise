@@ -275,6 +275,9 @@ impl Notify for ConfiguredService {
   fn throttle_clock(&self) -> Option<ThrottleClock> {
     Some(self.inner.throttle_clock().unwrap_or_else(|| self.clock.clone()))
   }
+  async fn close(&self) {
+    self.inner.close().await
+  }
 }
 
 #[cfg(test)]
@@ -286,6 +289,9 @@ mod tests {
   /// [`assert_forwards`]; the test then fails until `ConfiguredService`
   /// forwards it.
   struct EveryOverride;
+
+  /// How often [`EveryOverride::close`] ran.
+  static EVERY_OVERRIDE_CLOSED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
   #[async_trait]
   impl Notify for EveryOverride {
@@ -359,6 +365,9 @@ mod tests {
     fn bypass_overflow(&self) -> bool {
       true
     }
+    async fn close(&self) {
+      EVERY_OVERRIDE_CLOSED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
   }
 
   /// Every overridable method of `wrapped` must return what `direct` returns.
@@ -396,6 +405,9 @@ mod tests {
     assert!(EveryOverride.service_options().is_none());
     let result = tokio_test::block_on(wrapped.send(&NotifyContext::default()));
     assert!(!result.unwrap());
+    // `close()` returns nothing to compare; it must reach the plugin.
+    tokio_test::block_on(wrapped.close());
+    assert_eq!(EVERY_OVERRIDE_CLOSED.load(std::sync::atomic::Ordering::SeqCst), 1);
   }
 
   #[test]

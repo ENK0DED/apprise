@@ -1174,6 +1174,12 @@ pub(crate) async fn with_store_slot<F: std::future::Future>(slot: StoreSlot, fut
   SERVICE_STORE.scope(slot, fut).await
 }
 
+/// The store of the service currently being sent, to reach it again later
+/// with [`with_store_slot`] (a clean-up made after the send).
+pub(crate) fn current_store_slot() -> Option<StoreSlot> {
+  SERVICE_STORE.try_with(StoreSlot::clone).ok()
+}
+
 /// Run `f` on the persistent store of the service currently being sent.
 ///
 /// The store is created on first use, in the namespace named after the

@@ -539,6 +539,22 @@ impl Apprise {
     opts
   }
 
+  /// Let every loaded service give back what it holds on the remote end,
+  /// as upstream does when its plugin objects are destroyed: Matrix logs
+  /// out of a password login (or registration) when its store keeps
+  /// nothing for the next run (memory mode, `?store=no`, or no storage
+  /// path). Call it once the instance is no longer needed, before
+  /// exiting. The services stay usable; a later send starts over (a new
+  /// Matrix login).
+  ///
+  /// Without it, a dropped Matrix service still tries to log out on the
+  /// tokio runtime it is dropped on, if any, but nothing waits for that
+  /// request, so it is lost when the runtime or the process ends first.
+  pub async fn close(&self) {
+    let services: Vec<Arc<dyn Notify>> = self.services().collect();
+    dispatch::close(&services, &self.dispatch_options()).await;
+  }
+
   /// Write the services' pending persistent storage to disk. Stores also
   /// flush when the instance is dropped; call this before exiting the
   /// process without unwinding.
