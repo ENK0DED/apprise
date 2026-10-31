@@ -131,9 +131,14 @@ impl GoAlert {
   fn payload(&self, ctx: &NotifyContext) -> Value {
     // Work out whether we raise or close the alert
     let close = self.action == "close" || (self.action == "map" && ctx.notify_type == NotifyType::Success);
+    // The summary is plain text sent by SMS and voice. A body with no input
+    // format has no escapes Apprise added, so it is used as written.
+    let summary = match ctx.body_passthrough {
+      true if ctx.title.is_empty() => ctx.body.chars().take(SUMMARY_MAXLEN).collect(),
+      _ => incident::plain_title(&ctx.title, &ctx.body, SUMMARY_MAXLEN),
+    };
     let mut payload = json!({
-      // The summary is plain text sent by SMS and voice
-      "summary": incident::plain_title(&ctx.title, &ctx.body, SUMMARY_MAXLEN),
+      "summary": summary,
       "details": ctx.body,
     });
     if close {
@@ -323,6 +328,27 @@ mod tests {
     let mut a = crate::Apprise::new();
     assert!(a.add(&format!("goalert://{}/go%20alert/sub/{}/{KEY1}?dedup=disk&+env=prod", authority(&server), KEY2.to_uppercase())));
     assert!(a.notify(&ctx("", "50% done_now *", NotifyType::Success)).await.is_success());
+  }
+
+  #[tokio::test]
+  async fn test_summary_from_a_passthrough_body_keeps_its_backslashes() {
+    // Matches upstream's notify(body_format=None), then body_format="markdown"
+    let body = r"Usage at **95%** on \_db01\_ <i> & more";
+    for (passthrough, format, summary) in [(true, NotifyFormat::Text, body), (false, NotifyFormat::Markdown, r"Usage at **95%** on _db01_ <i> & more")] {
+      let server = MockServer::start().await;
+      Mock::given(method("POST"))
+        .and(path("/api/v2/generic/incoming"))
+        .and(header("authorization", format!("Bearer {KEY1}")))
+        .and(body_json(json!({"summary": summary, "details": body})))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+      let mut a = crate::Apprise::new();
+      assert!(a.add(&format!("goalert://{}/{KEY1}", authority(&server))));
+      let c = NotifyContext { body_passthrough: passthrough, body_format: format, ..ctx("", body, NotifyType::Info) };
+      assert!(a.notify(&c).await.is_success(), "passthrough={passthrough}");
+    }
   }
 
   #[test]

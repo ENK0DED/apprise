@@ -130,9 +130,14 @@ impl Squadcast {
       None => incident::title_key(&ctx.title, &ctx.body),
     };
 
+    // The message is the plain text incident title. A body with no input
+    // format has no escapes Apprise added, so it is used as written.
+    let message = match ctx.body_passthrough {
+      true if ctx.title.is_empty() => ctx.body.chars().take(MESSAGE_MAXLEN).collect(),
+      _ => incident::plain_title(&ctx.title, &ctx.body, MESSAGE_MAXLEN),
+    };
     let mut payload = json!({
-      // The message is the plain text incident title
-      "message": incident::plain_title(&ctx.title, &ctx.body, MESSAGE_MAXLEN),
+      "message": message,
       "description": ctx.body,
       "status": if resolve { "resolve" } else { "trigger" },
       "event_id": event_id,
@@ -289,6 +294,26 @@ mod tests {
     let mut a = crate::Apprise::new();
     assert!(a.add(&format!("squadcast://{KEY}?priority=3&+severity=high")));
     assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("", "Server_1 is *down*", NotifyType::Info))).await.is_success());
+  }
+
+  #[tokio::test]
+  async fn test_message_from_a_passthrough_body_keeps_its_backslashes() {
+    // Matches upstream's notify(body_format=None), then body_format="markdown"
+    let body = r"Usage at **95%** on \_db01\_ <i> & more";
+    for (passthrough, format, message) in [(true, NotifyFormat::Text, body), (false, NotifyFormat::Markdown, r"Usage at **95%** on _db01_ <i> & more")] {
+      let server = MockServer::start().await;
+      Mock::given(method("POST"))
+        .and(path(format!("/v2/incidents/api/{KEY}")))
+        .and(body_json(json!({"message": message, "description": body, "status": "trigger", "event_id": "k"})))
+        .respond_with(ResponseTemplate::new(202))
+        .expect(1)
+        .mount(&server)
+        .await;
+      let mut a = crate::Apprise::new();
+      assert!(a.add(&format!("squadcast://{KEY}?dedup=k")));
+      let c = NotifyContext { body_passthrough: passthrough, body_format: format, ..ctx("", body, NotifyType::Info) };
+      assert!(crate::notify::with_test_base(server.uri(), a.notify(&c)).await.is_success(), "passthrough={passthrough}");
+    }
   }
 
   #[tokio::test]

@@ -119,11 +119,16 @@ impl ILert {
       None => incident::title_key(&ctx.title, &ctx.body),
     };
 
+    // The summary is the plain text alert title. A body with no input
+    // format has no escapes Apprise added, so it is used as written.
+    let summary = match ctx.body_passthrough {
+      true if ctx.title.is_empty() => ctx.body.chars().take(SUMMARY_MAXLEN).collect(),
+      _ => incident::plain_title(&ctx.title, &ctx.body, SUMMARY_MAXLEN),
+    };
     let mut payload = json!({
       "integrationKey": self.key,
       "eventType": event_type,
-      // The summary is the plain text alert title
-      "summary": incident::plain_title(&ctx.title, &ctx.body, SUMMARY_MAXLEN),
+      "summary": summary,
       "details": ctx.body,
       "alertKey": alert_key,
     });
@@ -298,6 +303,34 @@ mod tests {
     assert!(a.add(&format!("ilert://{KEY}?priority=h&route=ops&click=https://example.com&+env=prod")));
     let result = crate::notify::with_test_base(server.uri(), a.notify(&ctx("", "Server_1 is *down*", NotifyType::Failure))).await;
     assert!(result.is_success());
+  }
+
+  #[tokio::test]
+  async fn test_summary_from_a_passthrough_body_keeps_its_backslashes() {
+    // Matches upstream's notify(body_format=None), then body_format="markdown"
+    let body = r"Usage at **95%** on \_db01\_ <i> & more";
+    let info_image = FAILURE_IMAGE.replace("failure", "info");
+    for (passthrough, format, summary) in [(true, NotifyFormat::Text, body), (false, NotifyFormat::Markdown, r"Usage at **95%** on _db01_ <i> & more")] {
+      let server = MockServer::start().await;
+      Mock::given(method("POST"))
+        .and(path("/api/events"))
+        .and(body_json(json!({
+          "integrationKey": KEY,
+          "eventType": "ALERT",
+          "summary": summary,
+          "details": body,
+          "alertKey": "k",
+          "images": [{"src": info_image, "alt": "info"}],
+        })))
+        .respond_with(ResponseTemplate::new(202))
+        .expect(1)
+        .mount(&server)
+        .await;
+      let mut a = crate::Apprise::new();
+      assert!(a.add(&format!("ilert://{KEY}?dedup=k")));
+      let c = NotifyContext { body_passthrough: passthrough, body_format: format, ..ctx("", body, NotifyType::Info) };
+      assert!(crate::notify::with_test_base(server.uri(), a.notify(&c)).await.is_success(), "passthrough={passthrough}");
+    }
   }
 
   #[test]
