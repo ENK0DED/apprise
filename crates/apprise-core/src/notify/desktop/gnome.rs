@@ -38,7 +38,7 @@ impl Gnome {
   fn notification(&self, ctx: &NotifyContext) -> bus::Notification {
     let mut hints = vec![("urgency", Hint::Byte(self.urgency))];
     if self.include_image
-      && let Some(image) = bus::icon(&ctx.notify_type)
+      && let Some(image) = bus::icon(ctx)
     {
       hints.push(("image-data", Hint::Image(image)));
     }
@@ -116,5 +116,15 @@ mod tests {
 
     let n = parse("gnome://?image=no").notification(&ctx);
     assert_eq!(n.hints.len(), 2);
+  }
+
+  #[test]
+  fn test_custom_asset_icon() {
+    // Upstream loads the asset's image_path(notify_type, extension=".ico")
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("info.png"), bus::asset_icon_tests::png_file(3, 2)).unwrap();
+    let asset = crate::asset::AppriseAsset { image_path_mask: Some(format!("{}/{{TYPE}}.png", dir.path().display())), ..Default::default() };
+    let n = parse("gnome://").notification(&NotifyContext { body: "B".into(), asset, ..Default::default() });
+    assert!(matches!(&n.hints[1], ("image-data", Hint::Image(i)) if (i.width, i.height) == (3, 2)), "{:?}", n.hints[1]);
   }
 }
