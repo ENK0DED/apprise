@@ -77,6 +77,7 @@ pub mod irc;
 pub mod jellyfin;
 pub mod jira;
 pub mod join;
+pub mod kakaotalk;
 pub mod kaleyra;
 pub mod kavenegar;
 pub mod kodi;

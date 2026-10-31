@@ -98,6 +98,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(custom_json::Json::static_details());
   collect!(custom_form::Form::static_details());
   collect!(custom_xml::Xml::static_details());
+  collect!(kakaotalk::KakaoTalk::static_details());
   collect!(kaleyra::Kaleyra::static_details());
   collect!(kavenegar::Kavenegar::static_details());
   collect!(kodi::Kodi::static_details());
@@ -299,6 +300,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(custom_json::Json::from_url, "json", "jsons");
   reg!(custom_form::Form::from_url, "form", "forms");
   reg!(custom_xml::Xml::from_url, "xml", "xmls");
+  reg!(kakaotalk::KakaoTalk::from_url, "kakaotalk", "kakao");
   reg!(kaleyra::Kaleyra::from_url, "kaleyra", "klr");
   reg!(kavenegar::Kavenegar::from_url, "kavenegar");
   reg!(kodi::Kodi::from_url, "kodi", "xbmc", "kodis", "xbmcs");
