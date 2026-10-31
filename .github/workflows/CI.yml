@@ -34,6 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The man page is dated by the last commit of its source
+          fetch-depth: 0
       - name: Setup bun
         uses: oven-sh/setup-bun@v2
       - name: Install
@@ -48,6 +51,11 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets
+      - name: Man page matches its source
+        working-directory: .
+        run: |
+          sh packaging/man/build.sh
+          git diff --exit-code -- packaging/man
 
   test:
     name: Rust tests
@@ -76,6 +84,55 @@ jobs:
         run: cargo test --workspace --exclude apprise-napi
       - name: Test (no default features)
         run: cargo test -p apprise-core --no-default-features
+      - name: Test (desktop and blink(1))
+        run: cargo test -p apprise-core --features desktop,blink1
+
+  windows:
+    name: CLI on Windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: .
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: windows-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-cargo-
+      - name: Build (desktop)
+        run: cargo build -p apprise-cli --features desktop
+      - name: Clippy (desktop)
+        run: cargo clippy -p apprise-core -p apprise-cli --all-targets --features desktop
+      - name: Test the desktop plugins
+        run: cargo test -p apprise-core --features desktop --lib notify::desktop
+      - name: Run
+        run: target/debug/apprise.exe --version
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build
+        run: docker build -t apprise:ci .
+      - name: Run
+        run: docker run --rm apprise:ci --version
 
   build:
     strategy:
@@ -284,6 +341,18 @@ jobs:
       - name: List packages
         run: ls -R ./npm
         shell: bash
+      - name: Check package contents
+        shell: bash
+        run: |
+          npm pack --dry-run --json | node -e "
+            const files = JSON.parse(require('fs').readFileSync(0))[0].files.map((f) => f.path);
+            const missing = ['index.js', 'index.d.ts'].filter((f) => !files.includes(f));
+            if (missing.length) { console.error('missing from the package: ' + missing); process.exit(1); }"
+          for dir in npm/*/; do
+            (cd "$dir" && npm pack --dry-run --json | node -e "
+              const pkg = JSON.parse(require('fs').readFileSync(0))[0];
+              if (!pkg.files.some((f) => f.path.endsWith('.node'))) { console.error(pkg.name + ' has no binary'); process.exit(1); }")
+          done
       - name: Publish
         run: |
           if git log -1 --pretty=%B | grep "^v\?[0-9]\+\.[0-9]\+\.[0-9]\+$";
