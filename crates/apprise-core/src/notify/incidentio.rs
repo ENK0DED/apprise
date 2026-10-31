@@ -105,9 +105,14 @@ impl IncidentIO {
       None => incident::title_key(&ctx.title, &ctx.body),
     };
 
+    // A title is required and is plain text. A body with no input format
+    // has no escapes Apprise added, so it is used as written.
+    let title = match ctx.body_passthrough {
+      true if ctx.title.is_empty() => ctx.body.chars().take(TITLE_MAXLEN).collect(),
+      _ => incident::plain_title(&ctx.title, &ctx.body, TITLE_MAXLEN),
+    };
     let mut payload = json!({
-      // A title is required and is plain text
-      "title": incident::plain_title(&ctx.title, &ctx.body, TITLE_MAXLEN),
+      "title": title,
       "description": ctx.body,
       "status": if resolve { "resolved" } else { "firing" },
       "deduplication_key": dedup,
@@ -260,6 +265,21 @@ mod tests {
     let mut a = crate::Apprise::new();
     assert!(a.add(&format!("incidentio://{SOURCE}/secret?click=https://x&+service=web")));
     assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("", "Server_1 is *down*", NotifyType::Success))).await.is_success());
+  }
+
+  #[test]
+  fn test_title_from_a_passthrough_body_keeps_its_backslashes() {
+    // Matches pycapture.py without --input-format, then with markdown
+    let obj = incidentio(&format!("incidentio://{SOURCE}/secret?dedup=k"));
+    let body = r"Usage at **95%** on \_db01\_ <i>";
+    let passthrough = NotifyContext { body_passthrough: true, ..ctx("", body, NotifyType::Info) };
+    let payload = obj.payload(&passthrough);
+    assert_eq!((payload["title"].as_str(), payload["description"].as_str()), (Some(body), Some(body)));
+    let markdown = NotifyContext { body_format: NotifyFormat::Markdown, ..ctx("", body, NotifyType::Info) };
+    assert_eq!(obj.payload(&markdown)["title"], r"Usage at **95%** on _db01_ <i>");
+    // A passthrough title is still cut to the title limit
+    let long = NotifyContext { body: "x".repeat(300), ..passthrough };
+    assert_eq!(obj.payload(&long)["title"].as_str().map(str::len), Some(TITLE_MAXLEN));
   }
 
   #[tokio::test]

@@ -6,7 +6,8 @@
 //! 1. Pick the format this send renders as (`?format=`, the plugin's
 //!    declared formats and the input format).
 //! 2. Interpret backslash escapes and `:emoji:` shortcodes (`?emojis=`).
-//! 3. Convert the body (and a title blended into the body) to that format.
+//! 3. Convert the body (and a title blended into the body) to that format,
+//!    unless the caller gave no input format (`body_passthrough`).
 //! 4. Fold the title into the body when the service has no title field,
 //!    apply `body_max_line_count`, then the title and body limits with the
 //!    `upstream`, `truncate` or `split` overflow mode (`?overflow=`).
@@ -70,8 +71,9 @@ fn tidy_chunk(chunk: &str) -> String {
   pystr::rstrip(pystr::lstrip_chars(chunk, "\r\n\x0b\x0c")).to_string()
 }
 
-/// Upstream `resolve_format`: the format this send renders as.
-fn resolve_format(svc: &dyn Notify, input: &NotifyFormat) -> NotifyFormat {
+/// Upstream `resolve_format`: the format this send renders as. `input` is
+/// the caller's input format, `None` when it gave none.
+fn resolve_format(svc: &dyn Notify, input: Option<&NotifyFormat>) -> NotifyFormat {
   let requested = if svc.notify_format_overridable() { svc.service_options().and_then(|o| o.format.clone()) } else { None };
   let mut formats = svc.notify_formats();
   if formats.is_empty() {
@@ -87,7 +89,9 @@ fn resolve_format(svc: &dyn Notify, input: &NotifyFormat) -> NotifyFormat {
     }
     tracing::debug!("{} does not support format {}; ignoring override.", svc.service_name(), r);
   }
-  if formats.contains(input) {
+  if let Some(input) = input
+    && formats.contains(input)
+  {
     return input.clone();
   }
   formats.remove(0)
@@ -100,7 +104,9 @@ fn resolve_format(svc: &dyn Notify, input: &NotifyFormat) -> NotifyFormat {
 /// service that cannot send them. Upstream fails the service in both cases.
 pub(crate) fn prepare_contexts(svc: &dyn Notify, ctx: &NotifyContext) -> Result<Vec<NotifyContext>, NotifyError> {
   let opts = svc.service_options();
-  let target = resolve_format(svc, &ctx.body_format);
+  // Content with no declared format passes through unconverted.
+  let passthrough = ctx.body_passthrough;
+  let target = resolve_format(svc, (!passthrough).then_some(&ctx.body_format));
   let emojis = opts.and_then(|o| o.emojis).unwrap_or(ctx.interpret_emojis);
 
   let mut title = ctx.title.clone();
@@ -116,11 +122,13 @@ pub(crate) fn prepare_contexts(svc: &dyn Notify, ctx: &NotifyContext) -> Result<
     title = interpret_emojis(&title);
   }
 
-  // A title is only converted when it is blended into the body.
-  if !title.is_empty() && svc.title_maxlen() == 0 {
-    title = convert_between(&ctx.body_format, &target, &title);
+  if !passthrough {
+    // A title is only converted when it is blended into the body.
+    if !title.is_empty() && svc.title_maxlen() == 0 {
+      title = convert_between(&ctx.body_format, &target, &title);
+    }
+    body = convert_between(&ctx.body_format, &target, &body);
   }
-  body = convert_between(&ctx.body_format, &target, &body);
 
   if svc.bypass_overflow() {
     // The plugin takes the converted message whole (upstream plugins that
@@ -145,9 +153,9 @@ pub(crate) fn prepare_contexts(svc: &dyn Notify, ctx: &NotifyContext) -> Result<
 
   // Some plugins size the limit by content (upstream Matrix).
   let body_maxlen = svc.body_maxlen_for(&title, &body, &target);
-  let pieces: Vec<Piece> = apply_overflow(svc, &body, &title, overflow, &target, body_maxlen)
+  let pieces: Vec<Piece> = apply_overflow(svc, &body, &title, overflow, &target, passthrough, body_maxlen)
     .into_iter()
-    .flat_map(|p| apply_dialect_overflow(svc, p, overflow, &target, body_maxlen))
+    .flat_map(|p| if passthrough { vec![p] } else { apply_dialect_overflow(svc, p, overflow, &target, body_maxlen) })
     .collect();
 
   // Truncate mode keeps only the first attachment, and only one piece
@@ -171,8 +179,18 @@ pub(crate) fn prepare_contexts(svc: &dyn Notify, ctx: &NotifyContext) -> Result<
   )
 }
 
-/// Upstream `_apply_overflow`: title blending, line count, limits and overflow.
-fn apply_overflow(svc: &dyn Notify, body: &str, title: &str, overflow: OverflowMode, body_format: &NotifyFormat, body_maxlen: usize) -> Vec<Piece> {
+/// Upstream `_apply_overflow`: title blending, line count, limits and
+/// overflow. `passthrough` content is not treated as Markdown even when
+/// the service renders Markdown: no heading, no CommonMark repair.
+fn apply_overflow(
+  svc: &dyn Notify,
+  body: &str,
+  title: &str,
+  overflow: OverflowMode,
+  body_format: &NotifyFormat,
+  passthrough: bool,
+  body_maxlen: usize,
+) -> Vec<Piece> {
   let mut title = pystr::strip(title).to_string();
   let mut body = pystr::rstrip(body).to_string();
   let svc_title_maxlen = svc.title_maxlen() as i64;
@@ -185,13 +203,13 @@ fn apply_overflow(svc: &dyn Notify, body: &str, title: &str, overflow: OverflowM
       NotifyFormat::Html => {
         body = format!("<{tag}>{title}</{tag}><br />\r\n{body}", tag = DEFAULT_HTML_TAG_ID);
       }
-      NotifyFormat::Markdown => {
+      NotifyFormat::Markdown if !passthrough => {
         let heading = pystr::lstrip_chars(&title, "\r\n \t\x0b\x0c#-");
         if !heading.is_empty() {
           body = format!("# {heading}\n{body}");
         }
       }
-      NotifyFormat::Text => body = format!("{title}\r\n{body}"),
+      NotifyFormat::Markdown | NotifyFormat::Text => body = format!("{title}\r\n{body}"),
     }
     title.clear();
   }
@@ -234,7 +252,7 @@ fn apply_overflow(svc: &dyn Notify, body: &str, title: &str, overflow: OverflowM
     return vec![Piece { title, body, repeat_title: false }];
   }
 
-  let markdown = *body_format == NotifyFormat::Markdown;
+  let markdown = *body_format == NotifyFormat::Markdown && !passthrough;
 
   if overflow == OverflowMode::Truncate {
     let mut truncated = pystr::rstrip(pystr::lstrip_chars(&head(&body, body_maxlen), "\r\n\x0b\x0c")).to_string();

@@ -81,7 +81,10 @@ export interface SendOptions {
   title?: string
   /** Notification type: "info", "success", "warning", "failure". */
   notificationType?: string
-  /** Body format: "text", "html", "markdown". */
+  /**
+   * Body format: "text", "html", "markdown". Without one the body is sent
+   * as written, unless the configuration's asset sets a format.
+   */
   bodyFormat?: string
   /**
    * One tag filter group: its comma-separated tags must all match (like one

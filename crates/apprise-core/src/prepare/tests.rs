@@ -118,7 +118,8 @@ fn run_cases(data: &str) -> (usize, Vec<String>) {
   let mut failures = Vec::new();
   for case in &cases {
     let calls = case["calls"].as_array().unwrap();
-    let input = fmt(&case["input_format"]).unwrap();
+    // No input format: the body passes through
+    let input = fmt(&case["input_format"]);
     let probe = Probe {
       body_maxlen: case["body_maxlen"].as_u64().unwrap() as usize,
       title_maxlen: case["title_maxlen"].as_u64().unwrap() as usize,
@@ -131,7 +132,8 @@ fn run_cases(data: &str) -> (usize, Vec<String>) {
     };
     let options = ServiceOptions { format: fmt(&case["format"]), overflow: mode(&case["overflow"]), emojis: case["emojis"].as_bool(), ..Default::default() };
     let svc = wrap(probe, options);
-    let mut c = ctx(case["title"].as_str().unwrap(), case["body"].as_str().unwrap(), input);
+    let mut c = ctx(case["title"].as_str().unwrap(), case["body"].as_str().unwrap(), input.clone().unwrap_or(NotifyFormat::Text));
+    c.body_passthrough = input.is_none();
     c.interpret_escapes = case["interpret_escapes"].as_bool().unwrap();
     c.interpret_emojis = case["asset_emojis"].as_bool().unwrap_or(false);
     let got: Vec<Value> = match prepare_contexts(&svc, &c) {
@@ -163,6 +165,13 @@ fn report(passed: usize, failures: &[String]) {
 #[test]
 fn test_upstream_prepare_vectors() {
   let (passed, failures) = run_cases(include_str!("testdata/prepare.json"));
+  assert!(passed > 100, "too few cases ran: {passed}");
+  report(passed, &failures);
+}
+
+#[test]
+fn test_upstream_passthrough_vectors() {
+  let (passed, failures) = run_cases(include_str!("testdata/passthrough.json"));
   assert!(passed > 100, "too few cases ran: {passed}");
   report(passed, &failures);
 }

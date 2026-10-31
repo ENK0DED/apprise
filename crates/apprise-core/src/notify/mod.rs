@@ -239,6 +239,13 @@ pub struct NotifyContext {
   pub title: String,
   pub notify_type: NotifyType,
   pub body_format: NotifyFormat,
+  /// The caller gives no input format (upstream `notify(body_format=None)`):
+  /// the title and body are sent as written, with no format conversion,
+  /// and `body_format` is not read as their format. [`Apprise`](crate::Apprise)
+  /// uses the asset's `body_format` instead when it sets one. Prepared
+  /// contexts keep the flag, so plugins can tell such content from
+  /// declared input (upstream's `body_passthrough` argument).
+  pub body_passthrough: bool,
   pub attachments: Vec<Attachment>,
   pub interpret_escapes: bool,
   pub interpret_emojis: bool,
@@ -253,6 +260,7 @@ impl Default for NotifyContext {
       title: String::new(),
       notify_type: NotifyType::Info,
       body_format: NotifyFormat::Text,
+      body_passthrough: false,
       attachments: Vec::new(),
       interpret_escapes: false,
       interpret_emojis: false,

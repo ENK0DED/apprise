@@ -54,6 +54,8 @@ pub struct AppriseApi {
   headers: Vec<(String, String)>,
   /// `?tags=`: tags the remote server notifies.
   relay_tags: Vec<String>,
+  /// `?format=`, relayed for content with no input format.
+  format: Option<NotifyFormat>,
   verify_certificate: bool,
   /// `?tag=`: this service's own tags. `?tags=` belongs to the relay.
   tags: Vec<String>,
@@ -105,6 +107,7 @@ impl AppriseApi {
       version,
       headers: custom_args(url, '+'),
       relay_tags: url.get("tags").map(parse_list).unwrap_or_default(),
+      format: url.get("format").and_then(|f| f.parse().ok()),
       verify_certificate: url.verify_certificate(),
       tags: url.tags(),
     })
@@ -129,11 +132,17 @@ impl AppriseApi {
     format!("{}://{}{}{}/notify{}", schema, self.host, port_str, path, token)
   }
 
-  /// The payload fields shared by both methods. The body is relayed in the
-  /// format it arrived in; the remote server converts it for its targets.
+  /// The format the payload names. The body is relayed in the format it
+  /// arrived in; the remote server converts it for its targets. Content
+  /// with no input format names only the URL's `?format=`, if any.
+  fn relayed_format(&self, ctx: &NotifyContext) -> Option<&'static str> {
+    if ctx.body_passthrough { self.format.as_ref().map(NotifyFormat::as_str) } else { Some(ctx.body_format.as_str()) }
+  }
+
+  /// The payload fields shared by both methods.
   fn fields(&self, ctx: &NotifyContext) -> Vec<(&'static str, String)> {
     let mut fields = vec![("title", ctx.title.clone()), ("body", ctx.body.clone()), ("type", ctx.notify_type.as_str().to_string())];
-    fields.push(("format", ctx.body_format.as_str().to_string()));
+    fields.extend(self.relayed_format(ctx).map(|f| ("format", f.to_string())));
     fields.extend(self.relay_tags.iter().map(|t| ("tag", t.clone())));
     fields
   }
@@ -143,8 +152,10 @@ impl AppriseApi {
       "title": ctx.title,
       "body": ctx.body,
       "type": ctx.notify_type.as_str(),
-      "format": ctx.body_format.as_str(),
     });
+    if let Some(format) = self.relayed_format(ctx) {
+      payload["format"] = json!(format);
+    }
     if !self.relay_tags.is_empty() {
       payload["tag"] = json!(self.relay_tags);
     }
@@ -467,6 +478,36 @@ mod tests {
       let body: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
       assert_eq!((body["body"].as_str(), body["format"].as_str()), (Some("**b**"), Some("markdown")), "{}", url);
     }
+  }
+
+  #[tokio::test]
+  async fn test_passthrough_relays_only_the_url_format() {
+    // Matches pycapture.py with and without --input-format
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/notify")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let passthrough = NotifyContext { body_passthrough: true, ..ctx("t", "**b** <i>") };
+    let markdown = NotifyContext { body_format: NotifyFormat::Markdown, ..ctx("t", "**b** <i>") };
+    let base = format!("apprise://localhost:{}/tok?method=json", server.address().port());
+    let cases = [
+      ("", &passthrough, None),
+      ("&format=html", &passthrough, Some("html")),
+      ("", &markdown, Some("markdown")),
+      ("&format=html", &ctx("t", "**b** <i>"), Some("text")),
+    ];
+    for (suffix, c, format) in cases {
+      let mut apprise = crate::Apprise::new();
+      assert!(apprise.add(&format!("{base}{suffix}")));
+      assert!(apprise.notify(c).await.is_success());
+      let requests = requests_to(&server, "POST", "/notify").await;
+      let body: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+      assert_eq!((body["body"].as_str(), body.get("format").and_then(Value::as_str)), (Some("**b** <i>"), format), "{suffix} {:?}", c.body_format);
+    }
+    // The form method leaves the field out too
+    let a = api(&format!("apprise://localhost:{}/tok", server.address().port()));
+    assert!(a.send(&passthrough).await.unwrap());
+    let requests = requests_to(&server, "POST", "/notify").await;
+    let got: Vec<(String, String)> = url::form_urlencoded::parse(&requests.last().unwrap().body).into_owned().collect();
+    assert_eq!(got, [("title", "t"), ("body", "**b** <i>"), ("type", "info")].map(|(k, v)| (k.to_string(), v.to_string())));
   }
 
   #[test]

@@ -465,7 +465,9 @@ impl Apprise {
   /// `ctx.body_format` says what the title and body are written in. Left
   /// at its default (`Text`), the asset's `body_format` applies when it
   /// sets one, so a call can give Markdown or HTML over an asset default
-  /// but not plain text.
+  /// but not plain text. With `ctx.body_passthrough` the call gives no
+  /// format (upstream `notify(body_format=None)`): the asset's applies, and
+  /// without one the content is sent unconverted.
   pub async fn notify(&self, ctx: &NotifyContext) -> SendResult {
     self.dispatch(ctx, &self.dispatch_options(), &self.tag_filter).await
   }
@@ -554,12 +556,14 @@ impl Apprise {
     let mut ctx = ctx.clone();
     ctx.asset = self.asset.clone();
     ctx.interpret_escapes |= self.asset.interpret_escapes;
-    // A call that leaves the input format at its default takes the asset's
-    // (upstream `notify(body_format=None)`).
-    if ctx.body_format == NotifyFormat::Text
+    // A call that gives no input format, or leaves it at its default, takes
+    // the asset's (upstream `notify(body_format=None)`). With neither, a
+    // passthrough body stays unconverted.
+    if (ctx.body_passthrough || ctx.body_format == NotifyFormat::Text)
       && let Some(format) = self.asset.body_format.as_deref().and_then(|f| f.trim().parse::<NotifyFormat>().ok())
     {
       ctx.body_format = format;
+      ctx.body_passthrough = false;
     }
     // Names reach MIME and multipart headers; attachments built by a
     // library caller have not been through the loaders' cleanup.
@@ -792,5 +796,31 @@ mod tests {
     let ctx = NotifyContext { body: "**Hello**".into(), body_format: NotifyFormat::Html, ..Default::default() };
     assert!(a.notify(&ctx).await.is_success());
     assert_eq!(messages(&server).await, vec!["<p><strong>Hello</strong></p>", "**Hello**"]);
+  }
+
+  #[tokio::test]
+  async fn test_passthrough_body_is_sent_unconverted() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/notify")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let passthrough = NotifyContext { body: "**Hello** <i>".into(), body_passthrough: true, ..Default::default() };
+    let text = NotifyContext { body: "**Hello** <i>".into(), ..Default::default() };
+    // Upstream's notify(body_format=None) and notify(body_format="text")
+    for format in ["html", "markdown", "text"] {
+      let mut a = Apprise::new();
+      assert!(a.add(&format!("json://{}/notify?format={format}", server.address())));
+      assert!(a.notify(&passthrough).await.is_success());
+      assert!(a.notify(&text).await.is_success());
+    }
+    let expected = ["**Hello** <i>", "**Hello**&nbsp;&lt;i&gt;", "**Hello** <i>", r"\*\*Hello\*\* <i\>", "**Hello** <i>", "**Hello** <i>"];
+    assert_eq!(messages(&server).await, expected);
+
+    // An asset format applies to a call without one
+    let mut a = Apprise::with_asset(AppriseAsset { body_format: Some("markdown".into()), ..Default::default() });
+    assert!(a.add(&format!("json://{}/notify?format=html", server.address())));
+    assert!(a.notify(&passthrough).await.is_success());
+    assert_eq!(messages(&server).await.last().map(String::as_str), Some("<p><strong>Hello</strong> <i></p>"));
   }
 }
