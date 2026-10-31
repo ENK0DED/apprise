@@ -301,7 +301,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(custom_xml::Xml::from_url, "xml", "xmls");
   reg!(kaleyra::Kaleyra::from_url, "kaleyra", "klr");
   reg!(kavenegar::Kavenegar::from_url, "kavenegar");
-  reg!(kodi::Kodi::from_url, "kodi", "kodis", "xbmc", "xbmcs");
+  reg!(kodi::Kodi::from_url, "kodi", "xbmc", "kodis", "xbmcs");
   reg!(kook::Kook::from_url, "kook");
   reg!(kumulos::Kumulos::from_url, "kumulos");
   reg!(lametric::LaMetric::from_url, "lametric", "lametrics");

@@ -64,7 +64,7 @@ impl Kodi {
       service_name: "Kodi/XBMC",
       service_url: Some("http://kodi.tv/"),
       setup_url: Some("https://appriseit.com/services/kodi/"),
-      protocols: vec!["kodi", "kodis", "xbmc", "xbmcs"],
+      protocols: vec!["kodi", "xbmc", "kodis", "xbmcs"],
       description: "Show notifications on Kodi (or legacy XBMC) through its JSON-RPC API.",
       attachment_support: false,
     }
@@ -103,7 +103,7 @@ impl Kodi {
 #[async_trait]
 impl Notify for Kodi {
   fn schemas(&self) -> &[&str] {
-    &["kodi", "kodis", "xbmc", "xbmcs"]
+    &["kodi", "xbmc", "kodis", "xbmcs"]
   }
   fn service_name(&self) -> &str {
     "Kodi/XBMC"
@@ -267,7 +267,8 @@ mod tests {
     assert!(!svc.attachment_support());
     let details = Kodi::static_details();
     assert_eq!(details.service_name, "Kodi/XBMC");
-    assert_eq!(details.protocols, vec!["kodi", "kodis", "xbmc", "xbmcs"]);
+    // Upstream's order, insecure schemas first, as `--details` prints it
+    assert_eq!(details.protocols, vec!["kodi", "xbmc", "kodis", "xbmcs"]);
   }
 
   #[tokio::test]
