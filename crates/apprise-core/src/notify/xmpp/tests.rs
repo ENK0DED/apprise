@@ -629,3 +629,57 @@ fn test_static_details() {
   assert_eq!(details.protocols, vec!["xmpp", "xmpps"]);
   assert!(!details.attachment_support);
 }
+
+/// SASL payloads stay out of the log: the PLAIN one is the password in
+/// base64. Upstream (slixmpp) logs the stanzas whole at DEBUG.
+#[test]
+fn test_loggable_hides_sasl_payloads() {
+  let auth = format!("<auth xmlns='{}' mechanism='PLAIN'>AG1lAHNlY3JldA==</auth>", NS_SASL);
+  assert_eq!(loggable(&auth), format!("<auth xmlns='{}' mechanism='PLAIN'>[16 bytes]</auth>", NS_SASL));
+  for name in ["response", "challenge", "success"] {
+    let stanza = format!("<{0} xmlns='{1}'>cj1hYmMscD14eXo=</{0}>", name, NS_SASL);
+    assert_eq!(loggable(&stanza), format!("<{0} xmlns='{1}'>[16 bytes]</{0}>", name, NS_SASL));
+  }
+  // An empty response or success has nothing to hide
+  assert_eq!(loggable(&format!("<response xmlns='{}'></response>", NS_SASL)), format!("<response xmlns='{}'>[0 bytes]</response>", NS_SASL));
+  assert_eq!(loggable(&format!("<success xmlns='{}'/>", NS_SASL)), format!("<success xmlns='{}'/>", NS_SASL));
+  // A prefixed or unfinished element is still cut
+  assert_eq!(loggable("<sasl:auth mechanism='PLAIN'>AG1lAHNlY3JldA==</sasl:auth>"), "<sasl:auth mechanism='PLAIN'>[16 bytes]</sasl:auth>");
+  assert_eq!(loggable("<auth mechanism='PLAIN'>AG1lAHNl"), "<auth mechanism='PLAIN'>[8 bytes]</auth>");
+  assert_eq!(loggable("<auth mechanism='PLAIN' AG1lAHNl"), "<auth [31 bytes]");
+  // Everything else is logged as it is
+  for other in ["<message to='a'><body>hi</body></message>", "<authority/>", "<presence/>", "</stream:stream>", "plain text"] {
+    assert_eq!(loggable(other), other);
+  }
+}
+
+/// At trace level, a PLAIN login logs the auth element and its mechanism
+/// but never the payload.
+#[tokio::test]
+async fn test_trace_log_hides_plain_payload() {
+  #[derive(Clone, Default)]
+  struct Buffer(Arc<Mutex<Vec<u8>>>);
+  impl std::io::Write for Buffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+      self.0.lock().unwrap().extend_from_slice(buf);
+      Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+      Ok(())
+    }
+  }
+  let buffer = Buffer::default();
+  let writer = buffer.clone();
+  let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::TRACE).with_ansi(false).with_writer(move || writer.clone()).finish();
+  let _guard = tracing::subscriber::set_default(subscriber);
+
+  let (port, server) = xmpp_server(ServerConfig { mechanisms: vec!["PLAIN"], ..Default::default() }).await;
+  let svc = from_url(&format!("xmpps://me:secret@127.0.0.1:{}/a?verify=no", port)).unwrap();
+  assert!(svc.send(&ctx("", "Body")).await.unwrap());
+  assert_eq!(server.await.unwrap().plain, b"\0me\0secret");
+
+  let logs = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+  assert!(logs.contains(&format!("XMPP SEND: <auth xmlns='{}' mechanism='PLAIN'>[16 bytes]</auth>", NS_SASL)), "{}", logs);
+  assert!(!logs.contains("AG1lAHNlY3JldA=="), "{}", logs);
+  assert!(!logs.contains("secret"), "{}", logs);
+}
