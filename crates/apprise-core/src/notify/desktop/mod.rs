@@ -39,6 +39,29 @@ fn image_png(notify_type: &NotifyType) -> &'static [u8] {
   }
 }
 
+/// Where a notification's icon comes from. Upstream loads
+/// `image_path(notify_type, extension=".ico")` at 128x128: the file the
+/// asset's `image_path_mask` names (only when it exists), or its own default
+/// theme, which the bundled icons stand in for.
+#[cfg_attr(not(any(unix, windows, test)), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq)]
+enum IconSource {
+  File(std::path::PathBuf),
+  Bundled(&'static [u8]),
+}
+
+#[cfg_attr(not(any(unix, windows, test)), allow(dead_code))]
+fn icon_source(ctx: &crate::notify::NotifyContext) -> Option<IconSource> {
+  let asset = &ctx.asset;
+  if asset.image_path_mask.as_deref().is_some_and(|m| !m.is_empty()) {
+    asset.image_path(&ctx.notify_type, crate::asset::NotifyImageSize::Xy128, true, Some(".ico")).map(IconSource::File)
+  } else if asset.theme == "default" {
+    Some(IconSource::Bundled(image_png(&ctx.notify_type)))
+  } else {
+    None
+  }
+}
+
 /// A local copy of the icon (upstream `image_path()`), written to the cache
 /// directory the first time it is needed.
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]

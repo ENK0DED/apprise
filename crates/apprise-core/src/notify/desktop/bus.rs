@@ -4,11 +4,12 @@
 
 use std::borrow::Cow;
 
-use crate::asset::NotifyImageSize;
 use crate::error::NotifyError;
 use crate::notify::NotifyContext;
 
+#[cfg(unix)]
 const DESTINATION: &str = "org.freedesktop.Notifications";
+#[cfg(unix)]
 const PATH: &str = "/org/freedesktop/Notifications";
 
 /// How long dbus:// and glib:// notifications stay up.
@@ -73,20 +74,15 @@ pub(super) fn freedesktop_notification(ctx: &NotifyContext, urgency: u8, positio
 /// A failure is logged and the notification goes out without one, as
 /// upstream does.
 pub(super) fn icon(ctx: &NotifyContext) -> Option<Image> {
-  let asset = &ctx.asset;
-  let (data, source) = if asset.image_path_mask.as_deref().is_some_and(|m| !m.is_empty()) {
-    let path = asset.image_path(&ctx.notify_type, NotifyImageSize::Xy128, true, Some(".ico"))?;
-    match std::fs::read(&path) {
+  let (data, source) = match super::icon_source(ctx)? {
+    super::IconSource::File(path) => match std::fs::read(&path) {
       Ok(data) => (Cow::Owned(data), path.display().to_string()),
       Err(e) => {
         tracing::warn!("Could not load notification icon ({}): {}", path.display(), e);
         return None;
       }
-    }
-  } else if asset.theme == "default" {
-    (Cow::Borrowed(super::image_png(&ctx.notify_type)), ctx.notify_type.as_str().to_string())
-  } else {
-    return None;
+    },
+    super::IconSource::Bundled(data) => (Cow::Borrowed(data), ctx.notify_type.as_str().to_string()),
   };
   decode_image(&data).map_err(|e| tracing::warn!("Could not load notification icon ({}): {}", source, e)).ok()
 }

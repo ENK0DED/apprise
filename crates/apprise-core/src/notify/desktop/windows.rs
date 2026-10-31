@@ -25,6 +25,12 @@ impl Windows {
     Some(Self { include_image: super::include_image(url), duration: Duration::from_secs(duration), tags: url.tags() })
   }
 
+  /// The balloon's icon: the asset's own `.ico` file or the bundled one;
+  /// `None` shows the stock application icon.
+  fn icon(&self, ctx: &NotifyContext) -> Option<super::IconSource> {
+    if self.include_image { super::icon_source(ctx) } else { None }
+  }
+
   pub fn static_details() -> ServiceDetails {
     ServiceDetails {
       service_name: "Windows Notification",
@@ -63,7 +69,7 @@ impl Notify for Windows {
     #[cfg(windows)]
     {
       let (title, body, duration) = (ctx.title.clone(), ctx.body.clone(), self.duration);
-      let icon = self.include_image.then(|| super::image_png(&ctx.notify_type));
+      let icon = self.icon(ctx);
       // The balloon is shown, then taken down again after our duration
       crate::notify::throttle().await;
       let shown = tokio::task::spawn_blocking(move || balloon::show(&title, &body, icon, duration)).await.map_err(|e| NotifyError::Other(e.to_string()))?;
@@ -81,7 +87,7 @@ impl Notify for Windows {
     }
     #[cfg(not(windows))]
     {
-      let _ = (ctx, self.include_image, self.duration);
+      let _ = (self.icon(ctx), self.duration);
       Err(NotifyError::NotSupported)
     }
   }
@@ -95,9 +101,12 @@ mod balloon {
   use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
   use windows_sys::Win32::UI::Shell::{NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW};
   use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateIconFromResourceEx, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, HICON, IDI_APPLICATION, LR_DEFAULTCOLOR, LoadIconW,
-    PostQuitMessage, RegisterClassW, UnregisterClassW, WM_DESTROY, WM_USER, WNDCLASSW, WS_OVERLAPPED, WS_SYSMENU,
+    CW_USEDEFAULT, CreateIconFromResourceEx, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR,
+    LR_DEFAULTSIZE, LR_LOADFROMFILE, LoadIconW, LoadImageW, PostQuitMessage, RegisterClassW, UnregisterClassW, WM_DESTROY, WM_USER, WNDCLASSW, WS_OVERLAPPED,
+    WS_SYSMENU,
   };
+
+  use super::super::IconSource;
 
   const ERROR_CLASS_ALREADY_EXISTS: u32 = 1410;
   const CALLBACK_MESSAGE: u32 = WM_USER + 20;
@@ -128,7 +137,7 @@ mod balloon {
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
   }
 
-  pub(super) fn show(title: &str, body: &str, icon_png: Option<&'static [u8]>, duration: Duration) -> Result<(), String> {
+  pub(super) fn show(title: &str, body: &str, icon: Option<IconSource>, duration: Duration) -> Result<(), String> {
     let class_name = wide("AppriseTaskbar");
     let window_name = wide("Taskbar");
     unsafe {
@@ -163,12 +172,23 @@ mod balloon {
 
       // Our icon, or the stock application icon
       let mut owned: HICON = std::ptr::null_mut();
-      if let Some(png) = icon_png {
-        // Windows reads PNG-compressed icons straight from memory
-        owned = CreateIconFromResourceEx(png.as_ptr(), png.len() as u32, 1, 0x0003_0000, 0, 0, LR_DEFAULTCOLOR);
-        if owned.is_null() {
-          tracing::warn!("Could not load windows notification icon ({})", GetLastError());
+      match &icon {
+        // The asset's own icon file, loaded as upstream loads it
+        Some(IconSource::File(path)) => {
+          let name = wide(&path.to_string_lossy());
+          owned = LoadImageW(std::ptr::null_mut(), name.as_ptr(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE) as HICON;
+          if owned.is_null() {
+            tracing::warn!("Could not load windows notification icon ({}): {}", path.display(), GetLastError());
+          }
         }
+        // Windows reads PNG-compressed icons straight from memory
+        Some(IconSource::Bundled(png)) => {
+          owned = CreateIconFromResourceEx(png.as_ptr(), png.len() as u32, 1, 0x0003_0000, 0, 0, LR_DEFAULTCOLOR);
+          if owned.is_null() {
+            tracing::warn!("Could not load windows notification icon ({})", GetLastError());
+          }
+        }
+        None => {}
       }
       let hicon = if owned.is_null() { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) } else { owned };
 
@@ -228,6 +248,30 @@ mod tests {
     let details = Windows::static_details();
     assert_eq!(details.service_name, "Windows Notification");
     assert_eq!(details.protocols, vec!["windows"]);
+  }
+
+  #[test]
+  fn test_icon_follows_the_asset() {
+    use super::super::IconSource;
+    use crate::asset::AppriseAsset;
+    let dir = tempfile::tempdir().unwrap();
+    let custom = dir.path().join("custom-info-128x128.ico");
+    std::fs::write(&custom, b"ico").unwrap();
+    let ctx = |mask: Option<String>, theme: &str| {
+      let asset = AppriseAsset { image_path_mask: mask, theme: theme.to_string(), ..Default::default() };
+      NotifyContext { asset, ..Default::default() }
+    };
+    let w = parse("windows://");
+    // The asset's own file, as upstream's image_path(..., ".ico")
+    let mask = dir.path().join("custom-{TYPE}-{XY}{EXTENSION}").display().to_string();
+    assert_eq!(w.icon(&ctx(Some(mask), "default")), Some(IconSource::File(custom)));
+    // A mask naming no existing file gives the stock icon
+    let missing = dir.path().join("missing-{TYPE}{EXTENSION}").display().to_string();
+    assert_eq!(w.icon(&ctx(Some(missing), "default")), None);
+    // Without a mask, the bundled default theme
+    assert!(matches!(w.icon(&ctx(None, "default")), Some(IconSource::Bundled(_))));
+    assert_eq!(w.icon(&ctx(None, "custom")), None);
+    assert_eq!(parse("windows://?image=no").icon(&ctx(None, "default")), None);
   }
 
   #[cfg(not(windows))]
