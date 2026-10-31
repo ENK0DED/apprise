@@ -54,6 +54,10 @@ rand = "0.10"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+# Time zone rules (TZif) from the system tz database; Windows builds
+# bundle the database from jiff-tzdb instead
+tz-rs = { version = "0.7", default-features = false, features = ["alloc"] }
+jiff-tzdb = "0.1"
 
 # Async trait
 async-trait = "0.1"

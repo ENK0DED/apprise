@@ -26,6 +26,7 @@ flate2.workspace = true
 mime_guess.workspace = true
 rand.workspace = true
 chrono.workspace = true
+tz-rs.workspace = true
 async-trait.workspace = true
 urlencoding.workspace = true
 regex-lite.workspace = true
@@ -78,6 +79,8 @@ zbus = { workspace = true, optional = true, features = ["p2p"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, optional = true }
+# Windows has no system tz database
+jiff-tzdb.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

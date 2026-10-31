@@ -32,7 +32,8 @@ pub struct ServiceOptions {
   pub emojis: Option<bool>,
   /// `?store=`: allow persistent storage for this service.
   pub store: Option<bool>,
-  /// `?tz=`: timezone name used when rendering times.
+  /// `?tz=`: time zone used when rendering times; it names a zone
+  /// [`zoneinfo`](crate::utils::time::zoneinfo) knows.
   pub tz: Option<String>,
   /// `?retry=`: extra attempts after a failed send (0..=MAX_SERVICE_RETRY).
   pub retry: Option<u32>,
@@ -54,7 +55,8 @@ impl ServiceOptions {
   /// Parse the common options from a URL.
   ///
   /// Returns `Err` for values upstream rejects outright (a negative or
-  /// non-finite `retry` or `wait`). The URL must not load in that case.
+  /// non-finite `retry` or `wait`, a `tz` that names no time zone). The
+  /// URL must not load in that case.
   /// Unparseable values fall back to the default, as upstream does.
   pub fn from_url(url: &ParsedUrl) -> Result<Self, String> {
     let mut opts = Self::default();
@@ -75,7 +77,13 @@ impl ServiceOptions {
 
     opts.emojis = url.get("emojis").map(parse_bool);
     opts.store = url.get("store").map(parse_bool);
-    opts.tz = url.get("tz").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    if let Some(v) = url.get("tz") {
+      // Upstream raises for a zone it cannot find, an empty one included
+      if crate::utils::time::zoneinfo(v).is_none() {
+        return Err(format!("An invalid notification timezone ({}) was specified.", v));
+      }
+      opts.tz = Some(v.trim().to_string());
+    }
     opts.optional = url.get("optional").map(parse_bool);
     opts.redirect = url.get("redirect").map(parse_bool);
     opts.verify = url.get("verify").map(parse_bool);
@@ -445,6 +453,18 @@ mod tests {
     assert!(opts("json://localhost/?retry=-1").is_err());
     assert!(opts("json://localhost/?wait=-0.5").is_err());
     assert!(opts("json://localhost/?wait=inf").is_err());
+  }
+
+  #[test]
+  fn test_unknown_time_zone_rejects_url() {
+    // Checked against upstream: each of these makes Apprise.add() fail
+    for url in
+      ["json://localhost/?tz=invalid", "json://localhost/?tz=", "json://localhost/?tz=%20", "json://localhost/?tz=/etc/passwd", "json://localhost/?tz=../x"]
+    {
+      assert!(opts(url).is_err(), "{}", url);
+      assert!(crate::notify::registry::from_url(url).is_none(), "{}", url);
+    }
+    assert_eq!(opts("json://localhost/?tz=%20Z%20").unwrap().tz.as_deref(), Some("Z"));
   }
 
   #[test]

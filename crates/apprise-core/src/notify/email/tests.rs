@@ -793,6 +793,23 @@ async fn test_reply_to_on_every_recipient() {
   assert!(mails.iter().all(|m| m.text.contains("\nReply-To: Help Desk <help@example.com>\n")), "{:?}", mails);
 }
 
+/// The Date header is in the URL's `?tz=` zone, else in the asset's
+/// (upstream `NotifyBase.tzinfo`).
+#[tokio::test]
+async fn test_date_header_time_zone() {
+  let date = |mail: &Mail| mail.text.lines().find_map(|l| l.strip_prefix("Date: ").map(str::to_string)).unwrap();
+  let server = FakeSmtp::start(ServerConfig::default()).await;
+  let mut context = ctx("t", "b", NotifyFormat::Text);
+  context.asset.timezone = Some(crate::utils::time::testing::zone("Etc/GMT+5", "<-05>5", -5 * 3600, "-05"));
+  let (ok, _) = against(&server, email("mailto://user:pass@example.com/to@example.org").send(&context)).await;
+  assert!(ok.unwrap());
+  let (ok, _) = against(&server, email("mailto://user:pass@example.com/to@example.org?tz=utc").send(&context)).await;
+  assert!(ok.unwrap());
+  let mails = server.mails();
+  assert!(date(&mails[0]).ends_with(" -0500"), "{}", date(&mails[0]));
+  assert!(date(&mails[1]).ends_with(" +0000"), "{}", date(&mails[1]));
+}
+
 #[tokio::test]
 async fn test_no_recipients() {
   // to=@ leaves nothing valid to send to

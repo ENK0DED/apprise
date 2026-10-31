@@ -608,8 +608,9 @@ fn parse_asset(tokens: &Mapping, base: &AppriseAsset) -> AppriseAsset {
     Some(Value::String(tz)) => {
       // Upstream keeps only word characters, '/' and '-' (so not '+')
       let cleaned: String = tz.chars().filter(|c| c.is_alphanumeric() || matches!(c, '_' | '/' | '-')).collect();
-      if crate::utils::time::zoneinfo(&cleaned).is_none() {
-        tracing::warn!("Ignored invalid timezone \"{}\"", tz);
+      match crate::utils::time::zoneinfo(&cleaned) {
+        Some(zone) => asset.timezone = Some(zone),
+        None => tracing::warn!("Ignored invalid timezone \"{}\"", tz),
       }
     }
     Some(Value::Null) | None => {}
@@ -933,6 +934,30 @@ urls:
     assert!(!asset.http_redirects);
     assert!(asset.abort_on_chain_failure);
     assert!(asset.interpret_escapes);
+  }
+
+  // Each case checked against upstream's ConfigBase.config_parse_yaml().
+  #[test]
+  fn test_asset_time_zone() {
+    use crate::utils::time::Timezone;
+    let zone = |content: &str| parse(&format!("asset:\n{}\nurls:\n  - json://localhost\n", content)).asset.unwrap().timezone;
+    assert_eq!(zone("  tz: ' Z '"), Some(Timezone::utc()));
+    assert_eq!(zone("  timezone: etc/utc"), Some(Timezone::utc()));
+    // Invalid values are ignored: unknown names, paths, non-text
+    for content in ["  tz: invalid", "  tz: /etc/passwd", "  tz: ../../etc/passwd", "  tz: 5", "  tz: [utc]"] {
+      assert_eq!(zone(content), None, "{}", content);
+    }
+    // `timezone` wins over `tz`, even when it is null
+    assert_eq!(zone("  timezone: ~\n  tz: utc"), None);
+    // A named zone, where this machine has a database
+    if crate::utils::time::zoneinfo("America/Toronto").is_some() {
+      assert_eq!(zone("  tz: '  america/toronto  '").map(|z| z.name().to_string()).as_deref(), Some("America/Toronto"));
+    }
+    // The base asset's zone stays when the section sets none
+    let base = AppriseAsset { timezone: Some(Timezone::utc()), ..Default::default() };
+    let opts = LoadOptions { asset: base, ..Default::default() };
+    let out = parse_yaml("asset:\n  tz: invalid\n  app_id: x\nurls: []\n", &opts).unwrap();
+    assert_eq!(out.asset.unwrap().timezone, Some(Timezone::utc()));
   }
 
   // Each case checked against upstream (PyYAML's YAML 1.1 scalars).
