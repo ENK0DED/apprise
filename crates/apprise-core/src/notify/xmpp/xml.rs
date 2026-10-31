@@ -48,6 +48,12 @@ pub enum Event {
   StreamClose,
 }
 
+/// Deepest element nesting accepted in a stanza, counting the stanza
+/// itself. Stanzas nest a handful of levels; the parser recurses once per
+/// level, so the peer must not choose how deep.
+const MAX_DEPTH: usize = 128;
+const TOO_DEEP: &str = "XML nested too deeply";
+
 /// Collects incoming bytes and returns complete events from them.
 #[derive(Default)]
 pub struct StreamReader {
@@ -109,7 +115,7 @@ fn scan(text: &str) -> Result<Option<(usize, Option<Event>)>, String> {
     return Ok(Some((tag_end + 1, Some(Event::StreamOpen(attrs)))));
   }
   let Some(end) = find_element_end(text)? else { return Ok(None) };
-  let (element, _) = parse_element(&text[..end], 0)?;
+  let (element, _) = parse_element(&text[..end], 0, 0)?;
   Ok(Some((end, Some(Event::Stanza(element)))))
 }
 
@@ -153,6 +159,10 @@ fn find_element_end(text: &str) -> Result<Option<usize>, String> {
       depth = depth.checked_sub(1).ok_or("unbalanced closing tag")?;
     } else if !tag.starts_with("<?") && !tag.ends_with("/>") {
       depth += 1;
+      // Refuse it now rather than buffer the rest of it
+      if depth > MAX_DEPTH {
+        return Err(TOO_DEEP.into());
+      }
     }
     pos = end + 1;
     if depth == 0 {
@@ -188,8 +198,12 @@ fn parse_start_tag(tag: &str) -> Result<StartTag, String> {
   Ok((name, attrs, self_closing))
 }
 
-/// Parse the element starting at `pos`; returns it and the offset after it.
-fn parse_element(text: &str, pos: usize) -> Result<(Element, usize), String> {
+/// Parse the element starting at `pos`, `depth` levels below the stanza;
+/// returns it and the offset after it.
+fn parse_element(text: &str, pos: usize, depth: usize) -> Result<(Element, usize), String> {
+  if depth >= MAX_DEPTH {
+    return Err(TOO_DEEP.into());
+  }
   let tag_end = find_tag_end(text, pos).ok_or("unterminated tag")?;
   let (name, attrs, self_closing) = parse_start_tag(&text[pos..=tag_end])?;
   let mut element = Element { name, attrs, ..Default::default() };
@@ -212,7 +226,7 @@ fn parse_element(text: &str, pos: usize) -> Result<(Element, usize), String> {
       let end = rest.find('>').ok_or("unterminated closing tag")?;
       return Ok((element, pos + end + 1));
     } else {
-      let (child, next) = parse_element(text, pos)?;
+      let (child, next) = parse_element(text, pos, depth + 1)?;
       element.children.push(child);
       pos = next;
     }
@@ -343,5 +357,34 @@ mod tests {
     let mut reader = StreamReader::default();
     reader.feed(b"junk");
     assert!(reader.next_event().is_err());
+  }
+
+  /// A stanza nested deeper than any XMPP server sends: parsing it used to
+  /// recurse once per level and overflow the stack, aborting the process.
+  #[test]
+  fn test_nesting_limit() {
+    let nested = |depth: usize| format!("<stream:stream><stream:features>{}{}</stream:features>", "<a>".repeat(depth), "</a>".repeat(depth));
+
+    // On half the stack a Tokio worker thread gets
+    let run = |doc: String| {
+      std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(move || {
+          let mut reader = StreamReader::default();
+          reader.feed(doc.as_bytes());
+          assert!(matches!(reader.next_event(), Ok(Some(Event::StreamOpen(_)))));
+          reader.next_event().map(|e| e.is_some())
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+    };
+
+    // The features element is one level, so this is as deep as it goes
+    assert_eq!(run(nested(MAX_DEPTH - 1)), Ok(true));
+    assert_eq!(run(nested(MAX_DEPTH)), Err("XML nested too deeply".to_string()));
+    // Refused while it is still arriving, before it is complete
+    assert_eq!(run(format!("<stream:stream><stream:features>{}", "<a>".repeat(MAX_DEPTH))), Err("XML nested too deeply".to_string()));
+    assert_eq!(run(nested(100_000)), Err("XML nested too deeply".to_string()));
   }
 }

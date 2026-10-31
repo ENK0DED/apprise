@@ -250,7 +250,7 @@ async fn server_auth<S: XmppStream>(link: &mut Link<S>, cfg: &ServerConfig, reco
   }
 
   let auth_message = format!("{},{},{}", bare, server_first, without_proof);
-  let salted = hash.hi(cfg.password.as_bytes(), salt, 4096);
+  let salted = hash.hi(cfg.password.as_bytes(), salt, 4096, &std::sync::atomic::AtomicBool::new(false)).unwrap();
   let client_key = hash.hmac(&salted, b"Client Key");
   let signature = hash.hmac(&hash.hash(&client_key), auth_message.as_bytes());
   let expected_proof: Vec<u8> = client_key.iter().zip(&signature).map(|(a, b)| a ^ b).collect();
@@ -549,6 +549,45 @@ async fn test_send_tls_verification() {
   let port = 1;
   let svc = from_url(&format!("xmpps://me:secret@127.0.0.1:{}/a", port)).unwrap();
   assert!(!svc.send(&ctx("", "Body")).await.unwrap());
+}
+
+/// The server picks the SCRAM iteration count. With 2^32 - 1 the key
+/// derivation used to run on the async task, so the send blocked far past
+/// its timeout; it must give up at the timeout and stop deriving.
+#[test]
+fn test_send_scram_iteration_count_bounded_by_timeout() {
+  let (tx, rx) = std::sync::mpsc::channel();
+  std::thread::spawn(move || {
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let sent = runtime.block_on(async {
+      let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+      let port = listener.local_addr().unwrap().port();
+      let server = tokio::spawn(async move {
+        let tcp = accept_client(&listener).await;
+        let mut link = Link::new(crate::utils::socket::test_tls_acceptor().accept(tcp).await.unwrap());
+        header(&mut link, &mut Record::default(), &format!("<mechanisms xmlns='{}'><mechanism>SCRAM-SHA-1</mechanism></mechanisms>", NS_SASL)).await;
+        let auth = link.stanza().await.unwrap();
+        let client_first = String::from_utf8(B64.decode(auth.text.trim()).unwrap()).unwrap();
+        let nonce = client_first.split("r=").nth(1).unwrap().to_string();
+        let server_first = format!("r={}server,s={},i={}", nonce, B64.encode("salt"), u32::MAX);
+        link.write(&format!("<challenge xmlns='{}'>{}</challenge>", NS_SASL, B64.encode(server_first))).await.unwrap();
+        // Hold the connection until the client gives up
+        let _ = link.event().await;
+      });
+      let mut svc = parse(&format!("xmpps://me:secret@127.0.0.1:{}/a?mode=tls&verify=no", port)).unwrap();
+      svc.timeout = Duration::from_millis(300);
+      let sent = svc.send(&ctx("", "Body")).await.unwrap();
+      server.abort();
+      sent
+    });
+    tx.send(Some(sent)).unwrap();
+    // Dropping a runtime waits for its blocking threads, so this returns
+    // only once the derivation stopped
+    drop(runtime);
+    tx.send(None).unwrap();
+  });
+  assert_eq!(rx.recv_timeout(Duration::from_secs(10)), Ok(Some(false)), "the send did not give up at its timeout");
+  assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(None), "the key derivation kept running after the send gave up");
 }
 
 #[test]

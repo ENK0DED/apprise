@@ -207,6 +207,13 @@ impl Irc {
   }
 
   async fn deliver<S: AsyncRead + AsyncWrite + Unpin>(&self, client: &mut Client<S>, message: &str) -> Result<(), String> {
+    // IDENTIFY puts the password on a line of its own, which a line break
+    // would end early and turn the rest into another command
+    let identify = self.password.as_deref().filter(|p| self.auth_mode == AuthMode::NickServ && !p.is_empty());
+    if identify.is_some_and(|p| p.contains(['\r', '\n', '\0'])) {
+      return Err("the NickServ password contains a line break or NUL".into());
+    }
+
     client.register(self.pass().as_deref(), REGISTER_TIMEOUT, self.send_timeout).await?;
 
     // Upstream clears the password before identifying, so it never sends
@@ -214,9 +221,7 @@ impl Irc {
     // command is routed by the server to its services only; a PRIVMSG to
     // the nick NickServ would hand the password to whoever holds that nick
     // on a network without services.
-    if self.auth_mode == AuthMode::NickServ
-      && let Some(password) = self.password.as_deref().filter(|p| !p.is_empty())
-    {
+    if let Some(password) = identify {
       client.write(&format!("NICKSERV IDENTIFY {}", password), self.send_timeout).await?;
       client.pump(PUMP_INTERVAL).await?;
     }
@@ -427,6 +432,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         let line = String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']).to_string();
         tracing::trace!("IRC read: {}", line);
         return Ok(Some(line));
+      }
+      // A read that always has data ready completes before its timeout is
+      // looked at, so a server that never ends a line would keep us here
+      if Instant::now() >= deadline {
+        return Ok(None);
       }
       let mut buf = [0u8; 4096];
       match tokio::time::timeout_at(deadline, self.stream.read(&mut buf)).await {
@@ -844,6 +854,19 @@ mod tests {
     );
   }
 
+  /// IDENTIFY puts the password on a protocol line of its own; one that
+  /// holds a line break would end it early and send what follows as
+  /// another command. Upstream never sends IDENTIFY at all.
+  #[tokio::test]
+  async fn test_send_nickserv_password_with_line_break() {
+    for password in ["pw%0D%0APRIVMSG%20mallory%20%3Ainjected", "pw%0Ax", "pw%00x"] {
+      let (port, server) = irc_server(false, welcoming()).await;
+      let svc = from_url(&format!("irc://me:{}@127.0.0.1:{}/#chan?mode=nickserv&join=no", password, port)).unwrap();
+      assert!(!svc.send(&ctx("Title", "Body")).await.unwrap(), "{}", password);
+      assert!(server.await.unwrap().is_empty(), "{}", password);
+    }
+  }
+
   #[tokio::test]
   async fn test_send_answers_ping_and_nick_collision() {
     let mut welcome = welcoming();
@@ -949,6 +972,19 @@ mod tests {
     });
     let svc = from_url(&format!("irc://127.0.0.1:{}/#chan", port)).unwrap();
     assert!(!svc.send(&ctx("", "Body")).await.unwrap());
+  }
+
+  /// A server that keeps sending without ever ending a line, so every read
+  /// returns data at once: the registration deadline must still hold
+  /// (upstream checks it before each read).
+  #[tokio::test]
+  async fn test_read_deadline_holds_while_data_arrives() {
+    let endless = tokio::io::join(tokio::io::repeat(b'x'), tokio::io::sink());
+    let mut client = Client::new(endless, "bot".into(), "Bot".into(), "apprise");
+    let start = Instant::now();
+    let registered = tokio::time::timeout(Duration::from_secs(5), client.register(None, Duration::from_millis(300), Duration::from_secs(1))).await;
+    assert_eq!(registered, Ok(Err("IRC registration timeout".to_string())));
+    assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
   }
 
   #[test]

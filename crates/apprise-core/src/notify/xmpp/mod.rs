@@ -300,7 +300,7 @@ impl Xmpp {
               verified = true;
               Vec::new()
             } else {
-              scram.client_final(&challenge).map_err(Failure::other)?
+              scram.client_final(&challenge).await.map_err(Failure::other)?
             };
             link.write(&format!("<response xmlns='{}'>{}</response>", NS_SASL, encode_sasl(&response))).await?;
             continue;
