@@ -672,6 +672,10 @@ async fn test_trace_log_hides_plain_payload() {
   let writer = buffer.clone();
   let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::TRACE).with_ansi(false).with_writer(move || writer.clone()).finish();
   let _guard = tracing::subscriber::set_default(subscriber);
+  // Callsite interest is cached process-wide: one registered by a test on
+  // another thread while this subscriber was being set may still be cached
+  // as disabled, which drops the trace events this test looks for
+  tracing::callsite::rebuild_interest_cache();
 
   let (port, server) = xmpp_server(ServerConfig { mechanisms: vec!["PLAIN"], ..Default::default() }).await;
   let svc = from_url(&format!("xmpps://me:secret@127.0.0.1:{}/a?verify=no", port)).unwrap();
