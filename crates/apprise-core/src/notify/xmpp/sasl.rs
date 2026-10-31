@@ -8,6 +8,8 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use hmac::{Hmac, KeyInit, Mac};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Hash functions SCRAM can use here, with slixmpp's scores.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,17 +73,21 @@ impl ScramHash {
     }
   }
 
-  /// PBKDF2 with this hash's HMAC (`Hi()` in RFC 5802).
-  pub(super) fn hi(self, password: &[u8], salt: &[u8], iterations: u32) -> Vec<u8> {
+  /// PBKDF2 with this hash's HMAC (`Hi()` in RFC 5802), or `None` once
+  /// `stop` is set: the server picks the iteration count.
+  pub(super) fn hi(self, password: &[u8], salt: &[u8], iterations: u32, stop: &AtomicBool) -> Option<Vec<u8>> {
     let mut block = salt.to_vec();
     block.extend_from_slice(&1u32.to_be_bytes());
     let mut u = self.hmac(password, &block);
     let mut result = u.clone();
     for _ in 1..iterations {
+      if stop.load(Ordering::Relaxed) {
+        return None;
+      }
       u = self.hmac(password, &u);
       result.iter_mut().zip(&u).for_each(|(r, x)| *r ^= x);
     }
-    result
+    Some(result)
   }
 }
 
@@ -182,7 +188,7 @@ impl Scram {
   }
 
   /// Answer the server-first message with the client proof.
-  pub fn client_final(&mut self, server_first: &[u8]) -> Result<Vec<u8>, String> {
+  pub async fn client_final(&mut self, server_first: &[u8]) -> Result<Vec<u8>, String> {
     let server_first = std::str::from_utf8(server_first).map_err(|_| "server-first message is not UTF-8")?;
     let attr = |key: &str| server_first.split(',').find_map(|item| item.strip_prefix(key).and_then(|v| v.strip_prefix('=')));
     if attr("m").is_some() {
@@ -199,7 +205,7 @@ impl Scram {
     cbind_input.extend_from_slice(&self.channel_binding);
     let without_proof = format!("c={},r={}", B64.encode(cbind_input), nonce);
 
-    let salted = self.hash.hi(self.password.as_bytes(), &salt, iterations);
+    let salted = salted_password(self.hash, self.password.clone(), salt, iterations).await?;
     let client_key = self.hash.hmac(&salted, b"Client Key");
     let stored_key = self.hash.hash(&client_key);
     let auth_message = format!("{},{},{}", self.client_first_bare, server_first, without_proof);
@@ -230,6 +236,23 @@ impl Scram {
   }
 }
 
+/// `Hi()` of the password. It costs as many HMACs as the server asks for,
+/// so it runs on the blocking pool, and stops as soon as the caller stops
+/// waiting (a timeout drops this future).
+async fn salted_password(hash: ScramHash, password: String, salt: Vec<u8>, iterations: u32) -> Result<Vec<u8>, String> {
+  struct StopOnDrop(Arc<AtomicBool>);
+  impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+      self.0.store(true, Ordering::Relaxed);
+    }
+  }
+  let stop = StopOnDrop(Arc::new(AtomicBool::new(false)));
+  let flag = stop.0.clone();
+  let salted = tokio::task::spawn_blocking(move || hash.hi(password.as_bytes(), &salt, iterations, &flag)).await.map_err(|e| e.to_string())?;
+  drop(stop);
+  salted.ok_or_else(|| "the SCRAM key derivation was stopped".to_string())
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -252,40 +275,45 @@ mod tests {
     assert_eq!(plain("user", "pencil"), b"\0user\0pencil");
   }
 
-  #[test]
-  fn test_scram_sha1_rfc5802_vector() {
+  #[tokio::test]
+  async fn test_scram_sha1_rfc5802_vector() {
     // RFC 5802, section 5
     let mut scram = Scram::with_nonce(ScramHash::Sha1, "user", "pencil", "n", Vec::new(), "fyko+d2lbbFgONRv9qkxdawL");
     assert_eq!(scram.client_first(), b"n,,n=user,r=fyko+d2lbbFgONRv9qkxdawL");
-    let client_final = scram.client_final(b"r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j,s=QSXCR+Q6sek8bf92,i=4096").unwrap();
+    let client_final = scram.client_final(b"r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j,s=QSXCR+Q6sek8bf92,i=4096").await.unwrap();
     assert_eq!(client_final, b"c=biws,r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j,p=v0X8v3Bz2T0CJGbJQyF0X+HI4Ts=");
     assert!(scram.verify_server_final(b"v=rmF9pqV8S7suAoZWja4dJRkFsKQ=").is_ok());
     assert!(scram.verify_server_final(b"v=AAAA").is_err());
     assert_eq!(scram.verify_server_final(b"e=invalid-proof"), Err("invalid-proof".into()));
   }
 
-  #[test]
-  fn test_scram_sha256_rfc7677_vector() {
+  #[tokio::test]
+  async fn test_scram_sha256_rfc7677_vector() {
     // RFC 7677, section 3
     let mut scram = Scram::with_nonce(ScramHash::Sha256, "user", "pencil", "n", Vec::new(), "rOprNGfwEbeRWgbNEkqO");
-    let client_final = scram.client_final(b"r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096").unwrap();
+    let client_final = scram.client_final(b"r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096").await.unwrap();
     assert_eq!(client_final, b"c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=");
     assert!(scram.verify_server_final(b"v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=").is_ok());
   }
 
-  #[test]
-  fn test_scram_channel_binding_input() {
+  #[tokio::test]
+  async fn test_scram_channel_binding_input() {
     let mut scram = Scram::with_nonce(ScramHash::Sha256, "us,er=", "pw", "p=tls-exporter", vec![1, 2, 3], "abc");
     assert_eq!(scram.client_first(), b"p=tls-exporter,,n=us=2Cer=3D,r=abc");
-    let client_final = String::from_utf8(scram.client_final(b"r=abcdef,s=c2FsdA==,i=1").unwrap()).unwrap();
+    let client_final = String::from_utf8(scram.client_final(b"r=abcdef,s=c2FsdA==,i=1").await.unwrap()).unwrap();
     let mut cbind = b"p=tls-exporter,,".to_vec();
     cbind.extend_from_slice(&[1, 2, 3]);
     assert!(client_final.starts_with(&format!("c={},r=abcdef,p=", B64.encode(cbind))), "{}", client_final);
 
     // A server nonce that does not extend ours is rejected
     let mut scram = Scram::with_nonce(ScramHash::Sha1, "u", "p", "n", vec![], "abc");
-    assert!(scram.client_final(b"r=xyz,s=c2FsdA==,i=1").is_err());
-    assert!(scram.client_final(b"m=ext,r=abcd,s=c2FsdA==,i=1").is_err());
+    assert!(scram.client_final(b"r=xyz,s=c2FsdA==,i=1").await.is_err());
+    assert!(scram.client_final(b"m=ext,r=abcd,s=c2FsdA==,i=1").await.is_err());
+  }
+
+  #[test]
+  fn test_hi_stops_when_told() {
+    assert_eq!(ScramHash::Sha1.hi(b"pencil", b"salt", u32::MAX, &AtomicBool::new(true)), None);
   }
 
   #[test]
