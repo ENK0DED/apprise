@@ -408,3 +408,41 @@ fn test_armor_matches_rpgp() {
   let (builder, rng) = build(7);
   assert_eq!(ours, builder.to_armored_string(rng, ArmorOptions::default()).unwrap());
 }
+
+/// Signing and encryption run in the blocking pool, so a current-thread
+/// executor keeps serving other tasks and deadlines meanwhile (the
+/// GPT-6.1-Sol review's RT5).
+#[tokio::test]
+async fn test_sign_and_encrypt_leave_the_executor_free() {
+  use std::sync::atomic::{AtomicUsize, Ordering};
+  let dir = tempfile::tempdir().unwrap();
+  write(&dir, "pgp-public.asc", PGPY_PUB);
+  write(&dir, "pgp-private.asc", PGPY_PRV);
+  let pgp = controller(&dir, Some("user@nuxref.com"));
+  // Load the keys first, so only the PGP work itself is left
+  assert!(pgp.public_key(&[], Some(false)).await.is_some());
+  assert!(pgp.private_key().await.is_some());
+  let message = vec![0x5a; 256 * 1024];
+
+  // A deadline that has already passed fires once the work yields
+  assert!(tokio::time::timeout(Duration::ZERO, pgp.encrypt(&message, &[], Some(false))).await.is_err());
+  assert!(tokio::time::timeout(Duration::ZERO, pgp.sign(&message)).await.is_err());
+
+  // Another task keeps running while the work is in progress
+  let ticks = Arc::new(AtomicUsize::new(0));
+  let heartbeat = tokio::spawn({
+    let ticks = ticks.clone();
+    async move {
+      loop {
+        ticks.fetch_add(1, Ordering::SeqCst);
+        tokio::task::yield_now().await;
+      }
+    }
+  });
+  assert!(pgp.encrypt(&message, &[], Some(false)).await.is_some());
+  let after_encrypt = ticks.load(Ordering::SeqCst);
+  assert!(after_encrypt > 0);
+  assert!(pgp.sign(&message).await.is_some());
+  assert!(ticks.load(Ordering::SeqCst) > after_encrypt);
+  heartbeat.abort();
+}

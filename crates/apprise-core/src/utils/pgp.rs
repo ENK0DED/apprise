@@ -292,23 +292,7 @@ impl PgpController {
       tracing::debug!("PGP signing skipped: no usable private key");
       return None;
     };
-    let hash = preferred_hash(&key);
-    let rng = rand_core06::OsRng;
-    let signature = if may_sign(primary_binding(&key.details), key.primary_key.algorithm()) {
-      DetachedSignature::sign_binary_data(rng, &key.primary_key, &Password::empty(), hash, message)
-    } else if let Some(sub) = key.secret_subkeys.iter().find(|s| latest_binding(&s.signatures).is_some_and(|b| b.key_flags().sign())) {
-      DetachedSignature::sign_binary_data(rng, &sub.key, &Password::empty(), hash, message)
-    } else {
-      tracing::debug!("PGP signing failed; key may lack Sign capability");
-      return None;
-    };
-    match signature.and_then(|s| s.to_bytes()).and_then(|packets| armored(BlockType::Signature, &packets)) {
-      Ok(armored) => Some((armored, format!("pgp-{}", hash_name(hash)))),
-      Err(e) => {
-        tracing::debug!("PGP signing failed: {}", e);
-        None
-      }
-    }
+    off_executor(message, move |message| sign_with(&key, &message)).await
   }
 
   /// The first key WKD publishes for `emails` (or the sender when none is
@@ -461,7 +445,7 @@ impl PgpController {
   /// only.
   pub async fn encrypt(&self, message: &[u8], emails: &[&str], autogen: Option<bool>) -> Option<String> {
     let key = self.public_key(emails, autogen).await?;
-    encrypt_to(&key, message)
+    off_executor(message, move |message| encrypt_to(&key, message)).await
   }
 
   /// Drop expired keys (and expired WKD results).
@@ -470,6 +454,43 @@ impl PgpController {
     self.cache().retain(|_, (_, expires)| *expires > now);
     if let Some(wkd) = &self.wkd {
       wkd.prune();
+    }
+  }
+}
+
+/// Run `work` on a copy of `message` in Tokio's blocking pool: signing,
+/// compressing and encrypting a large message takes long enough to stall
+/// other services and their deadlines on the executor (upstream sends each
+/// service from a worker thread). A caller that stops waiting leaves the
+/// work to finish unobserved.
+async fn off_executor<T: Send + 'static>(message: &[u8], work: impl FnOnce(Vec<u8>) -> Option<T> + Send + 'static) -> Option<T> {
+  let message = message.to_vec();
+  match tokio::task::spawn_blocking(move || work(message)).await {
+    Ok(result) => result,
+    Err(e) => {
+      tracing::debug!("PGP operation failed: {}", e);
+      None
+    }
+  }
+}
+
+/// A detached signature over `message` with the key's signing component.
+fn sign_with(key: &SignedSecretKey, message: &[u8]) -> Option<(String, String)> {
+  let hash = preferred_hash(key);
+  let rng = rand_core06::OsRng;
+  let signature = if may_sign(primary_binding(&key.details), key.primary_key.algorithm()) {
+    DetachedSignature::sign_binary_data(rng, &key.primary_key, &Password::empty(), hash, message)
+  } else if let Some(sub) = key.secret_subkeys.iter().find(|s| latest_binding(&s.signatures).is_some_and(|b| b.key_flags().sign())) {
+    DetachedSignature::sign_binary_data(rng, &sub.key, &Password::empty(), hash, message)
+  } else {
+    tracing::debug!("PGP signing failed; key may lack Sign capability");
+    return None;
+  };
+  match signature.and_then(|s| s.to_bytes()).and_then(|packets| armored(BlockType::Signature, &packets)) {
+    Ok(armored) => Some((armored, format!("pgp-{}", hash_name(hash)))),
+    Err(e) => {
+      tracing::debug!("PGP signing failed: {}", e);
+      None
     }
   }
 }
@@ -653,9 +674,9 @@ fn preferred_cipher(key: &SignedPublicKey) -> SymmetricKeyAlgorithm {
 /// Encrypt to the key's first encryption-capable subkey, else to the
 /// primary key when it may encrypt (PGPy's `KeyAction` selection), as a
 /// compressed binary literal in SEIPD v1.
-fn encrypt_to(key: &SignedPublicKey, message: &[u8]) -> Option<String> {
+fn encrypt_to(key: &SignedPublicKey, message: Vec<u8>) -> Option<String> {
   let mut rng = rand_core06::OsRng;
-  let mut builder = MessageBuilder::from_bytes("", message.to_vec()).seipd_v1(&mut rng, preferred_cipher(key));
+  let mut builder = MessageBuilder::from_bytes("", message).seipd_v1(&mut rng, preferred_cipher(key));
   builder.compression(CompressionAlgorithm::ZIP);
   let subkey = key
     .public_subkeys
