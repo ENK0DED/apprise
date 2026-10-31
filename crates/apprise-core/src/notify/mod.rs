@@ -14,7 +14,6 @@ pub use options::{ConfiguredService, ServiceOptions};
 
 // ── Plugin modules ────────────────────────────────────────────────────────────
 pub mod africas_talking;
-#[cfg(feature = "amqp")]
 pub mod amqp;
 pub mod apprise_api;
 pub mod aprs;
