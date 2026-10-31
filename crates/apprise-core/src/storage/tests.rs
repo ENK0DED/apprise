@@ -425,3 +425,29 @@ fn test_huge_expiry_never_expires() {
   assert!(store.set("forever", json!("f"), Some(Duration::MAX), false));
   assert_eq!(store.get("forever"), Some(json!("f")));
 }
+
+#[test]
+fn test_float_values_survive_a_reopen() {
+  // Each entry's integrity hash covers Python's repr of its value, so a
+  // float must read back bit for bit. serde_json's default parser can be
+  // one unit in the last place off, which dropped about 1 entry in 8 as
+  // tampered (a Matrix Megolm record's created_at, for one).
+  let tmp = tempfile::tempdir().unwrap();
+  let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+  let mut floats = Vec::new();
+  for _ in 0..300 {
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    floats.push(1_793_420_000.0 + (x % 100_000_000) as f64 / 1e7 + (x % 977) as f64 * 1e-9);
+  }
+  {
+    let mut store = PersistentStore::new(Some(tmp.path()), "floats", StorageMode::Auto).unwrap();
+    for (i, f) in floats.iter().enumerate() {
+      assert!(store.set(&format!("k{i}"), json!({"created_at": f}), Some(Duration::from_secs(3600)), true));
+    }
+  }
+  let mut store = PersistentStore::new(Some(tmp.path()), "floats", StorageMode::Auto).unwrap();
+  let lost: Vec<usize> = (0..floats.len()).filter(|i| store.get(&format!("k{i}")) != Some(json!({"created_at": floats[*i]}))).collect();
+  assert!(lost.is_empty(), "{} of {} entries did not survive: {:?}", lost.len(), floats.len(), &lost[..lost.len().min(10)]);
+}

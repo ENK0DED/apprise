@@ -27,7 +27,7 @@ impl TechulusPush {
       service_name: "Techulus Push",
       service_url: Some("https://push.techulus.com"),
       setup_url: Some("https://appriseit.com/services/techulus/"),
-      protocols: vec!["push", "techulus"],
+      protocols: vec!["push"],
       description: "Send push via Techulus.",
       attachment_support: false,
     }
@@ -37,7 +37,7 @@ impl TechulusPush {
 #[async_trait]
 impl Notify for TechulusPush {
   fn schemas(&self) -> &[&str] {
-    &["push", "techulus"]
+    &["push"]
   }
   fn service_name(&self) -> &str {
     "Techulus Push"
@@ -88,8 +88,8 @@ mod tests {
   #[test]
   fn test_urls() {
     assert!(from_url(&format!("push://{}", UUID4)).is_some());
-    // The port's earlier techulus:// schema keeps working
-    assert!(from_url(&format!("techulus://{}", UUID4)).is_some());
+    // Upstream has no techulus:// schema
+    assert!(from_url(&format!("techulus://{}", UUID4)).is_none());
     for url in ["push://", "push://:@/", "push://abcd", "push://8b799edf-6f98-3d3a-9be7-2862fb4e5752"] {
       assert!(from_url(url).is_none(), "Should not parse: {}", url);
     }

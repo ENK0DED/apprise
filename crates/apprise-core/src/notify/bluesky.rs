@@ -839,12 +839,13 @@ mod tests {
   async fn test_waits_out_the_rate_limit() {
     let server = MockServer::start().await;
     mount_login(&server, "https://example.pds.io").await;
-    // The window resets about a second from now
-    let reset = chrono::Utc::now().timestamp() + 1;
+    // The window resets in an hour, so it is still open however slowly
+    // this test runs (a reset a second away could pass before the second
+    // post, which then rightly does not wait)
+    let reset = chrono::Utc::now().timestamp() + 3600;
     Mock::given(method("POST"))
       .and(path(XRPC_RECORD))
       .respond_with(ResponseTemplate::new(200).insert_header("ratelimit-remaining", "0").insert_header("ratelimit-reset", reset.to_string().as_str()))
-      .expect(2)
       .mount(&server)
       .await;
     let mut apprise = crate::Apprise::new();
@@ -852,12 +853,11 @@ mod tests {
     let ctx = NotifyContext { body: "body".into(), ..Default::default() };
     crate::notify::with_throttling_in_tests(crate::notify::with_test_base(server.uri(), async {
       assert!(apprise.notify(&ctx).await.is_success());
-      let started = std::time::Instant::now();
-      assert!(apprise.notify(&ctx).await.is_success());
-      // Upstream waits for the reset plus 0.3s of grace
-      assert!(started.elapsed() >= Duration::from_millis(300), "{:?}", started.elapsed());
+      // The next post waits for the reset (plus upstream's 0.3s of grace)
+      assert!(tokio::time::timeout(Duration::from_millis(500), apprise.notify(&ctx)).await.is_err(), "the second post did not wait");
     }))
     .await;
+    assert_eq!(crate::notify::custom_json::requests_to(&server, "POST", XRPC_RECORD).await.len(), 1);
   }
 
   #[test]

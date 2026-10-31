@@ -20,7 +20,8 @@ pub struct SendOptions {
   pub title: Option<String>,
   /// Notification type: "info", "success", "warning", "failure".
   pub notification_type: Option<String>,
-  /// Body format: "text", "html", "markdown".
+  /// Body format: "text", "html", "markdown". Without one the body is sent
+  /// as written, unless the configuration's asset sets a format.
   pub body_format: Option<String>,
   /// One tag filter group: its comma-separated tags must all match (like one
   /// CLI `--tag`).
@@ -102,6 +103,8 @@ fn message(
     Some(t) => t.parse::<NotifyType>().map_err(napi::Error::from_reason)?,
     None => NotifyType::Info,
   };
+  // No format: the body passes through unconverted (upstream body_format=None)
+  let body_passthrough = body_format.is_none();
   let body_format = match body_format {
     Some(f) => f.parse::<NotifyFormat>().map_err(napi::Error::from_reason)?,
     None => NotifyFormat::Text,
@@ -114,6 +117,7 @@ fn message(
     title: title.unwrap_or_default(),
     notify_type,
     body_format,
+    body_passthrough,
     interpret_escapes: interpret_escapes.unwrap_or(false),
     interpret_emojis: interpret_emojis.unwrap_or(false),
     ..Default::default()

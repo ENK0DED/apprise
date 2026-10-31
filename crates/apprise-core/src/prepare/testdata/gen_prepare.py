@@ -1,6 +1,9 @@
 """Record what upstream hands a plugin's send() for many size/format settings.
 
-Usage: python -I gen_prepare.py OUT.json
+Usage: python -I gen_prepare.py OUT.json [--passthrough]
+
+--passthrough sends every case with no input format (upstream
+`notify(body_format=None)`), so the body passes through unconverted.
 """
 import json, random, sys
 from apprise import Apprise, AppriseAsset, NotifyFormat
@@ -8,6 +11,7 @@ from apprise.common import OverflowMode
 from apprise.plugins import NotifyBase
 
 out = sys.argv[1]
+passthrough = "--passthrough" in sys.argv[2:]
 rng = random.Random(4242)
 
 # Dialects the Rust test plugin reproduces exactly.
@@ -71,6 +75,9 @@ for _ in range(1800):
         "title": rng.choice(TITLES),
         "body": rand_text(rng.choice([3, 10, 40, 120])) or "x",
     }
+    if passthrough:
+        # Drawn above all the same, so both sets share their other settings.
+        cfg["input_format"] = None
     plugin, calls = make_plugin(cfg)
     a = Apprise(asset=AppriseAsset(interpret_emojis=cfg["asset_emojis"]))
     a.add(plugin)
