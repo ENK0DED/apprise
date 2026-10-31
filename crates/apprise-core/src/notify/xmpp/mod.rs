@@ -680,14 +680,16 @@ impl<S: XmppStream> Link<S> {
   /// what arrived meanwhile and notice when the server went away.
   async fn still_open(&mut self) -> bool {
     loop {
-      while let Ok(Some(event)) = self.reader.next_event() {
-        match event {
-          Event::Stanza(stanza) => {
+      // A stream the reader refuses (one too large, say) is done with too
+      loop {
+        match self.reader.next_event() {
+          Ok(Some(Event::Stanza(stanza))) => {
             if stanza.is("error") || self.answer_ping(&stanza).await.is_err() {
               return false;
             }
           }
-          Event::StreamClose | Event::StreamOpen(_) => return false,
+          Ok(Some(Event::StreamClose | Event::StreamOpen(_))) | Err(_) => return false,
+          Ok(None) => break,
         }
       }
       let mut buf = [0u8; 8192];

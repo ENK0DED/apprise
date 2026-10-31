@@ -34,6 +34,12 @@ const NICKNAME_COLLISION_MAX: u32 = 3;
 /// RFC 2812 limits a line to 512 bytes; leave room for the prefix.
 const BODY_MAXLEN: usize = 380;
 
+/// Longest line accepted from the server. RFC 1459 lines are 512 bytes,
+/// and IRCv3 tags (which are not requested) allow 8191 more. Without a
+/// limit, a server that never ends a line would have us buffer whatever it
+/// sends.
+const MAX_LINE_LEN: usize = 8 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum AuthMode {
   /// No authentication.
@@ -450,8 +456,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         tracing::trace!("IRC read: {}", line);
         return Ok(Some(line));
       }
+      if self.inbuf.len() >= MAX_LINE_LEN {
+        return Err(format!("the IRC server sent a line longer than {} bytes", MAX_LINE_LEN));
+      }
       // A read that always has data ready completes before its timeout is
-      // looked at, so a server that never ends a line would keep us here
+      // looked at, so a server that keeps sending would keep us here
       if Instant::now() >= deadline {
         return Ok(None);
       }
@@ -1052,17 +1061,35 @@ mod tests {
     assert!(!svc.send(&ctx("", "Body")).await.unwrap());
   }
 
-  /// A server that keeps sending without ever ending a line, so every read
-  /// returns data at once: the registration deadline must still hold
+  /// A server that keeps sending lines that never register us, so every
+  /// read returns data at once: the registration deadline must still hold
   /// (upstream checks it before each read).
   #[tokio::test]
   async fn test_read_deadline_holds_while_data_arrives() {
-    let endless = tokio::io::join(tokio::io::repeat(b'x'), tokio::io::sink());
+    let endless = tokio::io::join(tokio::io::repeat(b'\n'), tokio::io::sink());
     let mut client = Client::new(endless, "bot".into(), "Bot".into(), "apprise");
     let start = Instant::now();
     let registered = tokio::time::timeout(Duration::from_secs(5), client.register(None, Duration::from_millis(300), Duration::from_secs(1))).await;
     assert_eq!(registered, Ok(Err("IRC registration timeout".to_string())));
     assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+  }
+
+  /// A server that never ends a line fails the send once the line passes
+  /// 8 KiB, instead of having it buffered until the deadline. Upstream's
+  /// buffer has no limit.
+  #[tokio::test]
+  async fn test_line_length_limit() {
+    let endless = tokio::io::join(tokio::io::repeat(b'x'), tokio::io::sink());
+    let mut client = Client::new(endless, "bot".into(), "Bot".into(), "apprise");
+    let registered = tokio::time::timeout(Duration::from_secs(5), client.register(None, Duration::from_secs(30), Duration::from_secs(1))).await;
+    assert_eq!(registered, Ok(Err("the IRC server sent a line longer than 8192 bytes".to_string())));
+    assert!(client.inbuf.len() < MAX_LINE_LEN + 4096, "{}", client.inbuf.len());
+
+    // A long line that does end is still read
+    let line = format!(":irc.test 001 bot :{}\r\n", "w".repeat(MAX_LINE_LEN - 100));
+    let server = tokio::io::join(std::io::Cursor::new(line.into_bytes()), tokio::io::sink());
+    let mut client = Client::new(server, "bot".into(), "Bot".into(), "apprise");
+    assert_eq!(client.register(None, Duration::from_secs(5), Duration::from_secs(1)).await, Ok(()));
   }
 
   #[test]

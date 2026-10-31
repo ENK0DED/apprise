@@ -683,3 +683,35 @@ async fn test_trace_log_hides_plain_payload() {
   assert!(!logs.contains("AG1lAHNlY3JldA=="), "{}", logs);
   assert!(!logs.contains("secret"), "{}", logs);
 }
+
+/// A server whose stream features never end: the send fails once they pass
+/// the stanza limit, well before its timeout, instead of buffering all the
+/// server sends. Upstream (slixmpp over expat) keeps all of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_send_fails_on_endless_stanza() {
+  use super::xml::MAX_STANZA_LEN;
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let port = listener.local_addr().unwrap().port();
+  let server = tokio::spawn(async move {
+    let tcp = accept_client(&listener).await;
+    let mut link = Link::new(tcp);
+    assert!(matches!(link.event().await, Ok(Event::StreamOpen(_))));
+    link.write("<stream:stream xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'><stream:features>").await.unwrap();
+    // Features that never end
+    let chunk = "x".repeat(64 * 1024);
+    let mut sent = 0usize;
+    while link.stream.write_all(chunk.as_bytes()).await.is_ok() && sent < 64 * MAX_STANZA_LEN {
+      sent += chunk.len();
+    }
+    sent
+  });
+  let mut svc = parse(&format!("xmpp://me:secret@127.0.0.1:{}/a?mode=none", port)).unwrap();
+  svc.timeout = Duration::from_secs(20);
+  let start = Instant::now();
+  assert!(!svc.send(&ctx("", "Body")).await.unwrap());
+  assert!(start.elapsed() < Duration::from_secs(10), "{:?}", start.elapsed());
+  // The client hung up after about one stanza's worth, plus what the
+  // socket buffers held
+  let sent = server.await.unwrap();
+  assert!(sent < 16 * MAX_STANZA_LEN, "the server sent {} bytes", sent);
+}
