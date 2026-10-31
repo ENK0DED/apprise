@@ -895,6 +895,15 @@ This port aims to behave like upstream Apprise 2.1. Where it does not:
 * **Not ported**: upstream's `url()` serialisation (turning a loaded service back into a URL, including the privacy URL; `--dry-run` and `storage` listings mask the URL you gave instead, hiding the user, password, path, query values and token-like hosts), and custom Python plugins (the `@notify` decorator, `--plugin-path` and `APPRISE_PLUGIN_PATH`, which the CLI accepts but ignores with a warning).
 * **Time zones** (`?tz=`, YAML `asset: timezone:`) come from the system's tz database on Linux and macOS (`$TZDIR`, else `/usr/share/zoneinfo`; small container images may need the `tzdata` package) and from a copy built into Windows binaries. Where one location names several zones (`Pacific`, on systems that keep the old `Canada/` and `US/` links), the first in alphabetical order is used; upstream's pick is arbitrary.
 * **YAML values**: a number given as `user`, `password` or `host` (`password: 123456`) is used as its text, where upstream cannot load the entry. A YAML 1.1 timestamp (`2001-12-14 21:59:43`) stays the text as written, where upstream passes a `datetime` on.
+* **Persistent storage** holds at most 1 MiB of JSON per service: a value that would take it past that is refused and the previous one kept. Upstream has no limit; a larger cache file it wrote is left in place, unused.
+* **Known gaps** in this port:
+  * YAML settings that name targets (`to:`, ntfy's `topic:` and the like) are added to the targets the URL already names; upstream replaces them.
+  * Storage IDs (the `uid` in listings, and the persistent store's namespace) match upstream for every service that stores something. About 125 services that store nothing still use the generic ID, so only their listed `uid` differs.
+  * Markdown with tens of thousands of nested emphasis markers converts slowly (the time grows with the square of the input); ordinary messages are unaffected.
+  * Library callers: `NotifyContext::default()` declares the body as text, where upstream's `notify()` passes an undeclared body through unconverted. Set `body_passthrough` for upstream's behaviour; the Node.js binding does when `bodyFormat` is omitted.
+* **Shared with upstream, not fixed**:
+  * Two processes (or two `Apprise` instances) that share a storage path and service overwrite each other's persistent-store changes; the last to write wins.
+  * HTTP response bodies are read whole, so a hostile or broken server can make one send buffer as much as it sends.
 * **Upstream bugs fixed deliberately** (several following the Go port, [apprise-go](https://github.com/unraid/apprise-go)):
   * Matrix: every event gets its own transaction ID, so Synapse no longer drops repeats; a room whose encryption cannot be confirmed, or an encrypted room in a build without `matrix-e2ee`, receives nothing rather than plaintext.
   * Viber: `?to=` is split into receiver IDs, not single characters.
@@ -911,6 +920,15 @@ This port aims to behave like upstream Apprise 2.1. Where it does not:
   * Plivo: requests go to the account's Auth ID, not to the literal `{auth_id}` URL template.
   * Pingram: every phone number keeps its leading `+`.
   * YAML: an `asset: timezone:` that is a path (`/etc/localtime`) is ignored with a warning; upstream raises out of the configuration loader.
+  * `smpps://`: upstream connects without TLS (smpplib is given no `ssl_context`, so only the default port changes) and sends the system ID and password in the clear. The port runs the session over TLS, verified unless `?verify=no`, and fails the send if the handshake fails.
+  * IRC: upstream builds its `PASS`, `NICK` and `USER` lines from the nickname, `?name=`, passwords and ZNC user as given, so a decoded `%0D%0A` injects commands. The port refuses a URL whose fields contain CR, LF or NUL, drops such targets, and refuses to write any line that contains one.
+  * XMPP: upstream (slixmpp) logs SASL stanzas whole at DEBUG, including the base64 PLAIN payload, which decodes to the username and password. The port's log shows the element and mechanism, with the payload replaced by its length.
+  * IRC, XMPP, SMTP and MQTT: upstream buffers whatever the server sends (an IRC line that never ends, an unfinished XMPP stanza, endless SMTP continuation lines, an MQTT packet of up to 256 MiB). The port fails the send past 8 KiB per IRC line, 1 MiB per XMPP stanza, 1,000 lines or 64 KiB per SMTP reply and 1 MiB per MQTT packet.
+  * `syslog://`: upstream's `syslog()` call blocks without limit when the local logger is stuck, so the send hangs, and with a time limit it leaves a thread behind that blocks shutdown. The port bounds the connect and the write by `?cto=` and `?rto=` (4 s each by default), fails the send, and leaves no thread behind.
+  * Storage prune: from about 739,000 days, `--storage-prune-days` (or `APPRISE_STORAGE_PRUNE_DAYS`) makes upstream crash with an `OverflowError`. The port prunes nothing, since no file is that old.
+  * Slack (legacy API, Markdown with no declared format): upstream reads the text of `<!…>`, `<@…>` and `<url|…>` links as a `re.sub()` template, so backslashes are interpreted, `\d` or `\1` fail the send, and each link overwrites copies of itself written in another case. The port sends each link as written.
+  * Slack (legacy API): upstream fails any send whose title, or whose Markdown body with no declared format, contains CR `*` LF (a `KeyError` in its escaping table). The port escapes only `&`, `<` and `>`, and sends it.
+  * Telegram (HTML with no declared format): upstream's comment pattern starts at any `<!`, so a document with `<!DOCTYPE html>` and a later comment loses everything between them. The port removes only the comments, ending them where HTML does, and removes the doctype on its own.
 
 # Want To Learn More?
 
