@@ -112,6 +112,9 @@ pub struct PgpController {
   /// Generate a key pair when one is needed and missing (upstream
   /// `AppriseAsset.pgp_autogen`, on by default).
   autogen: bool,
+  /// Follow redirects when a key URL sets no `?redirect=` (the asset's
+  /// `http_redirects`, on by default).
+  http_redirects: bool,
   lookup: Arc<Mutex<HashMap<String, (CachedKey, Instant)>>>,
 }
 
@@ -134,6 +137,7 @@ impl PgpController {
       app_id: app_id.to_string(),
       wkd,
       autogen: true,
+      http_redirects: true,
       lookup: Arc::new(Mutex::new(HashMap::new())),
     }
   }
@@ -145,9 +149,10 @@ impl PgpController {
 
   /// This controller for an Apprise using `asset` (upstream gives the
   /// controller the service's asset): generated keys are named after its
-  /// `app_id`, and are only generated when its `pgp_autogen` allows it.
+  /// `app_id` and are only generated when its `pgp_autogen` allows it, and
+  /// key URLs without `?redirect=` follow its `http_redirects`.
   pub fn with_asset(&self, asset: &AppriseAsset) -> Self {
-    Self { app_id: asset.app_id.clone(), autogen: asset.pgp_autogen, ..self.clone() }
+    Self { app_id: asset.app_id.clone(), autogen: asset.pgp_autogen, http_redirects: asset.http_redirects, ..self.clone() }
   }
 
   /// The WKD controller, if WKD discovery is on.
@@ -216,7 +221,7 @@ impl PgpController {
       // The limit applies while reading (upstream sets the key file's
       // max_file_size)
       let loaded = match crate::attachment::parse_attachment(source) {
-        Ok(parsed) => parsed.with_max_file_size(max as u64).load().await,
+        Ok(parsed) => parsed.with_max_file_size(max as u64).load_following(self.http_redirects).await,
         Err(e) => Err(e),
       };
       return match loaded {

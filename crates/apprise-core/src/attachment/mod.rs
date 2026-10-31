@@ -25,6 +25,7 @@ pub mod memory;
 
 use std::collections::HashMap;
 
+use crate::asset::AppriseAsset;
 use crate::error::AttachError;
 use crate::notify::Attachment;
 use crate::utils::cwe312::cwe312_loggable;
@@ -67,11 +68,26 @@ pub enum AttachSource {
 
 impl AttachSource {
   /// Read the attachment's content, refusing more than
-  /// [`max_file_size`](Self::max_file_size) before reading past it.
+  /// [`max_file_size`](Self::max_file_size) before reading past it. A web
+  /// source follows redirects unless its URL says `?redirect=no`; use
+  /// [`load_for`](Self::load_for) to take an asset's default.
   pub async fn load(&self) -> Result<Attachment, AttachError> {
+    self.load_following(true).await
+  }
+
+  /// [`load`](Self::load) for an Apprise using `asset`: a web source whose
+  /// URL sets no `?redirect=` follows the asset's `http_redirects`, as
+  /// upstream gives every attachment, template and key file the asset.
+  /// The `?redirect=` of the service being sent does not apply.
+  pub async fn load_for(&self, asset: &AppriseAsset) -> Result<Attachment, AttachError> {
+    self.load_following(asset.http_redirects).await
+  }
+
+  /// [`load`](Self::load), following redirects by default when `redirects`.
+  pub(crate) async fn load_following(&self, redirects: bool) -> Result<Attachment, AttachError> {
     match self {
       Self::File(f) => f.load().await,
-      Self::Http(h) => h.load().await,
+      Self::Http(h) => h.load_following(redirects).await,
       Self::Memory(m) => m.load(),
     }
   }

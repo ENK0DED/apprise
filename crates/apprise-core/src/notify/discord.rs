@@ -195,7 +195,7 @@ impl Discord {
   /// `None` (already logged) when it cannot be used.
   async fn gen_payload(&self, template: &TemplateFile, ctx: &NotifyContext, title: &str, image_url: Option<&str>) -> Option<Map<String, Value>> {
     let name = self.flavor.service_name;
-    let text = template.read(name).await?;
+    let text = template.read(name, &ctx.asset).await?;
 
     let mut tokens = app_tokens(&self.tokens, &ctx.asset, &ctx.notify_type, title, &ctx.body, image_url);
     // Embeds want the colour as a decimal integer

@@ -3,8 +3,9 @@
 use std::collections::HashMap;
 
 use super::{CommonOptions, MAX_FILE_SIZE, UNKNOWN_MIMETYPE, basename, exceeds, final_name, guess_mime, parse_query};
+use crate::asset::AppriseAsset;
 use crate::error::AttachError;
-use crate::notify::{APP_ID, Attachment, ClientDefaults, HttpOptions, client_builder, current_http_options, with_http_options};
+use crate::notify::{APP_ID, Attachment, ClientDefaults, HttpOptions, client_builder, with_http_options};
 use crate::utils::cwe312::cwe312_loggable;
 use crate::utils::parse::parse_bool;
 
@@ -72,13 +73,24 @@ impl HttpSource {
 
   /// Download the content, refusing anything over
   /// [`max_file_size`](Self::max_file_size) before reading past it.
-  ///
-  /// Redirects follow the URL's `?redirect=`, else the caller's
-  /// [`with_http_options`] (the asset's `http_redirects`, as upstream
-  /// `URLBase.redirects`), else they are followed.
+  /// Redirects are followed unless the URL says `?redirect=no`.
   pub async fn load(&self) -> Result<Attachment, AttachError> {
+    self.load_following(true).await
+  }
+
+  /// [`load`](Self::load) for an Apprise using `asset`: without
+  /// `?redirect=`, redirects follow its `http_redirects` (upstream
+  /// `URLBase.redirects`).
+  pub async fn load_for(&self, asset: &AppriseAsset) -> Result<Attachment, AttachError> {
+    self.load_following(asset.http_redirects).await
+  }
+
+  /// [`load`](Self::load), following redirects by default when `redirects`.
+  /// Only this source's own settings apply, never those of a service being
+  /// sent.
+  pub(crate) async fn load_following(&self, redirects: bool) -> Result<Attachment, AttachError> {
     let mut http = self.http.clone();
-    http.redirect = http.redirect.or(current_http_options().redirect);
+    http.redirect = Some(http.redirect.unwrap_or(redirects));
     with_http_options(http, self.fetch(self.max_file_size)).await
   }
 

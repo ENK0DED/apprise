@@ -699,7 +699,7 @@ impl Notify for Vapid {
         autogen_subscriptions(dir);
       }
       state.key = match (&self.keyfile, &dir) {
-        (Some(keyfile), _) => read_source(keyfile, MAX_KEYFILE_SIZE).await.and_then(|(data, _)| load_private_key(&data)),
+        (Some(keyfile), _) => read_source(keyfile, MAX_KEYFILE_SIZE, &ctx.asset).await.and_then(|(data, _)| load_private_key(&data)),
         (None, Some(dir)) => store_private_key(dir, ctx.asset.pem_autogen),
         (None, None) => None,
       };
@@ -720,7 +720,7 @@ impl Notify for Vapid {
     {
       // A failed load is not attempted again on the next notification
       state.subs_attempted = true;
-      let loaded = read_source(subfile, MAX_SUBFILE_SIZE).await.and_then(|(data, path)| parse_subscriptions(&data).map(|subs| (subs, path)));
+      let loaded = read_source(subfile, MAX_SUBFILE_SIZE, &ctx.asset).await.and_then(|(data, path)| parse_subscriptions(&data).map(|subs| (subs, path)));
       match loaded {
         Some((subscriptions, path)) => {
           state.subscriptions = subscriptions;

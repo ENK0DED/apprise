@@ -205,7 +205,7 @@ impl Workflows {
       }));
     };
 
-    let text = template.read("Workflow").await?;
+    let text = template.read("Workflow", &ctx.asset).await?;
     let tokens = app_tokens(&self.tokens, &ctx.asset, &ctx.notify_type, &ctx.title, &ctx.body, image_url.as_deref());
     let content: Value = match serde_json::from_str(&apply_template(&text, TemplateType::Json, &tokens)) {
       Ok(v) => v,

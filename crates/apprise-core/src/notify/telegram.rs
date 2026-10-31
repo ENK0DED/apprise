@@ -821,7 +821,7 @@ impl Telegram {
   /// Build the Rich Message from the template (upstream `_gen_rich_payload`).
   async fn rich_payload(&self, ctx: &NotifyContext) -> Option<Value> {
     let source = self.template.as_ref()?;
-    let loaded = source.load().await.ok();
+    let loaded = source.load_for(&ctx.asset).await.ok();
     let Some(template) = loaded else {
       tracing::warn!("Could not access Telegram Rich Message template {}.", source.loggable());
       return None;

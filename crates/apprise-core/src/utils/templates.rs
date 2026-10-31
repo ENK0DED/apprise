@@ -200,11 +200,13 @@ impl TemplateFile {
     self.source.loggable()
   }
 
-  /// Read the template text. A missing or oversized template logs
-  /// "Could not access {service} template ..." and one that cannot be
-  /// read logs "{service} template ... could not be read.", as upstream.
-  pub async fn read(&self, service: &str) -> Option<String> {
-    let loaded = match self.source.load().await {
+  /// Read the template text for an Apprise using `asset` (its
+  /// `http_redirects` applies unless the template's URL sets `?redirect=`).
+  /// A missing or oversized template logs "Could not access {service}
+  /// template ..." and one that cannot be read logs "{service} template
+  /// ... could not be read.", as upstream.
+  pub async fn read(&self, service: &str, asset: &AppriseAsset) -> Option<String> {
+    let loaded = match self.source.load_for(asset).await {
       Ok(a) => a,
       Err(AttachError::NotFound(_)) | Err(AttachError::TooLarge { .. }) | Err(AttachError::Disallowed(_)) => {
         tracing::error!("Could not access {} template {}.", service, self.loggable());
@@ -446,13 +448,13 @@ mod tests {
     std::fs::write(&path, "{\"a\": \"{{app_body}}\"}").unwrap();
 
     let file = TemplateFile::parse(path.to_str().unwrap(), 100).unwrap();
-    assert_eq!(file.read("Test").await.as_deref(), Some("{\"a\": \"{{app_body}}\"}"));
+    assert_eq!(file.read("Test", &AppriseAsset::default()).await.as_deref(), Some("{\"a\": \"{{app_body}}\"}"));
 
     // Too large, missing and unreadable templates are refused
-    assert!(TemplateFile::parse(path.to_str().unwrap(), 5).unwrap().read("Test").await.is_none());
-    assert!(TemplateFile::parse(dir.join("missing.json").to_str().unwrap(), 100).unwrap().read("Test").await.is_none());
+    assert!(TemplateFile::parse(path.to_str().unwrap(), 5).unwrap().read("Test", &AppriseAsset::default()).await.is_none());
+    assert!(TemplateFile::parse(dir.join("missing.json").to_str().unwrap(), 100).unwrap().read("Test", &AppriseAsset::default()).await.is_none());
     std::fs::write(&path, [0xff, 0xfe]).unwrap();
-    assert!(file.read("Test").await.is_none());
+    assert!(file.read("Test", &AppriseAsset::default()).await.is_none());
 
     // An unsupported schema cannot be loaded at all
     assert!(TemplateFile::parse("invalid://template", 100).is_none());

@@ -124,7 +124,7 @@ async fn test_source_limit_refuses_more_than_asked() {
   assert!(matches!(source.clone().with_max_file_size(8000).load().await, Err(AttachError::TooLarge { limit: 8000, .. })));
   assert_eq!(source.with_max_file_size(9000).load().await.unwrap().data.len(), 9000);
   // Key files go through the same limit
-  assert!(crate::utils::keyfile::read_source(&format!("{}/key.pem", server.uri()), 8000).await.is_none());
+  assert!(crate::utils::keyfile::read_source(&format!("{}/key.pem", server.uri()), 8000, &crate::AppriseAsset::default()).await.is_none());
 }
 
 #[tokio::test]
@@ -149,14 +149,76 @@ async fn test_http_attachment_redirects_follow_the_asset_default() {
   let gets = |p: &str| requests.iter().filter(|r| r.method.as_str() == "GET" && r.url.path() == p).count();
   assert_eq!((gets("/start"), gets("/target")), (3, 2));
 
-  // A load inside a send (templates, key files) takes the default from the
-  // service's settings the same way
+  // A load for an asset takes its default the same way, whatever the
+  // service being sent says
   let source = parse_attachment(&format!("{}/start", server.uri())).unwrap();
-  let refused = HttpOptions { redirect: Some(false), ..Default::default() };
-  assert!(with_http_options(refused.clone(), source.load()).await.is_err());
-  assert_eq!(source.load().await.unwrap().data, b"attached");
+  let (follow, refuse) = (AppriseAsset::default(), AppriseAsset { http_redirects: false, ..Default::default() });
+  let service = |redirect| HttpOptions { redirect: Some(redirect), ..Default::default() };
+  assert!(with_http_options(service(true), source.load_for(&refuse)).await.is_err());
+  assert_eq!(with_http_options(service(false), source.load_for(&follow)).await.unwrap().data, b"attached");
+  assert_eq!(with_http_options(service(false), source.load()).await.unwrap().data, b"attached");
   let source = parse_attachment(&format!("{}/start?redirect=yes", server.uri())).unwrap();
-  assert_eq!(with_http_options(refused, source.load()).await.unwrap().data, b"attached");
+  assert_eq!(source.load_for(&refuse).await.unwrap().data, b"attached");
+}
+
+/// Templates, key files and PGP keys read during a send follow the asset's
+/// `http_redirects` unless their own URL says `?redirect=`; the service
+/// URL's `?redirect=` does not apply to them (`u4_redirects.py` against
+/// upstream, which gives each of them the asset).
+#[tokio::test]
+async fn test_loads_during_a_send_follow_the_asset() {
+  use crate::notify::{NotifyContext, with_test_base};
+  use crate::{Apprise, AppriseAsset};
+  let server = MockServer::start().await;
+  Mock::given(method("GET")).and(path("/moved")).respond_with(ResponseTemplate::new(302).insert_header("Location", "/target")).mount(&server).await;
+  Mock::given(method("GET")).and(path("/target")).respond_with(ResponseTemplate::new(200).set_body_string("{\"text\": \"{{app_body}}\"}")).mount(&server).await;
+  let fetched = || async {
+    let requests = server.received_requests().await.unwrap();
+    let followed = requests.iter().any(|r| r.method.as_str() == "GET" && r.url.path() == "/target");
+    server.reset().await;
+    Mock::given(method("GET")).and(path("/moved")).respond_with(ResponseTemplate::new(302).insert_header("Location", "/target")).mount(&server).await;
+    Mock::given(method("GET"))
+      .and(path("/target"))
+      .respond_with(ResponseTemplate::new(200).set_body_string("{\"text\": \"{{app_body}}\"}"))
+      .mount(&server)
+      .await;
+    followed
+  };
+  let host = server.address().to_string();
+  // Builds a service URL from its extra arguments and the template URL
+  type Url = Box<dyn Fn(&str, &str) -> String>;
+  let services: [(&str, Url); 6] = [
+    ("slack", Box::new(|svc, tpl| format!("slack://T1JJ3T3L2/A1BRTD4JD/TIiajkdnlazkcOXrIdevi7FQ/#chan?template={tpl}{svc}"))),
+    ("discord", Box::new(|svc, tpl| format!("discord://AAAA/BBBB/?template={tpl}{svc}"))),
+    ("workflows", Box::new(move |svc, tpl| format!("workflow://{host}/workflow1a/signature/?template={tpl}{svc}"))),
+    ("telegram", Box::new(|svc, tpl| format!("tgram://123456789:abcdefg_hijklmnop/12345/?template={tpl}{svc}"))),
+    ("vapid", Box::new(|svc, tpl| format!("vapid://user@example.com/user@example.com?keyfile={tpl}{svc}"))),
+    ("fcm", Box::new(|svc, tpl| format!("fcm://project/device?keyfile={tpl}{svc}"))),
+  ];
+  let ctx = NotifyContext { title: "t".into(), body: "body".into(), ..Default::default() };
+  // (asset http_redirects, service URL, template URL, followed)
+  let cases = [(true, "&redirect=no", "", true), (false, "&redirect=yes", "", false), (false, "", "?redirect=yes", true)];
+  for (name, url) in &services {
+    for (http_redirects, svc, tpl, followed) in cases {
+      let template = urlencoding::encode(&format!("{}/moved{tpl}", server.uri())).into_owned();
+      let mut a = Apprise::with_asset(AppriseAsset { http_redirects, ..Default::default() });
+      assert!(a.add(&url(svc, &template)), "{name}");
+      let _ = with_test_base(server.uri(), a.notify(&ctx)).await;
+      assert_eq!(fetched().await, followed, "{name}: http_redirects={http_redirects} service={svc:?} template={tpl:?}");
+    }
+  }
+
+  // PGP keys (email pgppub=/pgpprv=), loaded inside the service's settings
+  #[cfg(feature = "pgp")]
+  for (http_redirects, svc, tpl, followed) in cases {
+    use crate::notify::{HttpOptions, with_http_options};
+    let asset = AppriseAsset { http_redirects, ..Default::default() };
+    let key = format!("{}/moved{tpl}", server.uri());
+    let pgp = crate::utils::pgp::PgpController::new(Some(&key), Some(&key), Some("me@example.com"), "Apprise", None).with_asset(&asset);
+    let service = HttpOptions { redirect: Some(svc.is_empty() || svc.ends_with("yes")), ..Default::default() };
+    let _ = with_http_options(service, async { (pgp.public_key(&[], Some(false)).await.is_some(), pgp.private_key().await.is_some()) }).await;
+    assert_eq!(fetched().await, followed, "pgp: http_redirects={http_redirects} service={svc:?} template={tpl:?}");
+  }
 }
 
 /// Serves `size` bytes at `/big` without a Content-Length (the body ends

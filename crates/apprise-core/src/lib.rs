@@ -529,11 +529,10 @@ impl Apprise {
     let mut opts = self.dispatch_options();
     let mut loaded = Vec::new();
     if !self.entries.is_empty() {
-      // A URL without `?redirect=` follows the asset (upstream `URLBase.redirects`).
-      let http = notify::HttpOptions { redirect: Some(self.asset.http_redirects), ..Default::default() };
       for source in sources {
         tracing::debug!("Loading attachment: {}", source.loggable());
-        match notify::with_http_options(http.clone(), source.load()).await {
+        // A URL without `?redirect=` follows the asset (upstream `URLBase.redirects`).
+        match source.load_for(&self.asset).await {
           Ok(att) => loaded.push(att),
           Err(_) => opts.attachment_errors.push(source.loggable().to_string()),
         }
