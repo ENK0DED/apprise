@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use super::{CommonOptions, MAX_FILE_SIZE, UNKNOWN_MIMETYPE, basename, final_name, guess_mime, parse_query};
 use crate::error::AttachError;
-use crate::notify::{APP_ID, Attachment, ClientDefaults, HttpOptions, client_builder, with_http_options};
+use crate::notify::{APP_ID, Attachment, ClientDefaults, HttpOptions, client_builder, current_http_options, with_http_options};
 use crate::utils::cwe312::cwe312_loggable;
 use crate::utils::parse::parse_bool;
 
@@ -49,7 +49,8 @@ impl HttpSource {
     let http = HttpOptions {
       connect_timeout: timeout("cto"),
       read_timeout: timeout("rto"),
-      redirect: Some(qsd.get("redirect").is_none_or(|v| parse_bool(v))),
+      // `None` when the URL says nothing; the load takes the default.
+      redirect: qsd.get("redirect").map(|v| parse_bool(v)),
       verify: Some(qsd.get("verify").is_none_or(|v| parse_bool(v))),
     };
     // Header values are never sent as query arguments.
@@ -73,8 +74,14 @@ impl HttpSource {
 
   /// Download the content, refusing anything over `limit` bytes (or
   /// [`MAX_FILE_SIZE`], if smaller) before reading past it.
+  ///
+  /// Redirects follow the URL's `?redirect=`, else the caller's
+  /// [`with_http_options`] (the asset's `http_redirects`, as upstream
+  /// `URLBase.redirects`), else they are followed.
   pub async fn load_limited(&self, limit: u64) -> Result<Attachment, AttachError> {
-    with_http_options(self.http.clone(), self.fetch(limit.min(MAX_FILE_SIZE))).await
+    let mut http = self.http.clone();
+    http.redirect = http.redirect.or(current_http_options().redirect);
+    with_http_options(http, self.fetch(limit.min(MAX_FILE_SIZE))).await
   }
 
   async fn fetch(&self, limit: u64) -> Result<Attachment, AttachError> {

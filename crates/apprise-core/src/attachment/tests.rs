@@ -126,3 +126,35 @@ async fn test_load_limited_refuses_more_than_asked() {
   // Key files go through the same limit
   assert!(crate::utils::keyfile::read_source(&format!("{}/key.pem", server.uri()), 8000).await.is_none());
 }
+
+#[tokio::test]
+async fn test_http_attachment_redirects_follow_the_asset_default() {
+  use crate::notify::{HttpOptions, NotifyContext, with_http_options};
+  use crate::{Apprise, AppriseAsset};
+  let server = MockServer::start().await;
+  Mock::given(method("GET")).and(path("/start")).respond_with(ResponseTemplate::new(302).insert_header("Location", "/target")).mount(&server).await;
+  Mock::given(method("GET")).and(path("/target")).respond_with(ResponseTemplate::new(200).set_body_string("attached")).mount(&server).await;
+  Mock::given(method("POST")).and(path("/notify")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+  let target = format!("json://{}/notify", server.address());
+  let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+
+  // The same cases as upstream: the asset decides unless the URL says ?redirect=
+  for (http_redirects, suffix, sent) in [(true, "", true), (false, "", false), (false, "?redirect=yes", true)] {
+    let mut a = Apprise::with_asset(AppriseAsset { http_redirects, ..Default::default() });
+    a.add(&target);
+    let r = a.notify_with_attachments(&ctx, &[format!("{}/start{suffix}", server.uri())]).await;
+    assert_eq!(r.is_success(), sent, "http_redirects={http_redirects} suffix={suffix:?}");
+  }
+  let requests = server.received_requests().await.unwrap();
+  let gets = |p: &str| requests.iter().filter(|r| r.method.as_str() == "GET" && r.url.path() == p).count();
+  assert_eq!((gets("/start"), gets("/target")), (3, 2));
+
+  // A load inside a send (templates, key files) takes the default from the
+  // service's settings the same way
+  let source = parse_attachment(&format!("{}/start", server.uri())).unwrap();
+  let refused = HttpOptions { redirect: Some(false), ..Default::default() };
+  assert!(with_http_options(refused.clone(), source.load()).await.is_err());
+  assert_eq!(source.load().await.unwrap().data, b"attached");
+  let source = parse_attachment(&format!("{}/start?redirect=yes", server.uri())).unwrap();
+  assert_eq!(with_http_options(refused, source.load()).await.unwrap().data, b"attached");
+}

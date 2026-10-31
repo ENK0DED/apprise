@@ -504,9 +504,11 @@ impl Apprise {
           }
         }
       }
+      // A URL without `?redirect=` follows the asset (upstream `URLBase.redirects`).
+      let http = notify::HttpOptions { redirect: Some(self.asset.http_redirects), ..Default::default() };
       for source in parsed {
         tracing::debug!("Loading attachment: {}", source.loggable());
-        match source.load().await {
+        match notify::with_http_options(http.clone(), source.load()).await {
           Ok(att) => ctx.attachments.push(att),
           Err(_) => opts.attachment_errors.push(source.loggable().to_string()),
         }
