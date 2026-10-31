@@ -34,6 +34,12 @@ const NICKNAME_COLLISION_MAX: u32 = 3;
 /// RFC 2812 limits a line to 512 bytes; leave room for the prefix.
 const BODY_MAXLEN: usize = 380;
 
+/// Longest line accepted from the server. RFC 1459 lines are 512 bytes,
+/// and IRCv3 tags (which are not requested) allow 8191 more. Without a
+/// limit, a server that never ends a line would have us buffer whatever it
+/// sends.
+const MAX_LINE_LEN: usize = 8 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum AuthMode {
   /// No authentication.
@@ -158,6 +164,18 @@ impl Irc {
       .or_else(|| user.as_deref().map(|u| u.trim().to_string()))
       .unwrap_or_default();
     let fullname = url.get("name").map(|n| n.trim().to_string()).unwrap_or_default();
+
+    // Every one of these ends up on a protocol line (PASS, NICK, USER or
+    // IDENTIFY), where a line break would end it early and send the rest
+    // as a command of its own. Upstream sends them as they are.
+    for (field, value) in
+      [("user", user.as_deref()), ("password", password.as_deref()), ("nickname", Some(nickname.as_str())), ("name", Some(fullname.as_str()))]
+    {
+      if value.is_some_and(breaks_line) {
+        tracing::warn!("The IRC {} specified contains a line break or NUL.", field);
+        return None;
+      }
+    }
     // A value that is not a recognised boolean reads as false.
     let join = url.get("join").map(|v| parse_bool_or(v, false)).unwrap_or(true);
 
@@ -207,13 +225,7 @@ impl Irc {
   }
 
   async fn deliver<S: AsyncRead + AsyncWrite + Unpin>(&self, client: &mut Client<S>, message: &str) -> Result<(), String> {
-    // IDENTIFY puts the password on a line of its own, which a line break
-    // would end early and turn the rest into another command
     let identify = self.password.as_deref().filter(|p| self.auth_mode == AuthMode::NickServ && !p.is_empty());
-    if identify.is_some_and(|p| p.contains(['\r', '\n', '\0'])) {
-      return Err("the NickServ password contains a line break or NUL".into());
-    }
-
     client.register(self.pass().as_deref(), REGISTER_TIMEOUT, self.send_timeout).await?;
 
     // Upstream clears the password before identifying, so it never sends
@@ -291,12 +303,13 @@ fn parse_channel(target: &str) -> Option<(String, Option<String>)> {
   let rest = rest.strip_prefix('#').or_else(|| rest.strip_prefix("%23"))?.trim_end();
   let end = rest.find(|c: char| " \t\r\n@#:".contains(c)).unwrap_or(rest.len());
   let (channel, tail) = rest.split_at(end);
-  if channel.is_empty() {
+  // A NUL would end the JOIN or PRIVMSG line it is sent on
+  if channel.is_empty() || breaks_line(channel) {
     return None;
   }
   match tail.strip_prefix(':') {
     None if tail.is_empty() => Some((channel.to_string(), None)),
-    Some(key) if !key.is_empty() && !key.contains([' ', '\t', '\r', '\n']) => Some((channel.to_string(), Some(key.to_string()))),
+    Some(key) if !key.is_empty() && !key.contains([' ', '\t', '\r', '\n', '\0']) => Some((channel.to_string(), Some(key.to_string()))),
     _ => None,
   }
 }
@@ -305,7 +318,12 @@ fn parse_channel(target: &str) -> Option<(String, Option<String>)> {
 fn parse_user(target: &str) -> Option<String> {
   let rest = target.trim_start();
   let rest = rest.strip_prefix('@').or_else(|| rest.strip_prefix("%40")).unwrap_or(rest);
-  (!rest.is_empty() && !rest.contains([' ', '\t', '\r', '\n', '@', '#'])).then(|| rest.to_string())
+  (!rest.is_empty() && !rest.contains([' ', '\t', '\r', '\n', '\0', '@', '#'])).then(|| rest.to_string())
+}
+
+/// CR, LF and NUL end an IRC line, so none may appear inside one.
+fn breaks_line(value: &str) -> bool {
+  value.contains(['\r', '\n', '\0'])
 }
 
 /// Upstream `IRCClient.nick_generation()`: up to 6 characters of the prefix,
@@ -416,7 +434,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
     }
   }
 
+  /// Send one command. Nothing that reaches here may hold a line break:
+  /// the rest of the line would reach the server as a command of its own.
   async fn write(&mut self, line: &str, timeout: Duration) -> Result<(), String> {
+    if breaks_line(line) {
+      return Err("refusing to send an IRC command that contains a line break or NUL".into());
+    }
     let payload = format!("{}\r\n", line);
     tokio::time::timeout(timeout, self.stream.write_all(payload.as_bytes()))
       .await
@@ -433,8 +456,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         tracing::trace!("IRC read: {}", line);
         return Ok(Some(line));
       }
+      if self.inbuf.len() >= MAX_LINE_LEN {
+        return Err(format!("the IRC server sent a line longer than {} bytes", MAX_LINE_LEN));
+      }
       // A read that always has data ready completes before its timeout is
-      // looked at, so a server that never ends a line would keep us here
+      // looked at, so a server that keeps sending would keep us here
       if Instant::now() >= deadline {
         return Ok(None);
       }
@@ -453,6 +479,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
     let msg = Message::parse(line);
     if msg.command.eq_ignore_ascii_case("PING") {
       let payload = msg.trailing.clone().or_else(|| msg.params.first().cloned()).unwrap_or_default();
+      // A stray CR or NUL from the server stays out of the reply
+      let payload = payload.split(['\r', '\0']).next().unwrap_or_default();
       return self.write(&format!("PONG :{}", payload), timeout).await;
     }
     let numeric = msg.numeric();
@@ -562,7 +590,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
   /// One PRIVMSG per line; IRC ends every command at a line break, and
   /// blank lines are skipped.
   async fn privmsg(&mut self, target: &str, message: &str, timeout: Duration) -> Result<(), String> {
-    for line in split_lines(message).into_iter().filter(|l| !l.trim().is_empty()) {
+    // A NUL would end the line too; it is dropped from the text
+    let message = message.replace('\0', "");
+    for line in split_lines(&message).into_iter().filter(|l| !l.trim().is_empty()) {
       self.write(&format!("PRIVMSG {} :{}", target, line), timeout).await?;
     }
     self.pump(PUMP_INTERVAL.min(timeout)).await
@@ -854,17 +884,74 @@ mod tests {
     );
   }
 
-  /// IDENTIFY puts the password on a protocol line of its own; one that
-  /// holds a line break would end it early and send what follows as
-  /// another command. Upstream never sends IDENTIFY at all.
-  #[tokio::test]
-  async fn test_send_nickserv_password_with_line_break() {
-    for password in ["pw%0D%0APRIVMSG%20mallory%20%3Ainjected", "pw%0Ax", "pw%00x"] {
-      let (port, server) = irc_server(false, welcoming()).await;
-      let svc = from_url(&format!("irc://me:{}@127.0.0.1:{}/#chan?mode=nickserv&join=no", password, port)).unwrap();
-      assert!(!svc.send(&ctx("Title", "Body")).await.unwrap(), "{}", password);
-      assert!(server.await.unwrap().is_empty(), "{}", password);
+  /// A field that reaches a protocol line (PASS, NICK, USER, IDENTIFY)
+  /// and holds a line break would end that line early and send what
+  /// follows as a command of its own, so the URL is refused. Upstream
+  /// sends these as they are.
+  #[test]
+  fn test_line_breaks_refused() {
+    let inject = "%0D%0APRIVMSG%20mallory%20%3Ainjected";
+    for url in [
+      format!("irc://h/#c?nick=bot{}", inject),
+      format!("irc://h/#c?nick=bot&name=Real{}", inject),
+      format!("irc://user:pw{}@h/#c?mode=server", inject),
+      format!("irc://user:pw{}@h/#c?mode=nickserv", inject),
+      "irc://user:pw%0Ax@h/#c?mode=nickserv".to_string(),
+      "irc://user:pw%00x@h/#c?mode=nickserv".to_string(),
+      "irc://user:pw%0Dx@h/#c".to_string(),
+      format!("irc://znc{}:pw@h/#c?mode=znc", inject),
+      // The URL user is the nickname when ?nick= is not given
+      format!("irc://bot{}@h/#c", inject),
+      "irc://h/#c?nick=b%00ot".to_string(),
+      "irc://h/#c?name=a%0Ab".to_string(),
+    ] {
+      assert!(parse(&url).is_none(), "Should not parse: {}", url);
     }
+
+    // A line break between targets separates them; a NUL in a channel,
+    // its key or a nickname drops that target
+    let irc = parse("irc://h/%23a%0D%0A%23b").unwrap();
+    assert_eq!(irc.channels.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
+    let irc = parse("irc://h/%23ch%00an/%23chan:k%00ey/@bo%00b/@alice?to=%23x%2500y").unwrap();
+    assert!(irc.channels.is_empty(), "{:?}", irc.channels);
+    assert_eq!(irc.users, vec!["alice"]);
+
+    // Surrounding whitespace is still trimmed, as before
+    assert_eq!(parse("irc://h/#c?nick=bot%0D%0A").unwrap().nickname, "bot");
+  }
+
+  /// The command writer refuses a line that holds CR, LF or NUL, whatever
+  /// built it, and writes nothing for it.
+  #[tokio::test]
+  async fn test_write_refuses_line_breaks() {
+    let (ours, mut theirs) = tokio::io::duplex(4096);
+    let mut client = Client::new(ours, "bot".into(), "Bot".into(), "apprise");
+    for line in ["PRIVMSG a :x\r\nQUIT", "NICK a\nb", "NICK a\rb", "NICK a\0b", "QUIT :bye\r\n"] {
+      assert!(client.write(line, Duration::from_secs(1)).await.is_err(), "{:?}", line);
+    }
+    client.write("NICK ok", Duration::from_secs(1)).await.unwrap();
+    drop(client);
+    let mut out = String::new();
+    theirs.read_to_string(&mut out).await.unwrap();
+    assert_eq!(out, "NICK ok\r\n");
+  }
+
+  /// A NUL in the body is dropped from the text, and a stray CR in a
+  /// server's PING stays out of the PONG, so neither fails the send.
+  #[tokio::test]
+  async fn test_send_keeps_lines_whole() {
+    let mut welcome = welcoming();
+    let responder: Responder = Box::new(move |line: &str| {
+      let mut out = welcome(line);
+      if line.starts_with("USER") {
+        out.insert(0, "PING :tok\rQUIT".into());
+      }
+      out
+    });
+    let (port, server) = irc_server(false, responder).await;
+    let svc = from_url(&format!("irc://me@127.0.0.1:{}/@bob", port)).unwrap();
+    assert!(svc.send(&ctx("", "a\0b")).await.unwrap());
+    assert_eq!(server.await.unwrap(), vec!["NICK me", "USER me 0 * :Apprise Notifications", "PONG :tok", "PRIVMSG bob :ab", "QUIT :Apprise Notifications"]);
   }
 
   #[tokio::test]
@@ -974,17 +1061,35 @@ mod tests {
     assert!(!svc.send(&ctx("", "Body")).await.unwrap());
   }
 
-  /// A server that keeps sending without ever ending a line, so every read
-  /// returns data at once: the registration deadline must still hold
+  /// A server that keeps sending lines that never register us, so every
+  /// read returns data at once: the registration deadline must still hold
   /// (upstream checks it before each read).
   #[tokio::test]
   async fn test_read_deadline_holds_while_data_arrives() {
-    let endless = tokio::io::join(tokio::io::repeat(b'x'), tokio::io::sink());
+    let endless = tokio::io::join(tokio::io::repeat(b'\n'), tokio::io::sink());
     let mut client = Client::new(endless, "bot".into(), "Bot".into(), "apprise");
     let start = Instant::now();
     let registered = tokio::time::timeout(Duration::from_secs(5), client.register(None, Duration::from_millis(300), Duration::from_secs(1))).await;
     assert_eq!(registered, Ok(Err("IRC registration timeout".to_string())));
     assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+  }
+
+  /// A server that never ends a line fails the send once the line passes
+  /// 8 KiB, instead of having it buffered until the deadline. Upstream's
+  /// buffer has no limit.
+  #[tokio::test]
+  async fn test_line_length_limit() {
+    let endless = tokio::io::join(tokio::io::repeat(b'x'), tokio::io::sink());
+    let mut client = Client::new(endless, "bot".into(), "Bot".into(), "apprise");
+    let registered = tokio::time::timeout(Duration::from_secs(5), client.register(None, Duration::from_secs(30), Duration::from_secs(1))).await;
+    assert_eq!(registered, Ok(Err("the IRC server sent a line longer than 8192 bytes".to_string())));
+    assert!(client.inbuf.len() < MAX_LINE_LEN + 4096, "{}", client.inbuf.len());
+
+    // A long line that does end is still read
+    let line = format!(":irc.test 001 bot :{}\r\n", "w".repeat(MAX_LINE_LEN - 100));
+    let server = tokio::io::join(std::io::Cursor::new(line.into_bytes()), tokio::io::sink());
+    let mut client = Client::new(server, "bot".into(), "Bot".into(), "apprise");
+    assert_eq!(client.register(None, Duration::from_secs(5), Duration::from_secs(1)).await, Ok(()));
   }
 
   #[test]

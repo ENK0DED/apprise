@@ -541,6 +541,31 @@ struct Link<S> {
   reader: StreamReader,
 }
 
+/// SASL elements whose content is a credential or a step in proving one.
+const SASL_ELEMENTS: [&str; 4] = ["auth", "response", "challenge", "success"];
+
+/// `data` as it may be logged. The content of a SASL `<auth>`,
+/// `<response>`, `<challenge>` or `<success>` (base64 of the password for
+/// PLAIN, the proof and nonces for SCRAM) is replaced by its length; the
+/// element and its mechanism stay. Upstream logs these stanzas whole
+/// (slixmpp, at DEBUG).
+fn loggable(data: &str) -> std::borrow::Cow<'_, str> {
+  let trimmed = data.trim_start();
+  let Some(rest) = trimmed.strip_prefix('<') else { return data.into() };
+  let name = &rest[..rest.find(|c: char| c.is_whitespace() || c == '>' || c == '/').unwrap_or(rest.len())];
+  if !SASL_ELEMENTS.contains(&name.rsplit(':').next().unwrap_or(name)) {
+    return data.into();
+  }
+  let Some(open_end) = trimmed.find('>') else { return format!("<{} [{} bytes]", name, rest.len()).into() };
+  let open = &trimmed[..=open_end];
+  if open.ends_with("/>") {
+    return open.into();
+  }
+  let content = &trimmed[open_end + 1..];
+  let content = content.rfind("</").map(|end| &content[..end]).unwrap_or(content);
+  format!("{}[{} bytes]</{}>", open, content.len(), name).into()
+}
+
 impl<S: XmppStream> Link<S> {
   fn new(stream: S) -> Self {
     Self { stream, reader: StreamReader::default() }
@@ -548,7 +573,7 @@ impl<S: XmppStream> Link<S> {
 
   /// Write and flush, so nothing waits in a TLS buffer.
   async fn write(&mut self, data: &str) -> Result<(), String> {
-    tracing::trace!("XMPP SEND: {}", data);
+    tracing::trace!("XMPP SEND: {}", loggable(data));
     self.stream.write_all(data.as_bytes()).await.map_err(|e| e.to_string())?;
     self.stream.flush().await.map_err(|e| e.to_string())
   }
@@ -655,14 +680,16 @@ impl<S: XmppStream> Link<S> {
   /// what arrived meanwhile and notice when the server went away.
   async fn still_open(&mut self) -> bool {
     loop {
-      while let Ok(Some(event)) = self.reader.next_event() {
-        match event {
-          Event::Stanza(stanza) => {
+      // A stream the reader refuses (one too large, say) is done with too
+      loop {
+        match self.reader.next_event() {
+          Ok(Some(Event::Stanza(stanza))) => {
             if stanza.is("error") || self.answer_ping(&stanza).await.is_err() {
               return false;
             }
           }
-          Event::StreamClose | Event::StreamOpen(_) => return false,
+          Ok(Some(Event::StreamClose | Event::StreamOpen(_))) | Err(_) => return false,
+          Ok(None) => break,
         }
       }
       let mut buf = [0u8; 8192];

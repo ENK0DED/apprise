@@ -54,10 +54,22 @@ pub enum Event {
 const MAX_DEPTH: usize = 128;
 const TOO_DEEP: &str = "XML nested too deeply";
 
-/// Collects incoming bytes and returns complete events from them.
+/// Largest stanza accepted, markup included. Stanzas are a few kilobytes;
+/// without a limit, a peer that never finishes one would have us buffer
+/// whatever it sends.
+pub const MAX_STANZA_LEN: usize = 1024 * 1024;
+const TOO_LARGE: &str = "XML stanza too large";
+
+/// Collects incoming bytes and returns complete events from them. Each call
+/// carries on scanning where the last one stopped, so an item that arrives
+/// over many reads is looked at once.
 #[derive(Default)]
 pub struct StreamReader {
   buf: Vec<u8>,
+  /// Bytes at the front of `buf` known to be valid UTF-8.
+  valid: usize,
+  /// How far the unfinished item at the front of `buf` has been scanned.
+  scan: Scan,
 }
 
 impl StreamReader {
@@ -67,56 +79,195 @@ impl StreamReader {
 
   /// The next complete event, `Ok(None)` when more data is needed.
   pub fn next_event(&mut self) -> Result<Option<Event>, String> {
+    // Only what arrived since the last call needs checking. A multi-byte
+    // character may be cut at the end of it.
+    match std::str::from_utf8(&self.buf[self.valid..]) {
+      Ok(_) => self.valid = self.buf.len(),
+      Err(e) if e.error_len().is_none() => self.valid += e.valid_up_to(),
+      Err(_) => return Err("invalid UTF-8 in the stream".into()),
+    }
     loop {
-      let skip = self.buf.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(self.buf.len());
-      self.buf.drain(..skip);
-      if self.buf.is_empty() {
+      if self.scan.pos == 0 {
+        let skip = self.buf[..self.valid].iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(self.valid);
+        self.consume(skip);
+      }
+      if self.valid == 0 {
         return Ok(None);
       }
-      // A multi-byte character may be cut at the end of what has arrived.
-      let text = match std::str::from_utf8(&self.buf) {
-        Ok(text) => text,
-        Err(e) if e.error_len().is_none() => std::str::from_utf8(&self.buf[..e.valid_up_to()]).unwrap_or_default(),
-        Err(_) => return Err("invalid UTF-8 in the stream".into()),
+      let Some(item) = self.scan.advance(&self.buf[..self.valid])? else {
+        if self.buf.len() > MAX_STANZA_LEN {
+          return Err(TOO_LARGE.into());
+        }
+        return Ok(None);
       };
-      let Some((used, event)) = scan(text)? else { return Ok(None) };
-      self.buf.drain(..used);
+      let (end, event) = match item {
+        Item::Skip(end) => (end, None),
+        Item::Event(event, end) => (end, Some(event)),
+        Item::Stanza(end) => {
+          if end > MAX_STANZA_LEN {
+            return Err(TOO_LARGE.into());
+          }
+          // It ends with '>' inside the checked bytes, so it is whole
+          let text = std::str::from_utf8(&self.buf[..end]).map_err(|_| "invalid UTF-8 in the stream")?;
+          (end, Some(Event::Stanza(parse_element(text, 0, 0)?.0)))
+        }
+      };
+      self.scan = Scan::default();
+      self.consume(end);
       if event.is_some() {
         return Ok(event);
       }
     }
   }
+
+  fn consume(&mut self, n: usize) {
+    self.buf.drain(..n);
+    self.valid -= n;
+  }
 }
 
-/// Look at the start of `text`: the bytes the next item takes and the event
-/// it is (`None` for a declaration or comment), or `None` if incomplete.
-fn scan(text: &str) -> Result<Option<(usize, Option<Event>)>, String> {
-  if !text.starts_with('<') {
-    return Err("text outside of a stanza".into());
-  }
-  // XML declaration, processing instruction or comment: skip it.
-  if let Some(rest) = text.strip_prefix("<?") {
-    return Ok(rest.find("?>").map(|end| (2 + end + 2, None)));
-  }
-  if let Some(rest) = text.strip_prefix("<!--") {
-    return Ok(rest.find("-->").map(|end| (4 + end + 3, None)));
-  }
-  if let Some(rest) = text.strip_prefix("</") {
-    let Some(end) = rest.find('>') else { return Ok(None) };
-    let name = rest[..end].trim();
-    if name.rsplit(':').next() == Some("stream") {
-      return Ok(Some((2 + end + 1, Some(Event::StreamClose))));
+/// A complete item at the front of the buffer and the bytes it takes.
+enum Item {
+  /// A declaration, processing instruction or comment between stanzas.
+  Skip(usize),
+  /// The stream header or its end.
+  Event(Event, usize),
+  Stanza(usize),
+}
+
+/// Where the scan of the item at the front of the buffer stands.
+#[derive(Default)]
+struct Scan {
+  /// The next byte to look at.
+  pos: usize,
+  /// Elements open in the stanza; 0 until its start tag is complete.
+  depth: usize,
+  /// What `pos` is inside of, and where that began.
+  within: Within,
+  start: usize,
+}
+
+#[derive(Default, Clone, Copy, PartialEq)]
+enum Within {
+  #[default]
+  Text,
+  /// A tag, and the quote of the attribute value it is in.
+  Tag(Option<u8>),
+  Comment,
+  CData,
+  /// A declaration or processing instruction between stanzas.
+  Declaration,
+}
+
+impl Scan {
+  /// Scan on through `text`, the front of the buffer, up to the end of the
+  /// item, or `Ok(None)` when it is not complete yet. The delimiters are
+  /// ASCII, so bytes can be scanned without decoding characters.
+  fn advance(&mut self, text: &[u8]) -> Result<Option<Item>, String> {
+    loop {
+      match self.within {
+        Within::Text => {
+          if self.depth == 0 && self.pos == 0 && text[0] != b'<' {
+            return Err("text outside of a stanza".into());
+          }
+          let Some(offset) = text[self.pos..].iter().position(|&b| b == b'<') else {
+            self.pos = text.len();
+            return Ok(None);
+          };
+          let i = self.pos + offset;
+          let rest = &text[i..];
+          let cut = |opener: &[u8]| rest.len() < opener.len() && opener.starts_with(rest);
+          if rest.len() < 2 || cut(b"<!--") || cut(b"<![CDATA[") {
+            self.pos = i;
+            return Ok(None);
+          }
+          self.start = i;
+          (self.within, self.pos) = if rest.starts_with(b"<!--") {
+            (Within::Comment, i + 4)
+          } else if rest.starts_with(b"<![CDATA[") {
+            if self.depth == 0 {
+              return Err("text outside of a stanza".into());
+            }
+            (Within::CData, i + 9)
+          } else if rest.starts_with(b"<?") && self.depth == 0 {
+            (Within::Declaration, i + 2)
+          } else {
+            (Within::Tag(None), i + 1)
+          };
+        }
+        Within::Comment | Within::CData | Within::Declaration => {
+          let close: &[u8] = match self.within {
+            Within::Comment => b"-->",
+            Within::CData => b"]]>",
+            _ => b"?>",
+          };
+          let Some(offset) = text[self.pos..].windows(close.len()).position(|w| w == close) else {
+            // The closer may be cut at the end; look at its start again
+            self.pos = text.len().saturating_sub(close.len() - 1).max(self.pos);
+            return Ok(None);
+          };
+          self.pos += offset + close.len();
+          self.within = Within::Text;
+          if self.depth == 0 {
+            return Ok(Some(Item::Skip(self.pos)));
+          }
+        }
+        Within::Tag(mut quote) => {
+          let mut tag_end = None;
+          for (offset, &b) in text[self.pos..].iter().enumerate() {
+            match quote {
+              Some(q) if b == q => quote = None,
+              Some(_) => {}
+              None if b == b'"' || b == b'\'' => quote = Some(b),
+              None if b == b'>' => {
+                tag_end = Some(self.pos + offset);
+                break;
+              }
+              None => {}
+            }
+          }
+          let Some(end) = tag_end else {
+            self.within = Within::Tag(quote);
+            self.pos = text.len();
+            return Ok(None);
+          };
+          self.within = Within::Text;
+          self.pos = end + 1;
+          let tag = std::str::from_utf8(&text[self.start..=end]).map_err(|_| "invalid UTF-8 in the stream")?;
+          if let Some(close) = tag.strip_prefix("</") {
+            if self.depth == 0 {
+              let name = close.trim_end_matches('>').trim();
+              if name.rsplit(':').next() == Some("stream") {
+                return Ok(Some(Item::Event(Event::StreamClose, self.pos)));
+              }
+              return Err(format!("unexpected closing tag </{}>", name));
+            }
+            self.depth -= 1;
+            if self.depth == 0 {
+              return Ok(Some(Item::Stanza(self.pos)));
+            }
+          } else if tag.starts_with("<?") {
+            // A processing instruction inside a stanza does not nest
+          } else if self.depth == 0 {
+            let (name, attrs, self_closing) = parse_start_tag(tag)?;
+            if name.rsplit(':').next() == Some("stream") && !self_closing {
+              return Ok(Some(Item::Event(Event::StreamOpen(attrs), self.pos)));
+            }
+            if self_closing {
+              return Ok(Some(Item::Stanza(self.pos)));
+            }
+            self.depth = 1;
+          } else if !tag.ends_with("/>") {
+            self.depth += 1;
+            // Refuse it now rather than buffer the rest of it
+            if self.depth > MAX_DEPTH {
+              return Err(TOO_DEEP.into());
+            }
+          }
+        }
+      }
     }
-    return Err(format!("unexpected closing tag </{}>", name));
   }
-  let Some(tag_end) = find_tag_end(text, 0) else { return Ok(None) };
-  let (name, attrs, self_closing) = parse_start_tag(&text[..=tag_end])?;
-  if name.rsplit(':').next() == Some("stream") && !self_closing {
-    return Ok(Some((tag_end + 1, Some(Event::StreamOpen(attrs)))));
-  }
-  let Some(end) = find_element_end(text)? else { return Ok(None) };
-  let (element, _) = parse_element(&text[..end], 0, 0)?;
-  Ok(Some((end, Some(Event::Stanza(element)))))
 }
 
 /// Index of the `>` that ends the tag starting at `start`, skipping quoted
@@ -133,43 +284,6 @@ fn find_tag_end(text: &str, start: usize) -> Option<usize> {
     }
   }
   None
-}
-
-/// Byte offset just past the element that starts at 0, or `None` when it
-/// is not complete yet.
-fn find_element_end(text: &str) -> Result<Option<usize>, String> {
-  let mut depth = 0usize;
-  let mut pos = 0;
-  while let Some(offset) = text[pos..].find('<') {
-    let i = pos + offset;
-    let rest = &text[i..];
-    if rest.starts_with("<!--") {
-      let Some(end) = rest.find("-->") else { return Ok(None) };
-      pos = i + end + 3;
-      continue;
-    }
-    if rest.starts_with("<![CDATA[") {
-      let Some(end) = rest.find("]]>") else { return Ok(None) };
-      pos = i + end + 3;
-      continue;
-    }
-    let Some(end) = find_tag_end(text, i) else { return Ok(None) };
-    let tag = &text[i..=end];
-    if tag.starts_with("</") {
-      depth = depth.checked_sub(1).ok_or("unbalanced closing tag")?;
-    } else if !tag.starts_with("<?") && !tag.ends_with("/>") {
-      depth += 1;
-      // Refuse it now rather than buffer the rest of it
-      if depth > MAX_DEPTH {
-        return Err(TOO_DEEP.into());
-      }
-    }
-    pos = end + 1;
-    if depth == 0 {
-      return Ok(Some(pos));
-    }
-  }
-  Ok(None)
 }
 
 /// A start tag: its name, attributes and whether it closes itself.
@@ -343,6 +457,114 @@ mod tests {
     assert_eq!(message.attr("from"), Some("a&b"));
     assert_eq!(message.attr("note"), Some("x>y"));
     assert_eq!(message.child("body").unwrap().text, "1 < 2 \u{263A} <raw>");
+  }
+
+  /// Terminators and openers cut between reads are still found.
+  #[test]
+  fn test_split_delimiters() {
+    let got = events(&[
+      "<?xml version='1.0'?",
+      "><stream:stream><",
+      "!-",
+      "- a comment -",
+      "-><!-- another -",
+      "-",
+      "><message><body><!",
+      "[CDATA[x]",
+      "]>",
+      "y<",
+      "/body></message>",
+    ]);
+    assert_eq!(got.len(), 2, "{:?}", got);
+    let Event::Stanza(message) = &got[1] else { panic!("{:?}", got[1]) };
+    assert_eq!(message.child("body").unwrap().text, "xy");
+
+    // One byte at a time, with a multi-byte character split too
+    let doc = "<stream:stream><message to='\u{263A}>'><body>caf\u{e9} <![CDATA[<b>]]></body><x/></message></stream:stream>";
+    let mut reader = StreamReader::default();
+    let mut got = Vec::new();
+    for b in doc.as_bytes() {
+      reader.feed(&[*b]);
+      while let Some(event) = reader.next_event().unwrap() {
+        got.push(event);
+      }
+    }
+    assert_eq!(got.len(), 3, "{:?}", got);
+    let Event::Stanza(message) = &got[1] else { panic!("{:?}", got[1]) };
+    assert_eq!(message.attr("to"), Some("\u{263A}>"));
+    assert_eq!(message.child("body").unwrap().text, "caf\u{e9} <b>");
+    assert_eq!(got[2], Event::StreamClose);
+  }
+
+  /// A stanza that never ends is refused once it passes the limit, instead
+  /// of being buffered for as long as the server sends it. Upstream
+  /// (slixmpp over expat) keeps all of it.
+  #[test]
+  fn test_stanza_size_limit() {
+    let mut reader = StreamReader::default();
+    reader.feed(b"<stream:stream><stream:features>");
+    assert!(matches!(reader.next_event(), Ok(Some(Event::StreamOpen(_)))));
+    let chunk = "x".repeat(8192);
+    let mut fed = "<stream:features>".len();
+    let result = loop {
+      reader.feed(chunk.as_bytes());
+      fed += chunk.len();
+      match reader.next_event() {
+        Ok(None) => assert!(fed <= MAX_STANZA_LEN, "still buffering after {} bytes", fed),
+        other => break other,
+      }
+    };
+    assert_eq!(result, Err(TOO_LARGE.to_string()));
+    assert!(fed <= MAX_STANZA_LEN + chunk.len());
+
+    // The same goes for one long start tag, and for one that arrives whole
+    let mut reader = StreamReader::default();
+    reader.feed(format!("<message a='{}", "x".repeat(MAX_STANZA_LEN)).as_bytes());
+    assert_eq!(reader.next_event(), Err(TOO_LARGE.to_string()));
+    let mut reader = StreamReader::default();
+    reader.feed(format!("<message>{}</message>", "x".repeat(MAX_STANZA_LEN)).as_bytes());
+    assert_eq!(reader.next_event(), Err(TOO_LARGE.to_string()));
+
+    // Just under the limit is fine, and whitespace between stanzas does
+    // not count towards it
+    let mut reader = StreamReader::default();
+    let body = "x".repeat(MAX_STANZA_LEN - "<message></message>".len());
+    for _ in 0..3 {
+      reader.feed(" ".repeat(MAX_STANZA_LEN / 2).as_bytes());
+      assert_eq!(reader.next_event(), Ok(None));
+    }
+    reader.feed(format!("<message>{}</message>", body).as_bytes());
+    let Ok(Some(Event::Stanza(message))) = reader.next_event() else { panic!() };
+    assert_eq!(message.text.len(), body.len());
+  }
+
+  /// A stanza that arrives in many small reads is scanned once, not again
+  /// from its start on every read (which took seconds for a few MiB).
+  #[test]
+  fn test_scan_resumes() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+      let mut reader = StreamReader::default();
+      reader.feed(b"<stream:stream><stream:features>");
+      let _ = reader.next_event();
+      // Many small elements, then a long text, in 64-byte reads
+      let mut doc = "<mechanism a='1'>PLAIN</mechanism>".repeat(16 * 1024);
+      doc.push_str(&"y".repeat(MAX_STANZA_LEN - doc.len() - 1024));
+      doc.push_str("</stream:features>");
+      let start = std::time::Instant::now();
+      let mut got = None;
+      for chunk in doc.as_bytes().chunks(64) {
+        reader.feed(chunk);
+        if let Some(event) = reader.next_event().unwrap() {
+          got = Some(event);
+        }
+      }
+      let _ = tx.send((got, start.elapsed()));
+    });
+    let (got, elapsed) = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the reader rescans what it has already seen");
+    let Some(Event::Stanza(features)) = got else { panic!("{:?}", got) };
+    assert_eq!(features.children.len(), 16 * 1024);
+    assert!(elapsed < std::time::Duration::from_secs(5), "{:?}", elapsed);
   }
 
   #[test]

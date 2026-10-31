@@ -7,6 +7,7 @@ use crate::notify::rsyslog::{facility_name, resolve_facility, severity};
 use crate::notify::{Notify, NotifyContext, ServiceDetails};
 use crate::utils::parse::{ParsedUrl, parse_bool};
 use async_trait::async_trait;
+use std::time::Duration;
 
 /// The local syslog socket, as `_PATH_LOG` in `<syslog.h>`.
 #[cfg(target_os = "macos")]
@@ -20,6 +21,10 @@ pub struct Syslog {
   facility: u8,
   log_pid: bool,
   log_perror: bool,
+  /// Bounds on connecting to the log socket and on writing the record
+  /// (`?cto=` and `?rto=`, 4 seconds each by default).
+  connect_timeout: Duration,
+  write_timeout: Duration,
   tags: Vec<String>,
 }
 
@@ -42,11 +47,14 @@ impl Syslog {
       }
     };
 
+    let timeouts = crate::utils::socket::url_timeouts(url);
     Some(Self {
       facility,
       // An unrecognised value reads as false, as upstream `parse_bool()` does
       log_pid: url.get("logpid").map(parse_bool).unwrap_or(true),
       log_perror: url.get("logperror").map(parse_bool).unwrap_or(false),
+      connect_timeout: timeouts.connect_timeout().unwrap_or(Duration::from_secs(4)),
+      write_timeout: timeouts.read_timeout().unwrap_or(Duration::from_secs(4)),
       tags: url.tags(),
     })
   }
@@ -83,18 +91,41 @@ fn message(ctx: &NotifyContext) -> String {
 /// Write one record to the syslog socket at `path`. A datagram socket is
 /// tried first; a stream socket gets the record NUL-terminated, as the C
 /// library does.
+///
+/// The C library blocks until a stuck logger (one whose queue or listen
+/// backlog is full) makes room, for ever if need be. Here connecting and
+/// writing each give up at their timeout, and no thread is left blocked
+/// behind them.
 #[cfg(unix)]
-fn write_record(path: &str, record: &[u8]) -> std::io::Result<()> {
-  use std::io::Write;
-  let socket = std::os::unix::net::UnixDatagram::unbound()?;
+async fn write_record(path: &str, record: &[u8], connect_timeout: Duration, write_timeout: Duration) -> std::io::Result<()> {
+  use tokio::io::AsyncWriteExt;
+  use tokio::time::timeout;
+  let timed_out = |what: &str| std::io::Error::new(std::io::ErrorKind::TimedOut, format!("timed out {}", what));
+  let socket = tokio::net::UnixDatagram::unbound()?;
   match socket.connect(path) {
-    Ok(()) => socket.send(record).map(|_| ()),
+    Ok(()) => timeout(write_timeout, socket.send(record)).await.map_err(|_| timed_out("writing to the log socket"))?.map(|_| ()),
     Err(e) if e.raw_os_error() == Some(libc_eprototype()) => {
-      let mut stream = std::os::unix::net::UnixStream::connect(path)?;
-      stream.write_all(record)?;
-      stream.write_all(b"\0")
+      let mut stream = timeout(connect_timeout, connect_stream(path)).await.map_err(|_| timed_out("connecting to the log socket"))??;
+      let write = async {
+        stream.write_all(record).await?;
+        stream.write_all(b"\0").await
+      };
+      timeout(write_timeout, write).await.map_err(|_| timed_out("writing to the log socket"))?
     }
     Err(e) => Err(e),
+  }
+}
+
+/// Connect to a stream log socket. A non-blocking connect fails at once
+/// while the listen backlog is full, where the C library's blocking one
+/// waits; so this tries again until the caller's timeout.
+#[cfg(unix)]
+async fn connect_stream(path: &str) -> std::io::Result<tokio::net::UnixStream> {
+  loop {
+    match tokio::net::UnixStream::connect(path).await {
+      Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => tokio::time::sleep(Duration::from_millis(20)).await,
+      result => return result,
+    }
   }
 }
 
@@ -135,17 +166,16 @@ impl Notify for Syslog {
     }
 
     crate::notify::throttle().await;
-    match tokio::task::spawn_blocking(move || write_record(&path, record.as_bytes())).await {
-      Ok(Ok(())) => {
+    match write_record(&path, record.as_bytes(), self.connect_timeout, self.write_timeout).await {
+      Ok(()) => {
         tracing::info!("Sent Syslog notification.");
         Ok(true)
       }
-      Ok(Err(e)) => {
+      Err(e) => {
         tracing::warn!("Could not write to the local syslog ({}) using facility {}.", LOG_PATH, facility_name(self.facility));
         tracing::debug!("Syslog Exception: {}", e);
         Ok(false)
       }
-      Err(e) => Err(NotifyError::Other(e.to_string())),
     }
   }
 
@@ -200,6 +230,9 @@ mod tests {
     assert_eq!(s.facility, 8);
     assert!(s.log_pid);
     assert!(!s.log_perror);
+    assert_eq!((s.connect_timeout, s.write_timeout), (Duration::from_secs(4), Duration::from_secs(4)));
+    let s = parse("syslog://?cto=1.5&rto=2").unwrap();
+    assert_eq!((s.connect_timeout, s.write_timeout), (Duration::from_millis(1500), Duration::from_secs(2)));
 
     let s = parse("syslog://?logpid=no&logperror=yes").unwrap();
     assert!(!s.log_pid);
@@ -246,6 +279,144 @@ mod tests {
     // <PRI>Mmm dd hh:mm:ss is 3 + 1 + 15 characters
     assert!(record.starts_with("<28>"), "{}", record);
     assert_eq!(&record[19..], format!(" Apprise[{}]: Title: Body", std::process::id()));
+  }
+
+  /// A stream log socket gets the record NUL-terminated.
+  #[tokio::test]
+  async fn test_send_writes_to_stream_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let server = tokio::spawn(async move {
+      use tokio::io::AsyncReadExt;
+      let (mut stream, _) = listener.accept().await.unwrap();
+      let mut record = Vec::new();
+      stream.read_to_end(&mut record).await.unwrap();
+      record
+    });
+    let svc = from_url("syslog://").unwrap();
+    assert!(crate::notify::with_test_base(path.to_str().unwrap(), svc.send(&ctx("", "Body", NotifyType::Info))).await.unwrap());
+    let record = String::from_utf8(server.await.unwrap()).unwrap();
+    assert!(record.starts_with("<14>"), "{:?}", record);
+    assert!(record.ends_with(&format!(" Apprise[{}]: Body\0", std::process::id())), "{:?}", record);
+  }
+
+  /// Send to a logger that is stuck at `path` on a runtime of its own,
+  /// then drop that runtime. The send must fail at its timeouts, and the
+  /// drop (which waits for blocking threads) must not hang.
+  fn assert_stuck_logger_fails(path: std::path::PathBuf) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+      let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+      let sent = runtime.block_on(async {
+        let svc = from_url("syslog://?cto=0.3&rto=0.3").unwrap();
+        crate::notify::with_test_base(path.to_str().unwrap(), svc.send(&ctx("", "Body", NotifyType::Info))).await.unwrap()
+      });
+      let _ = tx.send(Some(sent));
+      drop(runtime);
+      let _ = tx.send(None);
+    });
+    let timeout = std::time::Duration::from_secs(5);
+    assert_eq!(rx.recv_timeout(timeout), Ok(Some(false)), "the send did not give up at its timeout");
+    assert_eq!(rx.recv_timeout(timeout), Ok(None), "dropping the runtime waited for a stuck thread");
+  }
+
+  /// A stream logger whose listen backlog is full, as when journald or
+  /// rsyslog stops accepting. Upstream's glibc syslog() blocks for ever.
+  #[test]
+  fn test_send_to_full_backlog_gives_up() {
+    use socket2::{Domain, SockAddr, Socket, Type};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log");
+    let listener = Socket::new(Domain::UNIX, Type::STREAM, None).unwrap();
+    listener.bind(&SockAddr::unix(&path).unwrap()).unwrap();
+    listener.listen(0).unwrap();
+    // Nothing accepts, so pending connections fill the backlog
+    let mut pending = Vec::new();
+    loop {
+      let socket = Socket::new(Domain::UNIX, Type::STREAM, None).unwrap();
+      socket.set_nonblocking(true).unwrap();
+      match socket.connect(&SockAddr::unix(&path).unwrap()) {
+        Ok(()) => pending.push(socket),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+        Err(e) => panic!("{}", e),
+      }
+      assert!(pending.len() < 10_000, "the backlog does not fill");
+    }
+    assert_stuck_logger_fails(path);
+  }
+
+  /// A logger that is only busy for a moment still gets the record: the
+  /// connect is tried again while the backlog is full, as the C library's
+  /// blocking connect waits.
+  #[tokio::test]
+  async fn test_send_waits_out_a_busy_backlog() {
+    use socket2::{Domain, SockAddr, Socket, Type};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log");
+    let listener = Socket::new(Domain::UNIX, Type::STREAM, None).unwrap();
+    listener.bind(&SockAddr::unix(&path).unwrap()).unwrap();
+    listener.listen(0).unwrap();
+    let mut pending = Vec::new();
+    loop {
+      let socket = Socket::new(Domain::UNIX, Type::STREAM, None).unwrap();
+      socket.set_nonblocking(true).unwrap();
+      match socket.connect(&SockAddr::unix(&path).unwrap()) {
+        Ok(()) => pending.push(socket),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+        Err(e) => panic!("{}", e),
+      }
+      assert!(pending.len() < 10_000, "the backlog does not fill");
+    }
+    let count = pending.len();
+    let logger = std::thread::spawn(move || {
+      use std::io::Read;
+      let listener = std::os::unix::net::UnixListener::from(listener);
+      std::thread::sleep(std::time::Duration::from_millis(150));
+      // The connections that filled the backlog come first
+      for _ in 0..count {
+        drop(listener.accept().unwrap());
+      }
+      let (mut stream, _) = listener.accept().unwrap();
+      let mut record = Vec::new();
+      stream.read_to_end(&mut record).unwrap();
+      record
+    });
+    let svc = from_url("syslog://").unwrap();
+    assert!(crate::notify::with_test_base(path.to_str().unwrap(), svc.send(&ctx("", "Body", NotifyType::Info))).await.unwrap());
+    let record = String::from_utf8(logger.join().unwrap()).unwrap();
+    assert!(record.ends_with(": Body\0"), "{:?}", record);
+    drop(pending);
+  }
+
+  /// A datagram logger that stopped reading, its queue full.
+  #[test]
+  fn test_send_to_full_datagram_queue_gives_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log");
+    let _logger = std::os::unix::net::UnixDatagram::bind(&path).unwrap();
+    // A sender's own buffer can fill before the logger's queue does, so
+    // senders are added until a new one cannot send at all
+    let mut fillers = Vec::new();
+    loop {
+      let filler = std::os::unix::net::UnixDatagram::unbound().unwrap();
+      filler.set_nonblocking(true).unwrap();
+      filler.connect(&path).unwrap();
+      let mut queued = 0;
+      loop {
+        match filler.send(b"x") {
+          Ok(_) => queued += 1,
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+          Err(e) => panic!("{}", e),
+        }
+      }
+      fillers.push(filler);
+      if queued == 0 {
+        break;
+      }
+      assert!(fillers.len() < 1000, "the queue does not fill");
+    }
+    assert_stuck_logger_fails(path);
   }
 
   #[tokio::test]

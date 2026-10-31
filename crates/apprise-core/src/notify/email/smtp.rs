@@ -20,6 +20,12 @@ use tokio::net::TcpStream;
 /// Longest reply line accepted (`smtplib._MAXLINE`).
 const MAX_LINE: usize = 8192;
 
+/// Most lines, and bytes, accepted in one reply. smtplib limits each line
+/// but not how many continuation lines a server sends, so one that never
+/// ends its reply would have us buffer whatever it sends.
+const MAX_REPLY_LINES: usize = 1000;
+const MAX_REPLY_LEN: usize = 64 * 1024;
+
 /// Most AUTH challenges answered before giving up (`smtplib._MAXCHALLENGE`).
 const MAX_CHALLENGE: usize = 5;
 
@@ -421,8 +427,14 @@ impl SmtpConnection {
   /// Read one (possibly multi-line) reply (`smtplib.SMTP.getreply()`).
   async fn reply(&mut self) -> Result<(i32, String), SmtpError> {
     let mut lines = Vec::new();
+    let mut total = 0;
     let code = loop {
       let line = self.read_line().await?;
+      total += line.len();
+      if lines.len() >= MAX_REPLY_LINES || total > MAX_REPLY_LEN {
+        self.close();
+        return err(format!("reply too long (over {} lines or {} KiB)", MAX_REPLY_LINES, MAX_REPLY_LEN / 1024));
+      }
       let text = String::from_utf8_lossy(line.get(4..).unwrap_or_default()).trim_matches([' ', '\t', '\r', '\n']).to_string();
       lines.push(text);
       let code = std::str::from_utf8(line.get(..3).unwrap_or(&line)).ok().and_then(|c| c.trim().parse::<i32>().ok());
@@ -538,6 +550,78 @@ mod tests {
     assert_eq!(SecureMode::StartTls.default_port(), 587);
     assert_eq!(SecureMode::Ssl.default_port(), 465);
     assert_eq!(SecureMode::Insecure.default_port(), 25);
+  }
+
+  /// A fake server that greets with `greeting`, then answers the first
+  /// command with `line` repeated until the client hangs up. Sends how
+  /// many bytes of it went out for each EHLO it answered.
+  async fn endless_reply(greeting: &'static str, line: String) -> (u16, tokio::sync::mpsc::UnboundedReceiver<usize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+      loop {
+        let (mut tcp, _) = listener.accept().await.unwrap();
+        let (tx, line) = (tx.clone(), line.clone());
+        tokio::spawn(async move {
+          tcp.write_all(greeting.as_bytes()).await?;
+          // Other local processes probe random ports; skip those that do
+          // not send EHLO (with an endless greeting no one gets that far)
+          if !greeting.is_empty() {
+            let mut buf = [0u8; 64];
+            let n = tcp.read(&mut buf).await?;
+            if !buf[..n].to_ascii_lowercase().starts_with(b"ehlo ") {
+              return Ok(());
+            }
+          }
+          let mut sent = 0;
+          while tcp.write_all(line.as_bytes()).await.is_ok() && sent < 1024 * 1024 * 1024 {
+            sent += line.len();
+          }
+          let _ = tx.send(sent);
+          Ok::<_, std::io::Error>(())
+        });
+      }
+    });
+    (port, rx)
+  }
+
+  /// A reply that never ends fails once it passes 1,000 lines or 64 KiB,
+  /// instead of being buffered for as long as the server sends it.
+  /// Upstream (smtplib) caps each line at 8 KiB but not their number.
+  #[tokio::test]
+  async fn test_reply_size_limit() {
+    let open = |port: u16, mode: SecureMode| {
+      SmtpConnection::open(SmtpConfig {
+        host: "127.0.0.1",
+        port,
+        mode,
+        user: None,
+        password: None,
+        tls: crate::utils::socket::tls_connector(false),
+        timeout: Duration::from_secs(5),
+      })
+    };
+    let expected = "reply too long (over 1000 lines or 64 KiB)";
+    let long_line = format!("250-{}\r\n", "x".repeat(MAX_LINE - 10));
+    // A greeting and an EHLO reply of short lines stop at the line count,
+    // one of long lines at the size
+    for (greeting, line, mode) in [
+      ("", "220-hello\r\n".to_string(), SecureMode::Insecure),
+      ("220 hi\r\n", "250-x\r\n".to_string(), SecureMode::StartTls),
+      ("220 hi\r\n", long_line, SecureMode::StartTls),
+    ] {
+      let (port, mut sent) = endless_reply(greeting, line).await;
+      let start = std::time::Instant::now();
+      let result = open(port, mode).await;
+      assert_eq!(result.err().map(|e| e.0).as_deref(), Some(expected), "{:?}", greeting);
+      assert!(start.elapsed() < Duration::from_secs(4), "{:?}", start.elapsed());
+      if !greeting.is_empty() {
+        // What the socket buffers took on top of the limit
+        let sent = sent.recv().await.unwrap();
+        assert!(sent < 256 * MAX_REPLY_LEN, "the server sent {} bytes", sent);
+      }
+    }
   }
 
   #[test]

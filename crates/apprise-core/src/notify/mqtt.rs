@@ -29,6 +29,11 @@ const KEEPALIVE_SECS: u16 = 30;
 /// Upstream `socket_connect_timeout` and `socket_read_timeout` defaults.
 const DEFAULT_TIMEOUT_SECS: f64 = 4.0;
 
+/// Largest packet accepted from the broker. We only expect acknowledgements
+/// and PINGRESP, a few bytes each; without a limit a broker could have us
+/// buffer up to the 256 MiB a packet length can claim.
+const MAX_PACKET_LEN: usize = 1024 * 1024;
+
 /// Where to find the system root certificates. The bundled Mozilla roots are
 /// used when none of them exist (upstream falls back to certifi).
 const CA_CERTIFICATE_FILE_LOCATIONS: &[&str] = &[
@@ -581,6 +586,10 @@ fn parse_packet(data: &[u8]) -> Result<Option<(u8, Vec<u8>, usize)>, NotifyError
       return Err(NotifyError::Mqtt("malformed packet length from the broker".into()));
     }
   }
+  // Refused before any of it is buffered
+  if len > MAX_PACKET_LEN {
+    return Err(NotifyError::Mqtt(format!("the broker sent a packet of {} bytes, over the {} KiB limit", len, MAX_PACKET_LEN / 1024)));
+  }
   if data.len() < pos + len {
     return Ok(None);
   }
@@ -825,6 +834,13 @@ mod tests {
     assert_eq!(parse_packet(&packet).unwrap().unwrap(), (PUBLISH, vec![0u8; 200], 203));
     assert!(parse_packet(&packet[..100]).unwrap().is_none());
     assert!(parse_packet(b"\x30\xff\xff\xff\xff\x01").is_err());
+
+    // A packet over 1 MiB is refused as soon as its length is known
+    let at_limit = frame(PUBLISH, &vec![0u8; MAX_PACKET_LEN]);
+    assert_eq!(parse_packet(&at_limit).unwrap().unwrap().2, at_limit.len());
+    let over = frame(PUBLISH, &vec![0u8; MAX_PACKET_LEN + 1]);
+    assert!(parse_packet(&over[..5]).is_err());
+    assert!(parse_packet(b"\x30\xff\xff\xff\x7f").is_err());
 
     assert_eq!(random_client_id().len(), 22);
   }
@@ -1113,6 +1129,49 @@ mod tests {
     let started = Instant::now();
     assert!(svc.send(&ctx("x")).await.is_err());
     assert!(started.elapsed() < Duration::from_secs(2));
+  }
+
+  /// A broker that answers with a packet claiming the largest length MQTT
+  /// allows (256 MiB) and keeps sending: the send fails as soon as the
+  /// length is read, instead of buffering the packet. Upstream (paho)
+  /// buffers it.
+  #[tokio::test]
+  async fn test_oversized_packet_refused() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+      while let Ok((mut stream, _)) = listener.accept().await {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+          let mut buf = vec![0u8; 4096];
+          // Skip connections from other local processes that are not MQTT
+          let n = stream.read(&mut buf).await.unwrap_or(0);
+          if !matches!(parse_packet(&buf[..n]), Ok(Some((CONNECT, _, _)))) {
+            return;
+          }
+          stream.write_all(&[CONNACK, 2, 0, 0]).await.unwrap();
+          let _ = stream.read(&mut buf).await;
+          // A PUBLISH of 268,435,455 bytes instead of the PUBACK
+          let mut sent = 0usize;
+          if stream.write_all(&[PUBLISH, 0xff, 0xff, 0xff, 0x7f]).await.is_ok() {
+            let chunk = vec![0u8; 64 * 1024];
+            while sent < 256 * MAX_PACKET_LEN && stream.write_all(&chunk).await.is_ok() {
+              sent += chunk.len();
+            }
+          }
+          let _ = tx.send(sent);
+        });
+      }
+    });
+    let svc = from_url(&format!("mqtt://127.0.0.1:{}/t?qos=1&rto=20", port)).unwrap();
+    let started = Instant::now();
+    let error = svc.send(&ctx("x")).await.unwrap_err().to_string();
+    assert!(error.contains("the broker sent a packet of 268435455 bytes, over the 1024 KiB limit"), "{}", error);
+    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    // The client hung up; only what the socket buffers took went out
+    let sent = rx.recv().await.unwrap();
+    assert!(sent < 64 * MAX_PACKET_LEN, "the broker sent {} bytes", sent);
   }
 
   #[tokio::test]
