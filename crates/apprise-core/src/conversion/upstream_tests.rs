@@ -140,6 +140,38 @@ fn test_sentinel_with_every_private_use_character() {
 }
 
 #[test]
+fn test_commonmark_link_label_helpers() {
+  // Upstream 27c4aa5f. The port buffers into a `String`, so the stack holds
+  // byte offsets where upstream holds list indexes.
+  let mut out = "a ".to_string();
+  let mut link_stack = Vec::new();
+
+  // A label is buffered from its "["
+  assert!(commonmark_open_link_label(&mut out, &mut link_stack));
+  out.push_str("label");
+  assert_eq!(out, "a [label");
+  assert_eq!(link_stack, vec![2]);
+
+  // Taking it back returns the text and removes it from the output
+  assert_eq!(commonmark_take_link_label(&mut out, &mut link_stack), "label");
+  assert_eq!(out, "a ");
+  assert!(link_stack.is_empty());
+
+  // Past the depth limit a "[" is left for the caller to keep as text
+  for _ in 0..MAX_LINK_DEPTH {
+    assert!(commonmark_open_link_label(&mut out, &mut link_stack));
+  }
+  assert!(!commonmark_open_link_label(&mut out, &mut link_stack));
+  assert_eq!(link_stack.len(), MAX_LINK_DEPTH);
+  assert_eq!(out, format!("a {}", "[".repeat(MAX_LINK_DEPTH)));
+
+  // With nothing open there is nothing to take
+  let mut stack = Vec::new();
+  assert_eq!(commonmark_take_link_label(&mut out, &mut stack), "");
+  assert_eq!(out, format!("a {}", "[".repeat(MAX_LINK_DEPTH)));
+}
+
+#[test]
 fn test_markdown_long_inputs_are_fast() {
   // Delimiter-heavy and backtick-heavy text must stay well within a send.
   for body in ["a*b ".repeat(4000), "`x` ".repeat(4000), "_a_ **b** ".repeat(2000), "[l](u) <b>x</b> ".repeat(2000)] {
