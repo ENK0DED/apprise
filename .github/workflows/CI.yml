@@ -51,6 +51,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets
+      - name: Clippy (pgp, amqp)
+        run: cargo clippy --workspace --all-targets --features pgp,amqp
       - name: Man page matches its source
         working-directory: .
         run: |
@@ -86,6 +88,8 @@ jobs:
         run: cargo test -p apprise-core --no-default-features
       - name: Test (desktop and blink(1))
         run: cargo test -p apprise-core --features desktop,blink1
+      - name: Test (pgp, amqp)
+        run: cargo test -p apprise-core --features pgp,amqp
 
   windows:
     name: CLI on Windows

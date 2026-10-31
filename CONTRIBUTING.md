@@ -84,10 +84,16 @@ bun test
 `bun run build:debug` regenerates `index.js` and `index.d.ts`; commit them
 when the binding's API or the package version changed.
 
-CI runs `cargo test --workspace --exclude apprise-napi`, the
-`--no-default-features` core tests and the lint steps, builds the bindings for
-every platform they ship for, and tests them on Linux, macOS and Windows. It
-does not test `desktop,blink1` or `pgp,amqp`, so run those locally.
+CI runs `cargo test --workspace --exclude apprise-napi`, the core tests in
+the other three feature sets above and the lint steps (clippy also with
+`pgp,amqp`). It builds the CLI with desktop support on Windows and runs the
+desktop tests there, builds and runs the Docker image, builds the bindings for
+every platform they ship for and tests them on Linux, macOS and Windows, and
+checks every npm package's contents before publishing.
+
+The man page is generated: edit `packaging/man/apprise.md`, then run
+`packaging/man/build.sh` (it needs Docker) and commit all three files. CI
+fails when `apprise.1` or `apprise.1.html` no longer match their source.
 
 ---
 
