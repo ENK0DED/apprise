@@ -1209,6 +1209,8 @@ mod tests {
     let writer = buffer.clone();
     let subscriber = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).with_ansi(false).with_writer(move || writer.clone()).finish();
     let _guard = tracing::subscriber::set_default(subscriber);
+    // Interest may still be cached as disabled by a test on another thread
+    tracing::callsite::rebuild_interest_cache();
     a.notify(&ctx()).await;
     String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap()
   }
