@@ -83,6 +83,12 @@ pub struct AppriseAsset {
   /// Interpret backslash escapes (`\n`, `\t`, ...) in every notification,
   /// as if each set `NotifyContext::interpret_escapes`.
   pub interpret_escapes: bool,
+  /// Convert `:emoji:` names for every service (upstream
+  /// `interpret_emojis`): `None` leaves it to each URL's `?emojis=` (off
+  /// without one), `Some(true)` is a default `?emojis=no` can turn off,
+  /// and `Some(false)` turns it off everywhere; Discord then shows the
+  /// names as text, as with `?emojis=no`.
+  pub interpret_emojis: Option<bool>,
   /// Generate a PGP key pair in a service's storage directory when one is
   /// needed and missing (email and Delta Chat `?pgp=`: a self-addressed
   /// encrypted mail, the sender's Autocrypt key). `false` uses existing
@@ -130,6 +136,7 @@ impl Default for AppriseAsset {
       abort_on_chain_failure: false,
       http_redirects: true,
       interpret_escapes: false,
+      interpret_emojis: None,
       pgp_autogen: true,
       pem_autogen: true,
       service_timeout: DEFAULT_SERVICE_TIMEOUT,

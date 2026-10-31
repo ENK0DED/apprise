@@ -267,6 +267,8 @@ async fn run(argv: &[String]) -> i32 {
   let storage_path = path_decode(&storage_path);
   let mut asset = AppriseAsset {
     body_format: Some(input_format.clone()),
+    // As upstream: on, or left to each URL (and to a YAML asset: section)
+    interpret_emojis: cli.flag("interpret_emojis").then_some(true),
     theme: cli.str("theme").unwrap_or("default").to_string(),
     async_mode: !cli.flag("disable_async"),
     storage_path: Some(storage_path.clone()),
@@ -390,7 +392,6 @@ async fn run(argv: &[String]) -> i32 {
       notify_type,
       body_format,
       interpret_escapes: cli.flag("interpret_escapes"),
-      interpret_emojis: cli.flag("interpret_emojis"),
       ..Default::default()
     };
     let result = apprise.notify_with_attachments(&ctx, &cli.strs("attach")).await;
@@ -658,6 +659,63 @@ mod tests {
   fn test_fit() {
     assert_eq!(fit("abcdef", 6, 3), "abcdef");
     assert_eq!(fit("abcdefg", 6, 3), "abc...");
+  }
+
+  /// `-j` turns emojis on in the asset, as upstream's CLI does, so a YAML
+  /// `asset: interpret_emojis: no` can turn them back off; without `-j`
+  /// the asset has no value for YAML to replace (`u2_cli.sh`).
+  #[tokio::test]
+  async fn test_interpret_emojis_is_an_asset_setting() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    if Apprise::new().add_config_text("urls: []", Some(apprise_core::config::ConfigFormat::Yaml), 0).await.is_err() {
+      return; // a build without YAML support
+    }
+    // Records the JSON body of every POST
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+      while let Ok((mut stream, _)) = listener.accept().await {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+          let mut data = Vec::new();
+          let mut buf = [0u8; 4096];
+          let body = loop {
+            let Ok(n) = stream.read(&mut buf).await else { return };
+            if n == 0 {
+              return;
+            }
+            data.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&data).into_owned();
+            let Some((head, body)) = text.split_once("\r\n\r\n") else { continue };
+            let length = head.lines().find_map(|l| l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)));
+            if body.len() >= length.unwrap_or(0) {
+              break head.starts_with("POST ").then(|| body.to_string());
+            }
+          };
+          let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+          if let Some(body) = body {
+            let _ = tx.send(body);
+          }
+        });
+      }
+    });
+
+    let dir = std::env::temp_dir().join(format!("apprise-cli-emojis-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (asset, flag, converted) in [("", true, true), ("asset:\n  interpret_emojis: no\n", true, false), ("asset:\n  interpret_emojis: yes\n", false, false)] {
+      let config = dir.join("emojis.yml");
+      std::fs::write(&config, format!("{asset}urls:\n  - json://127.0.0.1:{port}/\n")).unwrap();
+      let mut argv: Vec<String> = ["-c", &config.to_string_lossy(), "-b", "B :smile:", "-t", "T :fire:"].map(String::from).to_vec();
+      if flag {
+        argv.insert(0, "-j".into());
+      }
+      assert_eq!(run(&argv).await, 0, "{asset:?}");
+      let body = rx.recv().await.unwrap();
+      assert_eq!(body.contains("\"B \u{1f604}\""), converted, "{asset:?} -j={flag}: {body}");
+      assert_eq!(body.contains("\"B :smile:\""), !converted, "{asset:?} -j={flag}: {body}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
   }
 
   /// A day count reaching back past the clock's range prunes nothing.

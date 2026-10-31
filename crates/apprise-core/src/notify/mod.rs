@@ -341,7 +341,9 @@ impl ServiceDetails {
 /// - **Overflow**: `?overflow=`, else [`overflow_mode`](Self::overflow_mode).
 ///   [`overflow_mode_overridable`](Self::overflow_mode_overridable)
 ///   returning false ignores `?overflow=`.
-/// - **Emojis**: `?emojis=`, else `NotifyContext::interpret_emojis`.
+/// - **Emojis**: the asset's `interpret_emojis` with `?emojis=` (see
+///   [`AppriseAsset::interpret_emojis`](crate::AppriseAsset::interpret_emojis));
+///   `NotifyContext::interpret_emojis` turns them on for one call.
 /// - **Title**: when [`title_maxlen`](Self::title_maxlen) is 0 the title is
 ///   moved into the body (`title\r\nbody`, an HTML `<b>` line, or a
 ///   Markdown `#` heading) and `ctx.title` is empty.

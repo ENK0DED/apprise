@@ -746,6 +746,13 @@ fn parse_asset(tokens: &Mapping, base: &AppriseAsset) -> AppriseAsset {
           _ => asset.interpret_escapes = value,
         }
       }
+      // Upstream only replaces a value the asset already holds, and this
+      // one is unset unless the asset was given one (the CLI's -j)
+      "interpret_emojis" if asset.interpret_emojis.is_some() => match v {
+        Value::Bool(b) => asset.interpret_emojis = Some(*b),
+        Value::String(_) | Value::Null => asset.interpret_emojis = Some(config_bool(text.as_deref().unwrap_or_default())),
+        _ => tracing::warn!("Invalid asset value to \"{}\".", key),
+      },
       "app_id" | "app_desc" | "app_url" | "theme" | "image_url_mask" | "image_url_logo" => {
         let Some(text) = text else {
           tracing::warn!("Invalid asset value to \"{}\".", key);
@@ -1109,6 +1116,23 @@ urls:
     let opts = LoadOptions { asset: base, ..Default::default() };
     let out = parse_yaml("asset:\n  tz: invalid\n  app_id: x\nurls: []\n", &opts).unwrap();
     assert_eq!(out.asset.unwrap().timezone, Some(Timezone::utc()));
+  }
+
+  /// Upstream only sets an asset key that already holds a boolean or text:
+  /// `interpret_emojis` starts unset, so it is an invalid key unless the
+  /// asset was given a value first (the CLI's `--interpret-emojis`).
+  #[test]
+  fn test_asset_interpret_emojis_needs_a_value_to_replace() {
+    let emojis = |base: Option<bool>, value: &str| {
+      let opts = LoadOptions { asset: AppriseAsset { interpret_emojis: base, ..Default::default() }, ..Default::default() };
+      parse_yaml(&format!("asset:\n  interpret_emojis: {value}\nurls: []\n"), &opts).unwrap().asset.unwrap().interpret_emojis
+    };
+    assert_eq!(emojis(None, "yes"), None);
+    assert_eq!(emojis(None, "no"), None);
+    assert_eq!(emojis(Some(true), "no"), Some(false));
+    assert_eq!(emojis(Some(true), "'yes'"), Some(true));
+    assert_eq!(emojis(Some(false), "on"), Some(true));
+    assert_eq!(emojis(Some(true), "[x]"), Some(true));
   }
 
   // Each case checked against upstream (PyYAML's YAML 1.1 scalars).

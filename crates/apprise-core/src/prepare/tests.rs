@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::*;
+use crate::asset::AppriseAsset;
 use crate::notify::{Attachment, ConfiguredService, ServiceDetails, ServiceOptions};
 
 /// A plugin whose limits, formats and dialect come from a test case.
@@ -135,7 +136,7 @@ fn run_cases(data: &str) -> (usize, Vec<String>) {
     let mut c = ctx(case["title"].as_str().unwrap(), case["body"].as_str().unwrap(), input.clone().unwrap_or(NotifyFormat::Text));
     c.body_passthrough = input.is_none();
     c.interpret_escapes = case["interpret_escapes"].as_bool().unwrap();
-    c.interpret_emojis = case["asset_emojis"].as_bool().unwrap_or(false);
+    c.asset.interpret_emojis = case["asset_emojis"].as_bool();
     let got: Vec<Value> = match prepare_contexts(&svc, &c) {
       Ok(list) => list.into_iter().map(|p| serde_json::json!({"title": p.title, "body": p.body, "body_format": p.body_format.as_str()})).collect(),
       Err(_) => Vec::new(),
@@ -310,6 +311,48 @@ fn test_emojis_follow_url_then_context() {
   let on = ServiceOptions { emojis: Some(true), ..Default::default() };
   let c = NotifyContext { interpret_emojis: false, ..c };
   assert_eq!(pieces(&wrap(Probe::default(), on), &c), vec![pair("", "😄")]);
+}
+
+/// The asset's `interpret_emojis` with `?emojis=`, as upstream's
+/// `NotifyBase.__init__` combines them (`u2_emojis.py` against upstream):
+/// unset leaves the URL to decide, on is the default a URL can turn off,
+/// and off turns every service off whatever its URL says.
+#[test]
+fn test_asset_emojis_with_url_emojis() {
+  let converted = |asset: Option<bool>, url: Option<bool>| {
+    let c = NotifyContext {
+      title: "T :fire:".into(),
+      body: "B :smile:".into(),
+      asset: AppriseAsset { interpret_emojis: asset, ..Default::default() },
+      ..Default::default()
+    };
+    let got = pieces(&wrap(Probe { title_maxlen: 250, ..Default::default() }, ServiceOptions { emojis: url, ..Default::default() }), &c);
+    match got.as_slice() {
+      [(t, b)] if t == "T 🔥" && b == "B 😄" => true,
+      [(t, b)] if t == "T :fire:" && b == "B :smile:" => false,
+      other => panic!("{other:?}"),
+    }
+  };
+  for (asset, url, want) in [
+    (None, None, false),
+    (None, Some(true), true),
+    (None, Some(false), false),
+    (Some(true), None, true),
+    (Some(true), Some(true), true),
+    (Some(true), Some(false), false),
+    (Some(false), None, false),
+    (Some(false), Some(true), false),
+    (Some(false), Some(false), false),
+  ] {
+    assert_eq!(converted(asset, url), want, "asset={asset:?} url={url:?}");
+  }
+  // A call asking for emojis is an asset that turns them on, except
+  // against an asset that turned them off
+  for (asset, url, want) in
+    [(None, None, Some(true)), (None, Some(false), Some(false)), (Some(false), None, Some(false)), (Some(false), Some(true), Some(false))]
+  {
+    assert_eq!(crate::prepare::emoji_setting(asset, true, url), want, "asset={asset:?} url={url:?}");
+  }
 }
 
 #[test]
