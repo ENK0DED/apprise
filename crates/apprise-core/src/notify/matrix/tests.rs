@@ -871,6 +871,72 @@ async fn test_formats_match_upstream() {
   );
 }
 
+/// Content with no declared format, as upstream sends it for
+/// `notify(body_format=None)`: the plain fallback keeps it as written, and
+/// Markdown is rendered for the formatted body because it skipped
+/// dialect_convert().
+#[tokio::test]
+async fn test_passthrough_formats_match_upstream() {
+  let (title, text) = ("T <x>", "**b** <i>x</i> & y");
+  let rendered = "<p><strong>b</strong> <i>x</i> &amp; y</p>";
+  let token = "a".repeat(64);
+  let room = "matrix://user:pass@localhost/!r:localhost";
+  let cases = [
+    (
+      format!("{room}?format=html"),
+      json!({"msgtype": "m.text", "body": "# T <x>\r\n**b** <i>x</i> & y", "format": "org.matrix.custom.html", "formatted_body": "<h1>T &lt;x&gt;</h1><br/>**b** <i>x</i> & y"}),
+    ),
+    (
+      format!("{room}?format=markdown"),
+      json!({"msgtype": "m.text", "body": "# T <x>\r\n**b** <i>x</i> & y", "format": "org.matrix.custom.html", "formatted_body": format!("<h1>T &lt;x&gt;</h1>{rendered}")}),
+    ),
+    (format!("{room}?format=text"), json!({"msgtype": "m.text", "body": "# T <x>\r\n**b** <i>x</i> & y"})),
+    (
+      "matrix://user:token@localhost?mode=matrix&format=html".into(),
+      json!({"displayName": "user", "format": "html", "text": "<h1>T&nbsp;&lt;x&gt;</h1><br/>**b** <i>x</i> & y"}),
+    ),
+    (
+      "matrix://user:token@localhost?mode=matrix&format=markdown".into(),
+      json!({"displayName": "user", "format": "html", "text": format!("<h1>T&nbsp;&lt;x&gt;</h1>{rendered}")}),
+    ),
+    (
+      format!("matrix://{token}?mode=t2bot&format=markdown"),
+      json!({"displayName": "Apprise", "format": "html", "text": format!("<h1>T&nbsp;&lt;x&gt;</h1>{rendered}")}),
+    ),
+    (
+      "matrix://user:token@localhost?mode=hookshot&format=html".into(),
+      json!({"username": "user", "text": "T <x>\r\n**b** <i>x</i> & y", "html": "<h1>T&nbsp;&lt;x&gt;</h1><br/>**b** <i>x</i> & y"}),
+    ),
+    (
+      "matrix://user:token@localhost?mode=hookshot&format=markdown".into(),
+      json!({"username": "user", "text": "T <x>\r\n**b** <i>x</i> & y", "html": format!("<h1>T&nbsp;&lt;x&gt;</h1>{rendered}")}),
+    ),
+  ];
+  for (url, expected) in cases {
+    let server = MockServer::start().await;
+    homeserver(&server).await;
+    Mock::given(method("POST")).and(path_regex(r"/hook/|/webhook/")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = Apprise::new();
+    assert!(a.add(&url), "{url}");
+    let c = NotifyContext { body_passthrough: true, ..ctx(title, text) };
+    assert!(with_test_base(server.uri(), a.notify(&c)).await.is_success(), "{url}");
+    let requests = seen(&server).await;
+    let sent = sends(&requests).first().copied().or_else(|| requests.iter().find(|r| r.method.as_str() == "POST" && r.url.path().contains("hook/")));
+    assert_eq!(body(sent.unwrap()), expected, "{url}");
+  }
+  // Slack mode escapes the text as it is
+  for (format, mrkdwn) in [("html", false), ("markdown", true)] {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path_regex(r"/hook/")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let mut a = Apprise::new();
+    assert!(a.add(&format!("matrix://user:token@localhost?mode=slack&format={format}")));
+    let c = NotifyContext { body_passthrough: true, ..ctx(title, text) };
+    assert!(with_test_base(server.uri(), a.notify(&c)).await.is_success());
+    let payload = body(&seen(&server).await[0]);
+    assert_eq!((&payload["mrkdwn"], &payload["attachments"][0]["text"]), (&json!(mrkdwn), &json!("**b** &lt;i&gt;x&lt;/i&gt; &amp; y")), "{format}");
+  }
+}
+
 #[tokio::test]
 async fn test_slack_formats_match_upstream() {
   let server = MockServer::start().await;

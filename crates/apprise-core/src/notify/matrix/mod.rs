@@ -317,6 +317,20 @@ fn is_rich(format: &NotifyFormat) -> bool {
   matches!(format, NotifyFormat::Html | NotifyFormat::Markdown)
 }
 
+/// The HTML of a formatted body (upstream `_matrix_html_body()`). Markdown
+/// with no declared format skipped dialect_convert(), so it is rendered
+/// here; HTML and already rendered Markdown are used as they are.
+fn html_body(ctx: &NotifyContext) -> String {
+  if ctx.body_passthrough && ctx.body_format == NotifyFormat::Markdown { markdown_to_html_with(&ctx.body, &[]) } else { ctx.body.clone() }
+}
+
+/// The plain-text fallback for clients that cannot show HTML (upstream
+/// `_matrix_plain_fallback()`). Markup is stripped from declared HTML and
+/// Markdown only; content with no declared format is kept as written.
+fn plain_fallback(ctx: &NotifyContext) -> String {
+  if !ctx.body_passthrough && is_rich(&ctx.body_format) { html_to_text(&ctx.body) } else { ctx.body.clone() }
+}
+
 /// Upstream `MATRIX_HTTP_ERROR_MAP`, else the standard reason.
 fn status_message(status: u16) -> String {
   match status {
@@ -518,7 +532,7 @@ impl Matrix {
     } else {
       format!("<h1>{}</h1>{}", escape_html(&ctx.title, false, true), if ctx.body_format == NotifyFormat::Markdown { "" } else { "<br/>" })
     };
-    format!("{title}{}", ctx.body)
+    format!("{title}{}", html_body(ctx))
   }
 
   fn plain_with_title(title: &str, body: &str) -> String {
@@ -555,7 +569,7 @@ impl Matrix {
     let username = self.user.clone().unwrap_or_else(|| ctx.asset.app_id.clone());
     if is_rich(&ctx.body_format) {
       // Keep confirmed markup out of the plain-text fallback.
-      let plain = html_to_text(&ctx.body);
+      let plain = plain_fallback(ctx);
       json!({"username": username, "text": Self::plain_with_title(&ctx.title, &plain), "html": self.webhook_html(ctx)})
     } else {
       let text = Self::plain_with_title(&ctx.title, &ctx.body);
@@ -1145,7 +1159,7 @@ impl Run<'_> {
     let ctx = self.ctx;
     let rich = is_rich(&ctx.body_format);
     // Clients that cannot show HTML fall back to this text.
-    let plain = if rich { html_to_text(&ctx.body) } else { ctx.body.clone() };
+    let plain = plain_fallback(ctx);
     let title = if ctx.title.is_empty() { String::new() } else { format!("# {}\r\n", ctx.title) };
     let mut content = json!({
       "msgtype": match self.m.msgtype { MsgType::Text => "m.text", MsgType::Notice => "m.notice" },
@@ -1158,7 +1172,7 @@ impl Run<'_> {
         title_html.push_str("<br/>");
       }
       content["format"] = json!("org.matrix.custom.html");
-      content["formatted_body"] = json!(format!("{title_html}{}", ctx.body));
+      content["formatted_body"] = json!(format!("{title_html}{}", html_body(ctx)));
     }
     content
   }
