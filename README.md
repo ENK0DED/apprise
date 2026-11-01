@@ -341,7 +341,7 @@ The package is built with every feature the binding has, which includes PGP/MIME
 
 ## Cargo Features
 
-`apprise-core` has the features below, and the CLI forwards each of them under the same name. The size column is how much each one adds to the x86-64 Linux release binary of the CLI, which is about 8.8 MB with the default features, 10.3 MB with `pgp` added and 7.5 MB with no features at all. Sizes vary by platform.
+`apprise-core` has the features below, and the CLI forwards each of them under the same name. The size column is how much each one adds to the x86-64 Linux release binary of the CLI, which is about 9.2 MB with the default features, 10.7 MB with `pgp` added and 7.6 MB with no features at all. Sizes vary by platform.
 
 | Feature | Default | What it enables | Release size |
 | ------- | ------- | --------------- | ------------ |
@@ -916,9 +916,10 @@ This port aims to behave like upstream Apprise 2.1. Where it does not:
 * **Persistent storage** holds at most 1 MiB of JSON per service: a value that would take it past that is refused and the previous one kept. Upstream has no limit; a larger cache file it wrote is left in place, unused.
 * **Known gaps** in this port:
   * YAML settings that name targets (`to:`, ntfy's `topic:` and the like) are added to the targets the URL already names; upstream replaces them.
+  * About 28 YAML settings that upstream passes straight to the plugin are applied as a URL argument instead, mostly an SMS sender (`from_phone:` and similar). Where the URL already names a sender, upstream replaces it, while the port also sends to the old one.
   * Storage IDs (the `uid` in listings, and the persistent store's namespace) match upstream for every service that stores something. About 125 services that store nothing still use the generic ID, so only their listed `uid` differs.
   * Markdown with tens of thousands of nested emphasis markers converts slowly (the time grows with the square of the input); ordinary messages are unaffected.
-  * Library callers: `NotifyContext::default()` declares the body as text, where upstream's `notify()` passes an undeclared body through unconverted. Set `body_passthrough` for upstream's behaviour; the Node.js binding does when `bodyFormat` is omitted.
+  * Library callers: `NotifyContext::default()` declares the body as text, where upstream's `notify()` passes an undeclared body through unconverted. Set `body_passthrough` for upstream's behaviour; the Node.js binding does when `bodyFormat` is omitted. For the same reason a call can turn the asset's `interpret_escapes` on but not off.
 * **Shared with upstream, not fixed**:
   * Two processes (or two `Apprise` instances) that share a storage path and service overwrite each other's persistent-store changes; the last to write wins.
   * HTTP response bodies are read whole, so a hostile or broken server can make one send buffer as much as it sends.
