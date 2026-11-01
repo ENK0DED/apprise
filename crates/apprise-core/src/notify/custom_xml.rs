@@ -25,6 +25,8 @@ pub struct Xml {
   password: Option<String>,
   method: String,
   headers: Vec<(String, String)>,
+  /// The `-` arguments, sent as the query string.
+  params: Vec<(String, String)>,
   /// Element name for each of [`CORE_FIELDS`]; empty drops the element.
   payload_map: [String; 4],
   payload_extras: Vec<(String, String)>,
@@ -56,7 +58,6 @@ impl Xml {
     }
     let xsd_url = if overridden || !payload_extras.is_empty() { None } else { Some(XSD_DEFAULT_URL) };
 
-    // Upstream stores `-` GET parameters for url() but never sends them
     Some(Self {
       host,
       port: url.port,
@@ -66,6 +67,7 @@ impl Xml {
       password: url.password.clone(),
       method,
       headers: custom_args(url, '+'),
+      params: custom_args(url, '-'),
       payload_map,
       payload_extras,
       xsd_url,
@@ -185,7 +187,7 @@ impl Notify for Xml {
     tracing::debug!("XML {} URL: {} (cert_verify={})", self.method, url, self.verify_certificate);
 
     let client = build_client(self.verify_certificate)?;
-    let mut req = client.request(method, &url).headers(headers).body(self.payload(ctx));
+    let mut req = client.request(method, &url).headers(headers).query(&self.params).body(self.payload(ctx));
     if let Some((user, password)) = basic_auth(&self.user, &self.password) {
       req = req.basic_auth(user, Some(password));
     }
@@ -329,10 +331,31 @@ mod tests {
     let x = xml_for(&format!("xml://user@localhost:{}/command?method=GET&+X-H=v+1&-Param=1", server.address().port()));
     assert!(x.send(&ctx("t", "b")).await.unwrap());
 
-    // GET parameters are not sent, as upstream
     let requests = requests_to(&server, "GET", "/command").await;
-    assert_eq!(requests[0].url.query(), None);
+    assert_eq!(requests[0].url.query(), Some("Param=1"));
     assert_eq!(String::from_utf8_lossy(&requests[0].body), x.payload(&ctx("t", "b")));
+  }
+
+  #[tokio::test]
+  async fn test_get_params() {
+    // Upstream test_plugin_custom_xml_get_params: `-` arguments reach the
+    // request as its query string (upstream 80475172)
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/path")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let port = server.address().port();
+
+    // Verified against upstream with pycapture.py: a repeated key keeps its
+    // first position and takes the last value, and values are form-encoded
+    let x = xml_for(&format!("xml://localhost:{port}/path?-ParamA=Value&-ParamB=Other&-ParamA=Again&-Sp=a%20b%2Bc"));
+    assert!(x.send(&ctx("t", "b")).await.unwrap());
+    let requests = requests_to(&server, "POST", "/path").await;
+    assert_eq!(requests[0].url.query(), Some("ParamA=Again&ParamB=Other&Sp=a+b%2Bc"));
+
+    // No query string when no GET parameters are given
+    let x = xml_for(&format!("xml://localhost:{port}/path"));
+    assert!(x.send(&ctx("t", "b")).await.unwrap());
+    let requests = requests_to(&server, "POST", "/path").await;
+    assert_eq!(requests[1].url.query(), None);
   }
 
   #[tokio::test]

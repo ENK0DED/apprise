@@ -26,14 +26,24 @@ pub(crate) fn parse_method(url: &ParsedUrl) -> Option<String> {
 }
 
 /// The `+`, `-` or `:` arguments of a custom plugin URL, in URL order.
-/// These plugins unquote what `parse_qsd` already decoded a second time.
+/// These plugins unquote what `parse_qsd` already decoded a second time,
+/// into a dict, so keys that become equal keep the first position and the
+/// last value.
 pub(crate) fn custom_args(url: &ParsedUrl, prefix: char) -> Vec<(String, String)> {
   let args = match prefix {
     '+' => &url.qsd_add,
     '-' => &url.qsd_del,
     _ => &url.qsd_colon,
   };
-  args.iter().map(|(k, v)| (unquote(k), unquote(v))).collect()
+  let mut out: Vec<(String, String)> = Vec::new();
+  for (k, v) in args {
+    let (k, v) = (unquote(k), unquote(v));
+    match out.iter_mut().find(|(key, _)| *key == k) {
+      Some(entry) => entry.1 = v,
+      None => out.push((k, v)),
+    }
+  }
+  out
 }
 
 /// The formats the custom JSON, XML and form plugins send as given
@@ -310,6 +320,11 @@ mod tests {
       j.payload_extras,
       vec![("message".to_string(), "msg".to_string()), ("test".to_string(), "value".to_string()), ("type".to_string(), String::new())]
     );
+
+    // Keys that only match after the second unquote collapse into one, at
+    // the first position with the last value (checked with pycapture.py)
+    let j = Json::from_url(&ParsedUrl::parse("json://localhost?-%2541=1&-B=3&-A=2").unwrap()).unwrap();
+    assert_eq!(j.params, vec![("A".to_string(), "2".to_string()), ("B".to_string(), "3".to_string())]);
 
     // An empty method falls back to POST
     let j = Json::from_url(&ParsedUrl::parse("json://localhost?method=").unwrap()).unwrap();
