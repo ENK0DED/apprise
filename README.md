@@ -63,7 +63,7 @@ Visit upstream's [Official Documentation](https://appriseit.com/getting-started/
 
 The section identifies all of the services supported by this library. [Check out the upstream documentation for more information on the supported modules here](https://appriseit.com/services/).
 
-A few services depend on [Cargo features](#cargo-features). The default build includes MQTT (`mqtt`), Email and Delta Chat (`email`), and Matrix and Simplepush end-to-end encryption (`matrix-e2ee`, `simplepush-encryption`); AMQP 0-9-1 is always built in. PGP/MIME email (`pgp`), AMQP 1.0 (`amqp`), the [desktop notifications](#desktop-notifications) (`desktop`) and Blink(1) (`blink1`) are off by default.
+A few services depend on [Cargo features](#cargo-features). The default build includes MQTT (`mqtt`), Email and Delta Chat (`email`), Nostr (`nostr`), and Matrix and Simplepush end-to-end encryption (`matrix-e2ee`, `simplepush-encryption`); AMQP 0-9-1 is always built in. PGP/MIME email (`pgp`), AMQP 1.0 (`amqp`), the [desktop notifications](#desktop-notifications) (`desktop`) and Blink(1) (`blink1`) are off by default.
 
 ## Productivity Based Notifications
 
@@ -130,6 +130,7 @@ The table below identifies the services this tool supports and some example serv
 | [MQTT](https://appriseit.com/services/mqtt/) | mqtt://  or mqtts:// | (TCP) 1883 or 8883   | mqtt://hostname/topic<br />mqtt://user@hostname/topic<br />mqtts://user:pass@hostname:9883/topic
 | [Nextcloud](https://appriseit.com/services/nextcloud/) | ncloud:// or nclouds:// | (TCP) 80 or 443 | ncloud://adminuser:pass@host/User<br/>nclouds://adminuser:pass@host/User1/User2/UserN
 | [NextcloudTalk](https://appriseit.com/services/nextcloudtalk/) | nctalk:// or nctalks:// | (TCP) 80 or 443 | nctalk://user:pass@host/RoomId<br/>nctalks://user:pass@host/RoomId1/RoomId2/RoomIdN<br/>nctalks://host/RoomId?secret=BotSecret
+| [Nostr](https://appriseit.com/services/nostr/) | nostr:// | (TCP) 443 | nostr://nsec<br/>nostr://nsec/npub<br/>nostr://nsec/npub1/npub2/name@example.com
 | [Notica](https://appriseit.com/services/notica/) | notica:// or noticas://  | (TCP) 443   | notica://Token/
 | [Notifiarr](https://appriseit.com/services/notifiarr/) | notifiarr:// | (TCP) 443 | notifiarr://apikey/#channel<br />notifiarr://apikey/#channel1/#channel2/#channeln
 | [Notifico](https://appriseit.com/services/notifico/) | notifico:// or notificos://  | (TCP) 80 or 443   | notifico://ProjectID/MessageHook/<br />notifico://host/ProjectID/MessageHook/<br />notificos://host/ProjectID/MessageHook/
@@ -350,6 +351,7 @@ The package is built with every feature the binding has, which includes PGP/MIME
 | `images` | on | Bundles the default theme's PNG icons, which Telegram (`?image=yes`) uploads and desktop notifications show | about 176 KB (only the icon sizes in use are kept; all of them are 286 KB) |
 | `simplepush-encryption` | on | Simplepush end-to-end encryption (`spush://password@...`); without it, encrypted Simplepush URLs cannot send | about 57 KB |
 | `matrix-e2ee` | on | Matrix end-to-end encryption (Olm/Megolm, SAS device verification, encrypted attachments); without it, nothing is sent to encrypted rooms | about 280 KB |
+| `nostr` | on | `nostr://`: signed public notes and NIP-17 / NIP-04 encrypted direct messages over Nostr relays (secp256k1 Schnorr signatures through k256, and a built-in websocket client) | about 190 KB |
 | `pgp` | off | PGP/MIME signing and encryption for email and Delta Chat through rPGP (`?pgp=`, `pgppub=`, `pgpprv=`, `?wkd=yes`); turns on `email`. Without it a PGP mode loads with a warning and its notifications fail | about 1.5 MB |
 | `amqp` | off | AMQP 1.0 (`?version=1.0`) through fe2o3-amqp. `amqp://` and `amqps://` over AMQP 0-9-1 are always built in; without the feature a `?version=1.0` URL does not load | about 540 KB |
 | `desktop` | off | The [desktop notifications](#desktop-notifications) for the platform you build on | about 587 KB |
