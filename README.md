@@ -88,6 +88,7 @@ The table below identifies the services this tool supports and some example serv
 | [Evolution API](https://appriseit.com/services/evolution/) | evolution:// or evolutions:// | (TCP) 80 or 443 | evolution://apikey@hostname/instance/ToPhoneNo<br/>evolution://apikey@hostname:port/instance/ToPhoneNo<br/>evolution://apikey@hostname/instance/ToPhoneNo1/ToPhoneNo2/ToPhoneNoN/
 | [FCM](https://appriseit.com/services/fcm/) | fcm://    | (TCP) 443    | fcm://project@apikey/DEVICE_ID<br />fcm://project@apikey/#TOPIC<br/>fcm://project@apikey/DEVICE_ID1/#topic1/#topic2/DEVICE_ID2/
 | [Feishu](https://appriseit.com/services/feishu/) | feishu://    | (TCP) 443    | feishu://token
+| [FireHydrant](https://appriseit.com/services/firehydrant/) | firehydrant://  | (TCP) 443 | firehydrant://token<br />firehydrant://token?priority=low&tags=service:api
 | [Flock](https://appriseit.com/services/flock/) | flock://    | (TCP) 443    | flock://token<br/>flock://botname@token<br/>flock://app_token/u:userid<br/>flock://app_token/g:channel_id<br/>flock://app_token/u:userid/g:channel_id
 | [Flowtriq](https://appriseit.com/services/flowtriq/) | flowtriq:// or flowtriqs://    | (TCP) 80 or 443    | flowtriq://apikey@hostname/webhook/path<br />flowtriqs://apikey@hostname/webhook/path
 | [Fluxer](https://appriseit.com/services/fluxer/) | fluxer:// or fluxers:// | (TCP) 443 | fluxer://WebhookID/WebhookToken<br />fluxer://botname@WebhookID/WebhookToken<br />fluxers://hostname/WebhookID/WebhookToken<br />fluxers://hostname:port/path/WebhookID/WebhookToken

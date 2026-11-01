@@ -51,6 +51,7 @@ pub mod evolution;
 pub mod exotel;
 pub mod fcm;
 pub mod feishu;
+pub mod firehydrant;
 pub mod flock;
 pub mod flowtriq;
 pub mod fluxer;

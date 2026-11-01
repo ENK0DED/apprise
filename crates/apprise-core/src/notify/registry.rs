@@ -69,6 +69,7 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(exotel::Exotel::static_details());
   collect!(fcm::Fcm::static_details());
   collect!(feishu::FeiShu::static_details());
+  collect!(firehydrant::FireHydrant::static_details());
   collect!(flock::Flock::static_details());
   collect!(flowtriq::Flowtriq::static_details());
   collect!(fluxer::Fluxer::static_details());
@@ -273,6 +274,7 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(exotel::Exotel::from_url, "exotel");
   reg!(fcm::Fcm::from_url, "fcm");
   reg!(feishu::FeiShu::from_url, "feishu");
+  reg!(firehydrant::FireHydrant::from_url, "firehydrant");
   reg!(flock::Flock::from_url, "flock");
   reg!(flowtriq::Flowtriq::from_url, "flowtriq", "flowtriqs");
   reg!(fluxer::Fluxer::from_url, "fluxer", "fluxers");
@@ -550,6 +552,7 @@ pub static NATIVE_URLS: &[NativeUrl] = &[
   NativeUrl { schema: "pushplus", convert: native::pushplus },
   NativeUrl { schema: "wpush", convert: native::wpush },
   NativeUrl { schema: "notica", convert: native::notica },
+  NativeUrl { schema: "firehydrant", convert: native::firehydrant },
   NativeUrl { schema: "discord", convert: native::discord },
   NativeUrl { schema: "squadcast", convert: native::squadcast },
   NativeUrl { schema: "zoom", convert: native::zoom },
@@ -671,6 +674,11 @@ mod native {
     let c = pattern!(r"(?i)^https?://notica\.us/?\??(?P<token>[^&]+)([&\s]*(?P<params>.+))?$").captures(url)?;
     let params = c.name("params").map(|m| format!("?{}", m.as_str())).unwrap_or_default();
     Some(format!("notica://{}/{}", group(&c, "token"), params))
+  }
+
+  pub fn firehydrant(url: &str) -> Option<String> {
+    let c = pattern!(r"(?i)^https?://signals\.firehydrant\.com/v1/process/(?P<token>[A-Z0-9_.=-]+)/?(?P<params>\?.+)?$").captures(url)?;
+    Some(format!("firehydrant://{}/{}", group(&c, "token"), group(&c, "params")))
   }
 
   pub fn discord(url: &str) -> Option<String> {
@@ -912,6 +920,13 @@ mod tests {
     (r#"https://api.wpush.cn/api/v1/send?apikey=abc%2Bd&channel=wechat"#, Some(r#"wpush://abc+d/?apikey=abc%2Bd&channel=wechat"#)),
     (r#"https://notica.us/?abc123"#, Some(r#"notica://abc123/"#)),
     (r#"https://notica.us/?abc123&format=html"#, Some(r#"notica://abc123/?format=html"#)),
+    (
+      r#"https://signals.firehydrant.com/v1/process/eyJhbGciOiJIUzI1NiJ9.eyJvcmdhbml6YXRpb25faWQiOiJhYmMtMTIzIn0.Ab-Cd_EfGhIjKlMnOpQrStUvWxYz0123456789"#,
+      Some(r#"firehydrant://eyJhbGciOiJIUzI1NiJ9.eyJvcmdhbml6YXRpb25faWQiOiJhYmMtMTIzIn0.Ab-Cd_EfGhIjKlMnOpQrStUvWxYz0123456789/"#),
+    ),
+    (r#"http://SIGNALS.firehydrant.com/V1/process/a_b-c.d=e/?priority=high"#, Some(r#"firehydrant://a_b-c.d=e/?priority=high"#)),
+    (r#"https://signals.firehydrant.com/v1/process/abc/extra"#, None),
+    (r#"https://signals.firehydrant.com/v1/process/abc?"#, None),
     (r#"https://discord.com/api/webhooks/0123456789/abcdefghijk_lmnop-qrstuvwxyz"#, Some(r#"discord://0123456789/abcdefghijk_lmnop-qrstuvwxyz/"#)),
     (r#"https://discordapp.com/api/webhooks/0123456789/abc/?footer=yes"#, Some(r#"discord://0123456789/abc/?footer=yes"#)),
     (r#"https://api.squadcast.com/v2/incidents/api/abc123"#, Some(r#"squadcast://abc123/"#)),
