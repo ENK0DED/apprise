@@ -171,8 +171,7 @@ impl Office365 {
     // {schema}://{source}/{tenant}/{client_id}/{secret}/{targets}   (org)
     // {schema}://{source}/{client_id}/{secret}/{targets}            (personal)
     // Upstream reads this URL's query with `+` meaning a space.
-    let reparsed = ParsedUrl::parse_with(&original.raw, ParseOptions { plus_to_space: true, ..Default::default() });
-    let url = reparsed.as_ref().unwrap_or(original);
+    let url = &plus_as_space(original);
     let mut entries = url.path_parts.clone();
     let host = url.host.clone().unwrap_or_default();
     let qsd = |key: &str| url.get(key).filter(|v| !v.is_empty()).map(unquote);
@@ -195,12 +194,12 @@ impl Office365 {
     // YAML `source:` and `tenant:` settings replace what the URL gives
     // (upstream passes them to the constructor). The URL's own source still
     // decides the mode, and its tenant still takes its place in the path.
-    let source = original.kwarg("source").map_or(source, str::to_string);
+    let source = url.kwarg("source").map_or(source, str::to_string);
 
     let tenant = match mode {
       Mode::Org => {
         let written = qsd("tenant").or_else(|| (!entries.is_empty()).then(|| unquote(&entries.remove(0))));
-        original.kwarg("tenant").map(str::to_string).or(written)
+        url.kwarg("tenant").map(str::to_string).or(written)
       }
       Mode::Personal => None,
     };
@@ -671,6 +670,24 @@ impl Notify for Office365 {
     }
     Ok(!has_error)
   }
+}
+
+/// `url` with the query values its URL wrote read again with `+` as a
+/// space, as upstream parses this URL. Values set after parsing (YAML
+/// settings) and the other parts of the URL stay as they are.
+fn plus_as_space(url: &ParsedUrl) -> ParsedUrl {
+  let mut out = url.clone();
+  let spaced = ParsedUrl::parse_with(&url.raw, ParseOptions { plus_to_space: true, ..Default::default() });
+  if let (Some(written), Some(spaced)) = (ParsedUrl::parse(&url.raw), spaced) {
+    for (key, value) in out.qsd.iter_mut() {
+      if written.qsd.get(key) == Some(value)
+        && let Some(v) = spaced.qsd.get(key)
+      {
+        value.clone_from(v);
+      }
+    }
+  }
+  out
 }
 
 fn as_int(v: &Value) -> Option<i64> {
@@ -1148,6 +1165,53 @@ mod tests {
         "/v1.0/me/sendMail other@outlook.com",
         "/tenantA/oauth2/v2.0/token abcd",
         "/v1.0/users/other@outlook.com/sendMail other@outlook.com",
+      ]
+    );
+  }
+
+  /// YAML settings the loader applies to the URL reach the plugin, while a
+  /// `+` the URL itself writes in its query still reads as a space
+  /// (upstream, for the same YAML: secret `newsecret`, to rcpt@example.com,
+  /// cc copy@example.com, not saved, uid 9e42e12c; then cc `a b@example.com`
+  /// read as b@example.com named `a`).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_settings_applied_to_the_url_are_kept() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(wiremock::matchers::path_regex("/oauth2/v2.0/token$"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"expires_in": 2000, "access_token": "abcd1234"})))
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(wiremock::matchers::path_regex("/sendMail$")).respond_with(ResponseTemplate::new(202)).mount(&server).await;
+    let doc = concat!(
+      "urls:\n",
+      "  - azure://user@example.edu/tenantA/ab-cd-ef-gh/abcd:\n",
+      "      to: rcpt@example.com\n      cc: copy@example.com\n      secret: newsecret\n      savesent: no\n",
+      "  - azure://user@example.edu/tenantA/ab-cd-ef-gh/abcd/rcpt@example.com?cc=a+b@example.com:\n      tag: plus\n",
+    );
+    let (a, uids) = crate::config::yaml::load_for_test(doc).await;
+    assert_eq!(uids, ["9e42e12c", "84c773c5"]);
+    for svc in a.services() {
+      let ctx = NotifyContext { title: "title".into(), body: "body".into(), body_format: NotifyFormat::Html, ..Default::default() };
+      assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+    }
+    let reqs = server.received_requests().await.unwrap();
+    let secrets: Vec<String> = reqs
+      .iter()
+      .filter(|r| r.url.path().ends_with("/token"))
+      .map(|r| url::form_urlencoded::parse(&r.body).find(|(k, _)| k == "client_secret").unwrap().1.into_owned())
+      .collect();
+    assert_eq!(secrets, ["newsecret", "abcd"]);
+    let mails = json_bodies(&reqs, "/v1.0/users/user@example.edu/sendMail");
+    let summary: Vec<(Value, Value, Value)> =
+      mails.iter().map(|m| (m["message"]["toRecipients"].clone(), m["message"]["ccRecipients"].clone(), m["saveToSentItems"].clone())).collect();
+    let to = json!([{"emailAddress": {"address": "rcpt@example.com"}}]);
+    assert_eq!(
+      summary,
+      [
+        (to.clone(), json!([{"emailAddress": {"address": "copy@example.com"}}]), json!("false")),
+        (to, json!([{"emailAddress": {"address": "b@example.com", "name": "a"}}]), json!("true")),
       ]
     );
   }
