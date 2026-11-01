@@ -35,6 +35,10 @@ impl Line {
         token
       }
     };
+    // A YAML `token:` replaces the access token (upstream passes it to the
+    // constructor); the targets stay as the URL gives them, after the
+    // URL's own token took its share of the path
+    let token = url.kwarg("token").map_or(token, str::to_string);
     let token = token.trim().to_string();
     if token.is_empty() {
       tracing::warn!("An invalid LINE Access Token was specified.");
@@ -275,5 +279,31 @@ mod tests {
 
   fn body_json_to(target: &'static str) -> impl wiremock::Match {
     move |req: &wiremock::Request| serde_json::from_slice::<serde_json::Value>(&req.body).map(|v| v["to"] == target).unwrap_or(false)
+  }
+
+  /// A YAML `token:` replaces the access token, as upstream's constructor
+  /// argument does. The targets stay as the URL gives them: a token with
+  /// slashes in the URL keeps its share of the path, unlike `?token=`
+  /// (upstream: Bearer tokenB/with/slash= to Uuser1; Bearer tokenB to
+  /// Uuser1 only).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_token_replaces_the_urls() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/v2/bot/message/push")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let doc = "urls:\n  - line://tokenA/Uuser1:\n      token: tokenB/with/slash=\n  - line://tok/en=/Uuser1:\n      token: tokenB\n";
+    let (a, _) = crate::config::yaml::load_for_test(doc).await;
+    let ctx = NotifyContext { body: "body".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    let mut sent: Vec<(String, String)> = crate::notify::custom_json::requests_to(&server, "POST", "/v2/bot/message/push")
+      .await
+      .iter()
+      .map(|r| {
+        let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        (r.headers.get("authorization").unwrap().to_str().unwrap().to_string(), body["to"].as_str().unwrap().to_string())
+      })
+      .collect();
+    sent.sort();
+    assert_eq!(sent, [("Bearer tokenB".to_string(), "Uuser1".to_string()), ("Bearer tokenB/with/slash=".into(), "Uuser1".into())]);
   }
 }

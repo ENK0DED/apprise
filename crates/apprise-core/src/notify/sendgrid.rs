@@ -37,7 +37,9 @@ impl SendGrid {
       tracing::warn!("An invalid SendGrid API Key was specified.");
       return None;
     }
-    let from = format!("{}@{}", password, host);
+    // A YAML `from_email:` replaces the sender the URL gives (upstream
+    // passes it to the constructor)
+    let from = url.kwarg("from_email").map_or_else(|| format!("{}@{}", password, host), str::to_string);
     let Some(from_email) = is_email(&from).map(|e| e.full_email) else {
       tracing::warn!("Invalid ~From~ email specified: {}", from);
       return None;
@@ -402,5 +404,20 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
     let to: Vec<Value> = bodies(&server).await.iter().map(|b| b["personalizations"][0]["to"][0]["email"].clone()).collect();
     assert_eq!(to, vec![json!("a@example.com"), json!("b@example.com"), json!("b@example.com")]);
+  }
+
+  /// A YAML `from_email:` replaces the sender the URL gives, and so the
+  /// recipient it defaults to, as upstream's constructor argument does
+  /// (upstream: both alerts@other.example).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_from_email_replaces_the_sender() {
+    let server = mock(200).await;
+    let doc = "urls:\n  - sendgrid://abcd:noreply@example.com:\n      from_email: alerts@other.example\n";
+    let (a, _) = crate::config::yaml::load_for_test(doc).await;
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("title", NotifyFormat::Html))).await.is_success());
+    let sent = bodies(&server).await;
+    assert_eq!(sent[0]["from"], json!({ "email": "alerts@other.example" }));
+    assert_eq!(sent[0]["personalizations"], json!([{ "to": [{ "email": "alerts@other.example" }] }]));
   }
 }

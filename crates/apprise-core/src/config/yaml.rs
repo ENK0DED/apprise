@@ -36,7 +36,11 @@
 //! A setting for a constructor argument no URL argument carries (Gotify's
 //! `token` and `path`, SMPP's `from_phone` and targets) is written at that
 //! argument's place in the URL instead (its host, user or password, or
-//! path segments), replacing what the URL had there.
+//! path segments), replacing what the URL had there. Where that place
+//! depends on the URL's form (Office 365's `source` and `tenant`, a
+//! sender's `from_email` spread over the password and host), the setting
+//! goes to the plugin beside the URL ([`ParsedUrl::kwargs`]), which reads
+//! it after parsing the URL, as upstream's constructor gets it.
 //! `tag`/`tags` give the service its tags; a
 //! `?tag=`/`?tags=` on the URL itself stays with the plugin (upstream
 //! c511e1d4, 9b64369c).
@@ -139,7 +143,8 @@ fn yaml_scalar(v: &Value) -> String {
 /// A setting for a constructor argument no URL argument carries (Gotify's
 /// `token` and `path`, SMPP's `from_phone`) is kept under [`AT`] and its
 /// argument's name, and [`apply_tokens`] writes it at that argument's
-/// place in the URL.
+/// place in the URL; one without such a place, under [`KWARG`], and
+/// [`apply_tokens`] hands it to the plugin beside the URL.
 ///
 /// Settings with one prefix (`+name`, `-name`, `:name`) become one token
 /// named after the prefix, holding a mapping of names to Python's `str()`
@@ -147,8 +152,9 @@ fn yaml_scalar(v: &Value) -> String {
 /// that prefix fills (JSON's `headers`), which replaces the URL's, and a
 /// child's replaces a sibling's.
 fn special_tokens(schema: &str, mut tokens: Tokens) -> Tokens {
-  // Only this function names tokens for a URL position.
-  tokens.retain(|key, _| !key.starts_with(AT));
+  // Only this function names tokens for a URL position or a plugin
+  // argument.
+  tokens.retain(|key, _| !key.starts_with(AT) && !key.starts_with(KWARG));
   if let Some(pass) = tokens.shift_remove("pass")
     && tokens.get("password").is_none_or(Value::is_null)
   {
@@ -184,6 +190,7 @@ fn special_tokens(schema: &str, mut tokens: Tokens) -> Tokens {
         let list = url_position(schema, name).is_some_and(|p| matches!(p.place, Place::Path { kind: Segments::List, .. }));
         (format!("{AT}{name}"), list, key == name)
       }
+      Some(UrlToken::Kwarg(name)) => (format!("{KWARG}{name}"), false, false),
     };
     if list || lists.contains(&name) {
       // A list collects every setting that names it, including one
@@ -209,6 +216,29 @@ fn special_tokens(schema: &str, mut tokens: Tokens) -> Tokens {
 /// Names a setting kept for its constructor argument's place in the URL
 /// ([`special_tokens`]); no YAML key can start with it.
 const AT: &str = "\u{0}at:";
+
+/// Names a setting kept for a constructor argument that goes to the plugin
+/// beside the URL ([`special_tokens`]); no YAML key can start with it.
+const KWARG: &str = "\u{0}kwarg:";
+
+/// Hand a setting to the plugin as its constructor argument `name`, beside
+/// the URL ([`ParsedUrl::kwargs`]): upstream passes it to the constructor,
+/// over whatever the URL gave. The value is trimmed, as URL values are, and
+/// an empty one is ignored, as an empty setting for a URL position is.
+fn set_kwarg(parsed: &mut ParsedUrl, name: &str, value: &Value, entry: usize, item: usize) {
+  if value.is_null() {
+    return;
+  }
+  match yaml_text(value).map(|text| text.trim().to_string()) {
+    Some(text) if !text.is_empty() => {
+      parsed.kwargs.insert(name.to_string(), text);
+    }
+    Some(_) => tracing::warn!("The {} setting is empty; ignoring it.", name),
+    None => {
+      tracing::warn!("The {} setting in YAML configuration entry #{}, item #{} can not be expressed as text; ignoring it.", name, entry, item)
+    }
+  }
+}
 
 /// Write a setting at the URL place of constructor argument `name`
 /// (upstream passes it to the constructor, over whatever the URL gave): a
@@ -703,6 +733,10 @@ fn apply_tokens(parsed: &mut ParsedUrl, tokens: Tokens, entry: usize, item: usiz
       apply_position(parsed, name, &value)?;
       continue;
     }
+    if let Some(name) = key.strip_prefix(KWARG) {
+      set_kwarg(parsed, name, &value, entry, item);
+      continue;
+    }
     if let (Some(prefix), Value::Mapping(group)) = (URL_ARG_PREFIXES.into_iter().find(|p| key == *p), &value) {
       // The settings replace the URL's own arguments with this prefix
       replace_prefixed_args(parsed, prefix, group);
@@ -903,6 +937,17 @@ fn args_of(parsed: &ParsedUrl) -> std::collections::HashMap<String, String> {
 #[cfg(test)]
 fn resolved(content: &str) -> Vec<ParsedUrl> {
   collect(content, &LoadOptions::default()).unwrap().1.into_iter().map(|c| c.parsed).collect()
+}
+
+/// The services of YAML document `doc`, loaded into an `Apprise`, and
+/// their storage UIDs in order: for the plugins' tests of the settings
+/// upstream passes to their constructors.
+#[cfg(test)]
+pub(crate) async fn load_for_test(doc: &str) -> (crate::Apprise, Vec<String>) {
+  let mut a = crate::Apprise::new();
+  a.add_config_text(doc, Some(super::ConfigFormat::Yaml), 0).await.unwrap();
+  let uids = a.services().map(|s| a.url_id(s).unwrap_or_default()).collect();
+  (a, uids)
 }
 
 #[cfg(test)]
@@ -1151,12 +1196,41 @@ urls:
     let p = one("urls:\n  - github://token@owner:\n      number: 5\n");
     assert_eq!((p.path.as_str(), p.raw.as_str()), ("", "github://token@owner"));
     assert_eq!(one("urls:\n  - gotify://localhost/a/aaaaaaaaaaaaaaa:\n      token: ''\n").path, "a/aaaaaaaaaaaaaaa");
-    // GoAlert tells its path from its keys by their form: the setting stays
-    // an argument, which the plugin reads
-    assert_eq!(one("urls:\n  - goalert://localhost/11111111-2222-3333-4444-555555555555:\n      path: /sub\n").get("path"), Some("/sub"));
+    // GoAlert tells its path from its keys by their form: the setting goes
+    // to the plugin beside the URL, which stays as written
+    let p = one("urls:\n  - goalert://localhost/11111111-2222-3333-4444-555555555555:\n      path: /sub\n");
+    assert_eq!((p.kwarg("fullpath"), p.get("path"), p.path.as_str()), (Some("/sub"), None, "11111111-2222-3333-4444-555555555555"));
     // No YAML key can pose as one of these settings
     let p = one("urls:\n  - gotify://localhost/aaaaaaaaaaaaaaa:\n      \"\\0at:token\": bbbbbbbbbbbbbbb\n");
     assert_eq!(p.path, "aaaaaaaaaaaaaaa");
+  }
+
+  #[test]
+  fn test_settings_for_arguments_without_a_place_go_beside_the_url() {
+    let one = |doc: &str| resolved(doc).remove(0);
+    // Office 365: the setting goes to the plugin, the URL stays as written
+    let p = one("urls:\n  - azure://user@example.edu/tenantA/cid/secret?to=a@b.c:\n      tenant: tenantB\n      source: x@example.edu\n");
+    assert_eq!((p.kwarg("tenant"), p.kwarg("source")), (Some("tenantB"), Some("x@example.edu")));
+    assert_eq!((p.path.as_str(), p.get("tenant"), p.get("source"), p.get("to")), ("tenantA/cid/secret", None, None, Some("a@b.c")));
+    assert_eq!(p.raw, "azure://user@example.edu/tenantA/cid/secret?to=a@b.c");
+    // A child setting replaces a sibling one, per entry
+    let got = resolved("urls:\n  - notica://aaaaaa:\n      - token: bbbbbb\n      - tag: t\n    token: cccccc\n");
+    assert_eq!(got.iter().map(|p| p.kwarg("token")).collect::<Vec<_>>(), [Some("bbbbbb"), Some("cccccc")]);
+    // Values are text, trimmed as URL values are; empty and null values are
+    // left out, so the URL's own value stays
+    assert_eq!(one("urls:\n  - fluxer://1234567890123/abcdefghijklmnopqrst:\n      webhook_id: 9876543210987\n").kwarg("webhook_id"), Some("9876543210987"));
+    assert_eq!(one("urls:\n  - notica://aaaaaa:\n      token: ' bbbbbb '\n").kwarg("token"), Some("bbbbbb"));
+    for value in ["''", "' '", "null", "~"] {
+      assert!(one(&format!("urls:\n  - notica://aaaaaa:\n      token: {value}\n")).kwargs.is_empty(), "{value}");
+    }
+    // No YAML key can pose as one of these settings
+    let p = one("urls:\n  - notica://aaaaaa:\n      \"\\0kwarg:token\": bbbbbb\n");
+    assert!(p.kwargs.is_empty() && p.qsd.is_empty());
+    // Template variables in such a setting wait for their value like any
+    let p = pending("template:\n  - tok\nurls:\n  - notica://aaaaaa:\n      token: ${tok}\n");
+    assert_eq!(p[0].names.iter().cloned().collect::<Vec<_>>(), vec!["tok"]);
+    let values = p[0].values(&HashMap::from([("TOK".to_string(), "bbbbbb".to_string())]), &|_| None).unwrap();
+    assert_eq!(p[0].placeholders.substitute(&p[0].parsed, &values).kwarg("token"), Some("bbbbbb"));
   }
 
   /// Each setting of the round-3 list (`gotify`, `goalert`, `notica`,

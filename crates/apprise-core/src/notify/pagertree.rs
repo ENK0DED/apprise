@@ -35,7 +35,15 @@ pub struct PagerTree {
 
 impl PagerTree {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
-    let integration = arg(url, "id").or_else(|| arg(url, "integration")).or_else(|| url.host.clone()).unwrap_or_default();
+    // A YAML `integration:` wins over all of these (upstream passes it to
+    // the constructor)
+    let integration = url
+      .kwarg("integration")
+      .map(str::to_string)
+      .or_else(|| arg(url, "id"))
+      .or_else(|| arg(url, "integration"))
+      .or_else(|| url.host.clone())
+      .unwrap_or_default();
     if !is_integration_id(&integration) {
       tracing::warn!("An invalid PagerTree Integration ID ({}) was specified.", integration);
       return None;
@@ -350,5 +358,19 @@ mod tests {
     let details = PagerTree::static_details();
     assert_eq!(details.service_name, "PagerTree");
     assert_eq!(details.protocols, vec!["pagertree"]);
+  }
+
+  /// A YAML `integration:` replaces the URL's, its `?id=` included, as
+  /// upstream's constructor argument does (upstream: POST
+  /// /integration/int_yyyyyyyyyy, uid d6edbf94).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_integration_replaces_the_urls() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/integration/int_yyyyyyyyyy")).respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+    let doc = "urls:\n  - pagertree://int_xxxxxxxxxxx?id=int_zzzzzzzzzz:\n      integration: int_yyyyyyyyyy\n";
+    let (a, uids) = crate::config::yaml::load_for_test(doc).await;
+    assert_eq!(uids, ["d6edbf94"]);
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("title", "body", NotifyType::Info))).await.is_success());
   }
 }

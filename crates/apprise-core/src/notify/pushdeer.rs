@@ -23,6 +23,9 @@ impl PushDeer {
       Some(key) => (key.clone(), url.host.clone()),
       None => (url.host.clone().unwrap_or_default(), None),
     };
+    // A YAML `pushkey:` replaces the URL's (upstream passes it to the
+    // constructor); the URL still tells the official server from another
+    let push_key = url.kwarg("pushkey").map_or(push_key, str::to_string);
     let push_key = push_key.trim().to_string();
     if push_key.is_empty() || !push_key.chars().all(|c| c.is_ascii_alphanumeric()) {
       tracing::warn!("An invalid PushDeer API Pushkey was specified.");
@@ -165,5 +168,21 @@ mod tests {
     let details = PushDeer::static_details();
     assert_eq!(details.service_name, "PushDeer");
     assert_eq!(details.protocols, vec!["pushdeer", "pushdeers"]);
+  }
+
+  /// A YAML `pushkey:` replaces the URL's, as upstream's constructor
+  /// argument does, for the official server and another (upstream: POST
+  /// /message/push?pushkey=bbbbbbbb to each).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_pushkey_replaces_the_urls() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/message/push")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let doc = format!("urls:\n  - pushdeer://aaaaaaaa:\n      pushkey: bbbbbbbb\n  - pushdeer://{}/aaaaaaaa:\n      pushkey: bbbbbbbb\n", server.address());
+    let (a, _) = crate::config::yaml::load_for_test(&doc).await;
+    let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    let sent = crate::notify::custom_json::requests_to(&server, "POST", "/message/push").await;
+    assert_eq!(sent.iter().map(|r| r.url.query().unwrap_or_default().to_string()).collect::<Vec<_>>(), ["pushkey=bbbbbbbb", "pushkey=bbbbbbbb"]);
   }
 }

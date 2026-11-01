@@ -47,6 +47,9 @@ impl Join {
       }
       None => host,
     };
+    // A YAML `apikey:` replaces the URL's (upstream passes it to the
+    // constructor); a host written as `{apikey}@{device}` stays a device
+    let apikey = url.kwarg("apikey").map_or(apikey, str::to_string);
     let apikey = apikey.trim().to_string();
     if !is_join_id(&apikey) {
       tracing::warn!("An invalid Join API Key was specified.");
@@ -263,5 +266,24 @@ mod tests {
     let details = Join::static_details();
     assert_eq!(details.service_name, "Join");
     assert_eq!(details.protocols, vec!["join"]);
+  }
+
+  /// A YAML `apikey:` replaces the URL's, as upstream's constructor
+  /// argument does; the host written as `{apikey}@{device}` stays a device
+  /// (upstream: apikey=bbbb..., deviceId=dddd...).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_apikey_replaces_the_urls() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/_ah/api/messaging/v1/sendPush")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let (key, device) = ("b".repeat(32), "d".repeat(32));
+    let doc = format!("urls:\n  - join://{}@{device}:\n      apikey: {key}\n", "a".repeat(32));
+    let (a, _) = crate::config::yaml::load_for_test(&doc).await;
+    let ctx = NotifyContext { title: "title".into(), body: "body".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    let sent = crate::notify::custom_json::requests_to(&server, "POST", "/_ah/api/messaging/v1/sendPush").await;
+    assert_eq!(sent.len(), 1);
+    let args: std::collections::HashMap<String, String> = sent[0].url.query_pairs().into_owned().collect();
+    assert_eq!((args["apikey"].as_str(), args["deviceId"].as_str()), (key.as_str(), device.as_str()));
   }
 }

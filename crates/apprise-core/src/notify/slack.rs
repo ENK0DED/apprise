@@ -255,7 +255,34 @@ impl Slack {
       targets.extend(split_channels(to));
     }
 
-    let mode = explicit.unwrap_or(if access.as_deref().is_some_and(|a| !a.is_empty()) { Mode::Bot } else { Mode::Webhook });
+    // YAML settings for the tokens and the workflow path replace what the
+    // URL gives (upstream passes them to the constructor), and so decide
+    // the mode the URL would imply
+    for (name, slot) in [("access_token", &mut access), ("token_a", &mut token_a), ("token_b", &mut token_b), ("token_c", &mut token_c)] {
+      if let Some(value) = url.kwarg(name) {
+        *slot = Some(value.to_string());
+      }
+    }
+    if let Some(value) = url.kwarg("workflow_path") {
+      workflow_path = Some(value.to_string());
+    }
+    let workflow_segments = workflow_path.as_deref().map_or(0, |p| p.split('/').filter(|s| !s.is_empty()).count());
+
+    let mode = match explicit {
+      Some(mode) => mode,
+      // Without ?mode=, a workflow path picks a workflow or a trigger by its
+      // number of segments
+      None if workflow_path.as_deref().is_some_and(|p| !p.is_empty()) => match workflow_segments {
+        4 => Mode::Workflow,
+        3 => Mode::Trigger,
+        n => {
+          tracing::warn!("A Slack Workflow URL requires exactly 3 or 4 path segments ({} given).", n);
+          return None;
+        }
+      },
+      None if access.as_deref().is_some_and(|a| !a.is_empty()) => Mode::Bot,
+      None => Mode::Webhook,
+    };
 
     let mut path = Vec::new();
     match mode {
@@ -1547,5 +1574,57 @@ mod tests {
     assert!(start.elapsed().as_secs_f64() < 15.0, "took {:?}", start.elapsed());
     // Only the outer labels become links; the rest stay as plain text
     assert_eq!(result.matches("](u)").count(), depth - crate::conversion::MAX_LINK_DEPTH);
+  }
+
+  /// YAML `access_token:`, `token_a:`/`token_b:`/`token_c:` and
+  /// `workflow_path:` settings replace what the URL gives, as upstream's
+  /// constructor arguments do, and so decide the mode: a bot token makes a
+  /// webhook URL a bot, webhook tokens leave a bot a bot, and a workflow
+  /// path picks a workflow or a trigger by its number of segments. Upstream
+  /// sends what this test expects, for the same YAML (uids in order).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_tokens_and_workflow_path_replace_the_urls() {
+    let server = MockServer::start().await;
+    let tokens = "      token_a: T2KK4U4M3\n      token_b: B2CSUE5KE\n      token_c: UJjbklemabldPYsJefwj8GR\n";
+    let doc = format!(
+      concat!(
+        "urls:\n",
+        "  - {webhook}/#general:\n{tokens}",
+        "  - {webhook}/#general:\n      access_token: xoxb-1234-1234-abc124\n",
+        "  - slack://xoxb-1234-1234-abc124/#general:\n{tokens}",
+        "  - slack://xoxb-1234-1234-abc124/#general:\n      access_token: xoxp-9999-9999-def999\n",
+        "  - {webhook}:\n      workflow_path: T0AAAAAAA/A0BBBBBBB/123456789/WorkflowSecret\n",
+        "  - {webhook}:\n      workflow_path: T0AAAAAAA/A0BBBBBBB/TriggerSecret\n",
+        "  - slack://T0AAAAAAA/A0BBBBBBB/123456789/WorkflowSecret?mode=workflow:\n      workflow_path: T0CCCCCCC/A0DDDDDDD/987654321/OtherSecret\n",
+      ),
+      webhook = WEBHOOK,
+      tokens = tokens
+    );
+    let (a, uids) = crate::config::yaml::load_for_test(&doc).await;
+    assert_eq!(uids, ["6e327331", "630c5a88", "630c5a88", "1a6ace24", "204bc614", "7727e130", "17b5a0db"]);
+    let mut sent = Vec::new();
+    for svc in a.services() {
+      server.reset().await;
+      mock_at(&server, "POST", "/api/chat.postMessage", 200, r#"{"ok": true, "channel": "C1", "ts": "1"}"#).await;
+      Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_string("ok")).mount(&server).await;
+      assert!(with_test_base(server.uri(), svc.send(&ctx("title", "body", NotifyFormat::Text))).await.unwrap());
+      for r in server.received_requests().await.unwrap().iter().filter(|r| r.method.as_str() == "POST") {
+        let auth = r.headers.get("authorization").map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
+        sent.push(format!("{} {auth}", r.url.path()).trim_end().to_string());
+      }
+    }
+    assert_eq!(
+      sent,
+      [
+        "/services/T2KK4U4M3/B2CSUE5KE/UJjbklemabldPYsJefwj8GR",
+        "/api/chat.postMessage Bearer xoxb-1234-1234-abc124",
+        "/api/chat.postMessage Bearer xoxb-1234-1234-abc124",
+        "/api/chat.postMessage Bearer xoxp-9999-9999-def999",
+        "/workflows/T0AAAAAAA/A0BBBBBBB/123456789/WorkflowSecret",
+        "/triggers/T0AAAAAAA/A0BBBBBBB/TriggerSecret",
+        "/workflows/T0CCCCCCC/A0DDDDDDD/987654321/OtherSecret",
+      ]
+    );
   }
 }

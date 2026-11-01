@@ -75,6 +75,14 @@ pub struct ParsedUrl {
   /// lines, YAML `tag:`/`tags:`, [`crate::Apprise::add_with_tags`]).
   /// Raw strings, `priority:tag` form kept intact.
   pub assigned_tags: Option<Vec<String>>,
+  /// Plugin arguments a configuration file gave beside the URL, by the
+  /// name of upstream's constructor argument. Upstream hands YAML
+  /// settings to the plugin's constructor, over what its `parse_url()`
+  /// made of the URL. The YAML loader writes most of them into the URL;
+  /// it keeps here the ones no URL argument or URL part carries, which
+  /// the plugin reads with [`ParsedUrl::kwarg`] after parsing the URL.
+  /// No URL sets these.
+  pub kwargs: IndexMap<String, String>,
   /// Original raw URL string
   pub raw: String,
 }
@@ -213,6 +221,7 @@ impl ParsedUrl {
       qsd_del: qsd.del,
       qsd_colon: qsd.colon,
       assigned_tags: None,
+      kwargs: IndexMap::new(),
       raw: raw.to_string(),
     }
   }
@@ -246,6 +255,12 @@ impl ParsedUrl {
   /// Get query string value by key (case-insensitive)
   pub fn get(&self, key: &str) -> Option<&str> {
     qsd_get_ci(&self.qsd, key)
+  }
+
+  /// The plugin argument `name` a configuration file gave beside the URL
+  /// ([`ParsedUrl::kwargs`]); it wins over what the URL gives.
+  pub fn kwarg(&self, name: &str) -> Option<&str> {
+    self.kwargs.get(name).map(String::as_str)
   }
 
   /// The query arguments in URL order. Keys added to `qsd` directly,

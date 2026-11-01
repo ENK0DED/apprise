@@ -39,6 +39,9 @@ impl Trigv {
       Some(user) => (user.clone(), url.host.clone()),
       None => (url.host.clone().unwrap_or_default(), None),
     };
+    // A YAML `api_key:` replaces the URL's (upstream passes it to the
+    // constructor); a host written as `{api_key}@{host}` stays the server
+    let api_key = url.kwarg("api_key").map_or(api_key, str::to_string);
     let api_key = api_key.trim().to_string();
     if !is_api_key(&api_key) {
       tracing::warn!("An invalid Trigv API Key was specified.");
@@ -514,5 +517,27 @@ mod tests {
       .map(|r| r.body_json::<serde_json::Value>().unwrap()["channel"].clone())
       .collect();
     assert_eq!(sent, vec![json!("alerts"), json!("ops"), json!("ops")]);
+  }
+
+  /// A YAML `api_key:` replaces the URL's, as upstream's constructor
+  /// argument does; a host written as `{api_key}@{host}` stays the server
+  /// (upstream: Bearer trgv_e5f6a7b8_... to the official API and to
+  /// localhost:8080).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_api_key_replaces_the_urls() {
+    let server = MockServer::start().await;
+    let other = "trgv_e5f6a7b8_fedcba9876543210fedcba9876543210";
+    Mock::given(method("POST"))
+      .and(path("/api/v1/events"))
+      .and(header("Authorization", format!("Bearer {other}").as_str()))
+      .respond_with(ResponseTemplate::new(202))
+      .expect(2)
+      .mount(&server)
+      .await;
+    let doc = format!("urls:\n  - trigvs://{KEY}/general:\n      api_key: {other}\n  - trigv://{KEY}@{}/general:\n      api_key: {other}\n", server.address());
+    let (a, _) = crate::config::yaml::load_for_test(&doc).await;
+    let ctx = NotifyContext { title: "title".into(), body: "body".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
   }
 }

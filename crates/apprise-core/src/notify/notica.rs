@@ -35,6 +35,10 @@ impl Notica {
   }
 
   fn build(url: &ParsedUrl, token: Option<String>, host: Option<String>, fullpath: String) -> Option<Self> {
+    // A YAML `token:` replaces the URL's (upstream passes it to the
+    // constructor); the URL still tells the official service from a
+    // self-hosted one
+    let token = url.kwarg("token").map(str::to_string).or(token);
     let Some(token) = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) else {
       tracing::warn!("An invalid Notica Token was specified.");
       return None;
@@ -215,5 +219,28 @@ mod tests {
     let n = notica(&format!("notica://localhost:{}/tok", server.address().port()));
     assert!(matches!(n.send(&ctx()).await, Err(NotifyError::ServiceError { status: 204, .. })));
     assert!(notica("notica://127.0.0.1:1/tok").send(&ctx()).await.is_err());
+  }
+
+  /// A YAML `token:` replaces the URL's, as upstream's constructor argument
+  /// does; the URL still tells the official service from a self-hosted one
+  /// (upstream: POST /?bbbbbb; POST /sub/?token=bbbbbb).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_token_replaces_the_urls() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let doc = format!("urls:\n  - notica://aaaaaa:\n      token: bbbbbb\n  - notica://{}/sub/aaaaaa:\n      token: bbbbbb\n", server.address());
+    let (a, _) = crate::config::yaml::load_for_test(&doc).await;
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx())).await.is_success());
+    let mut sent: Vec<String> = server
+      .received_requests()
+      .await
+      .unwrap()
+      .iter()
+      .filter(|r| r.method.as_str() == "POST")
+      .map(|r| format!("{}?{}", r.url.path(), r.url.query().unwrap_or_default()))
+      .collect();
+    sent.sort();
+    assert_eq!(sent, ["/?bbbbbb", "/sub/?token=bbbbbb"]);
   }
 }

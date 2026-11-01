@@ -192,9 +192,16 @@ impl Office365 {
         _ => Mode::Org,
       },
     };
+    // YAML `source:` and `tenant:` settings replace what the URL gives
+    // (upstream passes them to the constructor). The URL's own source still
+    // decides the mode, and its tenant still takes its place in the path.
+    let source = original.kwarg("source").map_or(source, str::to_string);
 
     let tenant = match mode {
-      Mode::Org => qsd("tenant").or_else(|| (!entries.is_empty()).then(|| unquote(&entries.remove(0)))),
+      Mode::Org => {
+        let written = qsd("tenant").or_else(|| (!entries.is_empty()).then(|| unquote(&entries.remove(0))));
+        original.kwarg("tenant").map(str::to_string).or(written)
+      }
       Mode::Personal => None,
     };
     let client_id = qsd("oauth_id").or_else(|| (!entries.is_empty()).then(|| unquote(&entries.remove(0)))).unwrap_or_default();
@@ -1083,5 +1090,65 @@ mod tests {
       .collect();
     // Trailing path addresses are read from the end, as upstream does
     assert_eq!(to, vec![json!("b@example.com"), json!("a@example.com"), json!("b@example.com")]);
+  }
+
+  /// YAML `source:` and `tenant:` settings replace what the URL gives, as
+  /// upstream's constructor arguments do. The URL's own source still
+  /// decides the mode and its tenant still takes its place in the path; a
+  /// personal account has no tenant. Upstream, for the same YAML: token
+  /// from tenantB with secret `abcd/123`, mail from other@example.edu (uid
+  /// 16b88c37); token from consumers, mail from other@outlook.com (uid
+  /// 5caccf75); token from tenantA, mail as other@outlook.com (uid
+  /// d70ea4a6).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_source_and_tenant_replace_the_urls() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(wiremock::matchers::path_regex("/oauth2/v2.0/token$"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"expires_in": 2000, "access_token": "abcd1234", "refresh_token": "rt2"})))
+      .mount(&server)
+      .await;
+    Mock::given(method("POST")).and(wiremock::matchers::path_regex("/sendMail$")).respond_with(ResponseTemplate::new(202)).mount(&server).await;
+    let doc = concat!(
+      "urls:\n",
+      "  - azure://user@example.edu/tenantA/ab-cd-ef-gh/abcd/123/rcpt@example.com:\n      source: other@example.edu\n      tenant: tenantB\n",
+      "  - o365://user@outlook.com/ab-cd-ef-gh/refreshtoken/rcpt@example.com:\n      source: other@outlook.com\n      tenant: tenantB\n",
+      "  - o365://user@example.edu/tenantA/ab-cd-ef-gh/abcd/rcpt@example.com:\n      source: other@outlook.com\n",
+    );
+    let (a, uids) = crate::config::yaml::load_for_test(doc).await;
+    assert_eq!(uids, ["16b88c37", "5caccf75", "d70ea4a6"]);
+    for svc in a.services() {
+      let ctx = NotifyContext { title: "title".into(), body: "body".into(), body_format: NotifyFormat::Html, ..Default::default() };
+      assert!(crate::notify::with_test_base(server.uri(), svc.send(&ctx)).await.unwrap());
+    }
+    let sent: Vec<String> = server
+      .received_requests()
+      .await
+      .unwrap()
+      .iter()
+      .filter(|r| r.method.as_str() == "POST")
+      .map(|r| match r.url.path().ends_with("/token") {
+        true => {
+          let form: HashMap<String, String> = url::form_urlencoded::parse(&r.body).into_owned().collect();
+          format!("{} {}", r.url.path(), form.get("client_secret").or(form.get("refresh_token")).unwrap())
+        }
+        false => {
+          let body: Value = serde_json::from_slice(&r.body).unwrap();
+          format!("{} {}", r.url.path(), body["message"]["from"]["emailAddress"]["address"].as_str().unwrap())
+        }
+      })
+      .collect();
+    assert_eq!(
+      sent,
+      [
+        "/tenantB/oauth2/v2.0/token abcd/123",
+        "/v1.0/users/other@example.edu/sendMail other@example.edu",
+        "/consumers/oauth2/v2.0/token refreshtoken",
+        "/v1.0/me/sendMail other@outlook.com",
+        "/tenantA/oauth2/v2.0/token abcd",
+        "/v1.0/users/other@outlook.com/sendMail other@outlook.com",
+      ]
+    );
   }
 }
