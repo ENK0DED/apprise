@@ -122,6 +122,8 @@ pub fn all_service_details() -> Vec<super::ServiceDetails> {
   collect!(msg91::Msg91::static_details());
   collect!(nextcloud::Nextcloud::static_details());
   collect!(nextcloudtalk::NextcloudTalk::static_details());
+  #[cfg(feature = "nostr")]
+  collect!(nostr::Nostr::static_details());
   collect!(notica::Notica::static_details());
   collect!(notifiarr::Notifiarr::static_details());
   collect!(notifico::Notifico::static_details());
@@ -326,6 +328,8 @@ fn build_registry() -> HashMap<String, FactoryFn> {
   reg!(msg91::Msg91::from_url, "msg91");
   reg!(nextcloud::Nextcloud::from_url, "ncloud", "nclouds");
   reg!(nextcloudtalk::NextcloudTalk::from_url, "nctalk", "nctalks");
+  #[cfg(feature = "nostr")]
+  reg!(nostr::Nostr::from_url, "nostr");
   reg!(notica::Notica::from_url, "notica", "noticas");
   reg!(notifiarr::Notifiarr::from_url, "notifiarr");
   reg!(notifico::Notifico::from_url, "notifico", "notificos");

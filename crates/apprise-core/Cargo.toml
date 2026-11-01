@@ -38,6 +38,8 @@ sha1.workspace = true
 hex.workspace = true
 ed25519-dalek.workspace = true
 blake2.workspace = true
+k256 = { workspace = true, optional = true }
+chacha20 = { workspace = true, optional = true }
 ring.workspace = true
 aes-gcm.workspace = true
 cbc.workspace = true
@@ -59,7 +61,7 @@ aes = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
 
 [features]
-default = ["mqtt", "email", "yaml", "images", "simplepush-encryption", "matrix-e2ee"]
+default = ["mqtt", "email", "yaml", "images", "simplepush-encryption", "matrix-e2ee", "nostr"]
 mqtt = []
 # AMQP 1.0 (fe2o3-amqp); AMQP 0-9-1 is always built in
 amqp = ["dep:fe2o3-amqp"]
@@ -77,6 +79,9 @@ simplepush-encryption = ["dep:argon2", "dep:chacha20poly1305", "dep:x25519-dalek
 # Matrix end-to-end encryption (Olm/Megolm, SAS device verification and
 # encrypted attachments). Without it encrypted rooms fail closed.
 matrix-e2ee = ["dep:vodozemac", "dep:ctr", "dep:aes"]
+# nostr:// (BIP-340 signatures, NIP-04/NIP-44 encryption and a websocket
+# relay client)
+nostr = ["dep:k256", "dep:chacha20"]
 
 [target.'cfg(unix)'.dependencies]
 # p2p lets the tests talk to a fake notification service

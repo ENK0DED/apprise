@@ -93,6 +93,11 @@ x25519-dalek = { version = "3", default-features = false, features = ["static_se
 salsa20 = { version = "0.11", default-features = false }
 poly1305 = { version = "0.9", default-features = false }
 
+# Nostr: BIP-340 Schnorr signatures and ECDH over secp256k1, and the
+# ChaCha20 stream cipher of NIP-44 (already linked through rand)
+k256 = { version = "0.14", default-features = false, features = ["schnorr"] }
+chacha20 = { version = "0.10", default-features = false, features = ["cipher"] }
+
 # Ed25519 signing and BLAKE2b hashing (Session Open Group Server)
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 blake2 = "0.10"

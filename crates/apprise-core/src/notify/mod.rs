@@ -101,6 +101,8 @@ pub mod mqtt;
 pub mod msg91;
 pub mod nextcloud;
 pub mod nextcloudtalk;
+#[cfg(feature = "nostr")]
+pub mod nostr;
 pub mod notica;
 pub mod notifiarr;
 pub mod notifico;
