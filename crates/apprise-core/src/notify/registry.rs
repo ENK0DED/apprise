@@ -437,7 +437,11 @@ fn build_registry() -> HashMap<String, FactoryFn> {
 /// [`ConfiguredService`] carrying the common URL options (`?retry=`,
 /// `?format=`, ...). A URL whose common options are invalid does not load.
 pub fn from_url(url: &str) -> Option<Box<dyn Notify>> {
-  from_parsed(&parse_service_url(url)?)
+  let mut parsed = parse_service_url(url)?;
+  // Routing tags come from the caller or a configuration file, never from
+  // the URL: upstream leaves ?tag= and ?tags= to the plugin
+  parsed.assigned_tags.get_or_insert_with(Vec::new);
+  from_parsed(&parsed)
 }
 
 /// Build a notifier from a URL already resolved by [`parse_service_url`]
@@ -1064,6 +1068,16 @@ mod tests {
     assert!(url_schema("json:/host").is_none());
     assert!(url_schema(&format!("{}://host", "a".repeat(33))).is_none());
     assert!(url_schema("://host").is_none());
+  }
+
+  #[test]
+  fn test_url_tags_are_not_routing_tags() {
+    // Upstream: Apprise().add("json://localhost?tag=foo") matches no tag;
+    // ?tag= and ?tags= belong to the plugin (ntfy's and FireHydrant's own)
+    for url in ["json://localhost?tag=foo", "firehydrant://abc?tags=service:api", "ntfy://topic?tags=warning"] {
+      let svc = from_url(url).unwrap_or_else(|| panic!("{}", url));
+      assert!(svc.tags().is_empty(), "{}: {:?}", url, svc.tags());
+    }
   }
 
   #[test]
