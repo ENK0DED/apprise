@@ -173,6 +173,9 @@ pub fn url_templates(schema: &str) -> &'static [&'static str] {
     "feishu" => &[
       "{schema}://{token}",
     ],
+    "firehydrant" => &[
+      "{schema}://{token}",
+    ],
     "flock" => &[
       "{schema}://{token}",
       "{schema}://{botname}@{token}",
@@ -460,6 +463,10 @@ pub fn url_templates(schema: &str) -> &'static [&'static str] {
     "nexmo" | "vonage" => &[
       "{schema}://{apikey}:{secret}@{from_phone}",
       "{schema}://{apikey}:{secret}@{from_phone}/{targets}",
+    ],
+    "nostr" => &[
+      "{schema}://{secret_key}",
+      "{schema}://{secret_key}/{targets}",
     ],
     "notica" | "noticas" => &[
       "{schema}://{token}",
