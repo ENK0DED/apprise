@@ -115,6 +115,11 @@ impl Fluxer {
 
     let webhook_token = tokens.pop().unwrap_or_default();
     let webhook_id = tokens.pop().unwrap_or_default();
+    // YAML `webhook_id:` and `webhook_token:` settings replace what the URL
+    // gives (upstream passes them to the constructor); the path and mode
+    // stay as the URL sets them
+    let webhook_id = url.kwarg("webhook_id").map_or(webhook_id, str::to_string);
+    let webhook_token = url.kwarg("webhook_token").map_or(webhook_token, str::to_string);
     if !is_webhook_id(&webhook_id) {
       tracing::warn!("An invalid Fluxer Webhook ID was specified.");
       return None;
@@ -951,5 +956,31 @@ mod tests {
     for r in reqs {
       assert!(json_body(&r)["content"].as_str().unwrap().chars().count() <= 2002);
     }
+  }
+
+  /// YAML `webhook_id:` and `webhook_token:` settings replace what the URL
+  /// gives, as upstream's constructor arguments do; the URL still decides
+  /// the mode and path (upstream: POST .../webhooks/9876543210987/zyxw...,
+  /// uid 18577019; private: POST /sub/webhooks/1234567890123/zyxw...).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_webhook_settings_replace_the_url_values() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(204)).mount(&server).await;
+    let doc = format!(
+      concat!(
+        "urls:\n",
+        "  - fluxer://1234567890123/abcdefghijklmnopqrst:\n      webhook_id: '9876543210987'\n      webhook_token: zyxwvutsrqponmlkjihg\n",
+        "  - fluxer://{}/sub/1234567890123/abcdefghijklmnopqrst:\n      webhook_token: zyxwvutsrqponmlkjihg\n",
+      ),
+      server.address()
+    );
+    let (a, uids) = crate::config::yaml::load_for_test(&doc).await;
+    assert_eq!(uids[0], "18577019");
+    assert!(with_test_base(server.uri(), a.notify(&ctx("title", "body"))).await.is_success());
+    let mut paths: Vec<String> =
+      server.received_requests().await.unwrap().iter().filter(|r| r.method.as_str() == "POST").map(|r| r.url.path().to_string()).collect();
+    paths.sort();
+    assert_eq!(paths, ["/sub/webhooks/1234567890123/zyxwvutsrqponmlkjihg", "/webhooks/9876543210987/zyxwvutsrqponmlkjihg"]);
   }
 }

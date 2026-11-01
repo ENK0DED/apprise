@@ -267,7 +267,7 @@ impl PlaceholderMap {
       self.used_in(field, &mut found);
     }
     self.used_in(&parsed.path, &mut found);
-    for (k, v) in parsed.qsd.iter().chain(parsed.qsd_add.iter()).chain(parsed.qsd_del.iter()).chain(parsed.qsd_colon.iter()) {
+    for (k, v) in parsed.qsd.iter().chain(parsed.qsd_add.iter()).chain(parsed.qsd_del.iter()).chain(parsed.qsd_colon.iter()).chain(parsed.kwargs.iter()) {
       self.used_in(k, &mut found);
       self.used_in(v, &mut found);
     }
@@ -303,7 +303,8 @@ impl PlaceholderMap {
   ///
   /// User, password and host are decoded after filling, as upstream's
   /// `URLBase` decodes them; the path is re-split into segments; query
-  /// names and values are filled as given. A marker that owns the whole
+  /// names and values, and plugin arguments given beside the URL, are
+  /// filled as given. A marker that owns the whole
   /// host may carry `user[:password]@host`, and one that owns the whole
   /// user may carry `user:password`.
   pub fn substitute(&self, parsed: &ParsedUrl, values: &HashMap<String, String>) -> ParsedUrl {
@@ -358,6 +359,7 @@ impl PlaceholderMap {
     out.qsd_add = fill_map(&parsed.qsd_add);
     out.qsd_del = fill_map(&parsed.qsd_del);
     out.qsd_colon = fill_map(&parsed.qsd_colon);
+    out.kwargs = fill_map(&parsed.kwargs);
     out.raw = self.fill(&parsed.raw, values, false);
     out
   }

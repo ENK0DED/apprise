@@ -62,7 +62,9 @@ impl Twist {
       targets.extend(parse_list(&[to]).iter().map(|t| unquote(t)));
     }
 
-    let email = format!("{}@{}", user, host);
+    // A YAML `email:` replaces the account the URL gives (upstream passes
+    // it to the constructor)
+    let email = url.kwarg("email").map_or_else(|| format!("{}@{}", user, host), str::to_string);
     let Some(email) = is_email(&email).map(|e| e.full_email) else {
       tracing::warn!("The Twist Auth email specified ({}) is invalid.", email);
       return None;
@@ -542,5 +544,31 @@ mod tests {
       .map(|r| String::from_utf8_lossy(&r.body).split('&').next().unwrap().to_string())
       .collect();
     assert_eq!(sent, vec!["channel_id=789", "channel_id=456", "channel_id=456"]);
+  }
+
+  /// A YAML `email:` replaces the account the URL gives, as upstream's
+  /// constructor argument does (upstream: login as other@example.org with
+  /// the URL's password).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_email_replaces_the_urls() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/api/v3/users/login"))
+      .and(body_string("email=other%40example.org&password=password"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({"token": "token", "default_workspace": 12345})))
+      .expect(1)
+      .mount(&server)
+      .await;
+    Mock::given(method("POST"))
+      .and(path("/api/v3/threads/add"))
+      .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let doc = "urls:\n  - twist://password:user@example.com/123:456:\n      email: other@example.org\n";
+    let (a, _) = crate::config::yaml::load_for_test(doc).await;
+    let ctx = NotifyContext { title: "title".into(), body: "body".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
   }
 }

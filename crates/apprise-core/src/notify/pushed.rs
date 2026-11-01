@@ -28,6 +28,9 @@ impl Pushed {
       tracing::warn!("An invalid Pushed Application Key was specified.");
       return None;
     };
+    // A YAML `app_secret:` replaces the URL's (upstream passes it to the
+    // constructor); without one in the URL there is no key either
+    let app_secret = url.kwarg("app_secret").map(str::to_string).or(app_secret);
     let Some(app_secret) = app_secret.as_deref().and_then(token) else {
       tracing::warn!("An invalid Pushed Application Secret was specified.");
       return None;
@@ -262,5 +265,26 @@ mod tests {
       .map(|r| r.body_json::<Value>().unwrap()["target_type"].clone())
       .collect();
     assert_eq!(sent, vec![json!("channel"), json!("pushed_id"), json!("pushed_id")]);
+  }
+
+  /// A YAML `app_secret:` replaces the URL's, as upstream's constructor
+  /// argument does (upstream: app_key aaaa..., app_secret bbbb..., to
+  /// #channel).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_app_secret_replaces_the_urls() {
+    let server = MockServer::start().await;
+    let (key, secret) = ("a".repeat(32), "b".repeat(64));
+    Mock::given(method("POST"))
+      .and(path("/1/push"))
+      .and(body_partial_json(json!({"app_key": key, "app_secret": secret, "target_type": "channel", "target_alias": "channel"})))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let doc = format!("urls:\n  - pushed://{key}/{}/#channel:\n      app_secret: {secret}\n", "a".repeat(64));
+    let (a, _) = crate::config::yaml::load_for_test(&doc).await;
+    let ctx = NotifyContext { title: "title".into(), body: "body".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
   }
 }

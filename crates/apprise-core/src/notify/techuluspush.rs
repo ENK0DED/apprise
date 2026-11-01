@@ -14,7 +14,9 @@ pub struct TechulusPush {
 impl TechulusPush {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // API keys are UUID4 strings
-    let apikey = url.host.clone().unwrap_or_default().trim().to_string();
+    // A YAML `apikey:` replaces the URL's (upstream passes it to the
+    // constructor)
+    let apikey = url.kwarg("apikey").or(url.host.as_deref()).unwrap_or_default().trim().to_string();
     if !is_uuid4(&apikey) {
       tracing::warn!("An invalid Techulus Push API key was specified.");
       return None;
@@ -128,5 +130,25 @@ mod tests {
     let details = TechulusPush::static_details();
     assert_eq!(details.service_name, "Techulus Push");
     assert!(details.protocols.contains(&"push"));
+  }
+
+  /// A YAML `apikey:` replaces the URL's, as upstream's constructor
+  /// argument does (upstream: x-api-key 11111111-2222-4333-8444-...).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_apikey_replaces_the_urls() {
+    let other = "11111111-2222-4333-8444-555555555555";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/api/v1/notify"))
+      .and(header("x-api-key", other))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let doc = format!("urls:\n  - push://{UUID4}:\n      apikey: {other}\n");
+    let (a, _) = crate::config::yaml::load_for_test(&doc).await;
+    let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
   }
 }

@@ -16,7 +16,9 @@ impl Kumulos {
   pub fn from_url(url: &ParsedUrl) -> Option<Self> {
     // kumulos://{apikey}/{serverkey}: a UUID4 API key and a 36 character
     // server key
-    let apikey = url.host.as_deref().unwrap_or_default().trim().to_string();
+    // A YAML `apikey:` replaces the URL's (upstream passes it to the
+    // constructor)
+    let apikey = url.kwarg("apikey").or(url.host.as_deref()).unwrap_or_default().trim().to_string();
     if !is_uuid4(&apikey) {
       tracing::warn!("An invalid Kumulos API Key was specified.");
       return None;
@@ -161,5 +163,27 @@ mod tests {
     let details = Kumulos::static_details();
     assert_eq!(details.service_name, "Kumulos");
     assert_eq!(details.protocols, vec!["kumulos"]);
+  }
+
+  /// A YAML `apikey:` replaces the URL's, as upstream's constructor
+  /// argument does (upstream: authenticates as 11111111-2222-4333-8444-...
+  /// with the URL's server key).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_apikey_replaces_the_urls() {
+    let (other, serverkey) = ("11111111-2222-4333-8444-555555555555", "w".repeat(36));
+    let auth = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{other}:{serverkey}")));
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+      .and(path("/v2/notifications"))
+      .and(header("authorization", auth.as_str()))
+      .respond_with(ResponseTemplate::new(200))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let doc = format!("urls:\n  - kumulos://{UUID4}/{serverkey}:\n      apikey: {other}\n");
+    let (a, _) = crate::config::yaml::load_for_test(&doc).await;
+    let ctx = NotifyContext { title: "T".into(), body: "B".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
   }
 }

@@ -36,7 +36,10 @@ impl VoipMs {
       tracing::warn!("Password has to be specified.");
       return None;
     };
-    let email = format!("{}@{}", url.password.as_deref().unwrap_or_default(), url.host.as_deref().unwrap_or_default());
+    // A YAML `email:` replaces the account the URL gives (upstream passes
+    // it to the constructor)
+    let email =
+      url.kwarg("email").map_or_else(|| format!("{}@{}", url.password.as_deref().unwrap_or_default(), url.host.as_deref().unwrap_or_default()), str::to_string);
     let Some(email) = is_email(&email).map(|e| e.full_email) else {
       tracing::warn!("An invalid VoIPms user email: ({}) was specified.", email);
       return None;
@@ -332,5 +335,28 @@ mod tests {
       .map(|r| r.url.query_pairs().find(|(k, _)| k == "dst").unwrap().1.into_owned())
       .collect();
     assert_eq!(sent, vec!["6134449999", "6134447777", "6134447777"]);
+  }
+
+  /// A YAML `email:` replaces the account the URL gives, as upstream's
+  /// constructor argument does (upstream: api_username other@example.org,
+  /// api_password password, from 6134448888 to 6134442222).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_email_replaces_the_urls() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+      .and(path("/api/v1/rest.php"))
+      .and(query_param("api_username", "other@example.org"))
+      .and(query_param("api_password", "password"))
+      .and(query_param("did", "6134448888"))
+      .and(query_param("dst", "6134442222"))
+      .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status": "success"}"#))
+      .expect(1)
+      .mount(&server)
+      .await;
+    let doc = "urls:\n  - voipms://password:user@example.com/16134448888/16134442222:\n      email: other@example.org\n";
+    let (a, _) = crate::config::yaml::load_for_test(doc).await;
+    let ctx = NotifyContext { title: "title".into(), body: "body".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
   }
 }

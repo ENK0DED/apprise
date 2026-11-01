@@ -63,7 +63,9 @@ impl Brevo {
       return None;
     }
 
-    let from = format!("{}@{}", from_user, host);
+    // A YAML `from_email:` replaces the sender the URL gives (upstream
+    // passes it to the constructor)
+    let from = url.kwarg("from_email").map_or_else(|| format!("{}@{}", from_user, host), str::to_string);
     let Some(sender) = is_email(&from) else {
       tracing::warn!("Invalid ~From~ email specified: {}", from);
       return None;
@@ -555,5 +557,21 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), apprise.notify(&c)).await.is_success());
     let to: Vec<Value> = payloads(&server).await.iter().map(|p| p["to"][0]["email"].clone()).collect();
     assert_eq!(to, vec![json!("a@example.com"), json!("b@example.com"), json!("b@example.com")]);
+  }
+
+  /// A YAML `from_email:` replaces the sender the URL gives, and so the
+  /// recipient it defaults to, as upstream's constructor argument does
+  /// (upstream: both alerts@other.example, uid f6d4ccaf).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_from_email_replaces_the_sender() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/v3/smtp/email")).respond_with(ResponseTemplate::new(201)).mount(&server).await;
+    let doc = "urls:\n  - brevo://xkeysib-abcd:noreply@example.com:\n      from_email: alerts@other.example\n";
+    let (a, uids) = crate::config::yaml::load_for_test(doc).await;
+    assert_eq!(uids, ["f6d4ccaf"]);
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("title", "body"))).await.is_success());
+    let sent = payloads(&server).await;
+    assert_eq!((&sent[0]["sender"], &sent[0]["to"]), (&json!({ "email": "alerts@other.example" }), &json!([{ "email": "alerts@other.example" }])));
   }
 }

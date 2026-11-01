@@ -49,6 +49,10 @@ impl Postmark {
       }
       None => format!("{}@{}", url.password.clone().filter(|p| !p.is_empty()).or_else(|| url.user.clone()).unwrap_or_default(), host),
     };
+    // A YAML `from_email:` replaces the sender the URL gives (upstream
+    // passes it to the constructor); a host that ?from= made a recipient
+    // stays one
+    let from = url.kwarg("from_email").map_or(from, str::to_string);
     let Some(sender) = is_email(&from) else {
       tracing::warn!("An invalid Postmark From email ({}) was specified.", from);
       return None;
@@ -423,5 +427,19 @@ mod tests {
     assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
     let to: Vec<Value> = bodies(&server).await.iter().map(|b| b["To"].clone()).collect();
     assert_eq!(to, vec![json!("a@example.com"), json!("b@example.com"), json!("b@example.com")]);
+  }
+
+  /// A YAML `from_email:` replaces the sender the URL gives, its display
+  /// name included, as upstream's constructor argument does (upstream:
+  /// `From: Alerts Team <alerts@other.example>`, to rcpt@example.com).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_from_email_replaces_the_sender() {
+    let server = mock(200).await;
+    let doc = "urls:\n  - postmark://abcd:noreply@example.com/rcpt@example.com:\n      from_email: Alerts Team <alerts@other.example>\n";
+    let (a, _) = crate::config::yaml::load_for_test(doc).await;
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("title", NotifyFormat::Html))).await.is_success());
+    let sent = bodies(&server).await;
+    assert_eq!((sent[0]["From"].as_str(), sent[0]["To"].as_str()), (Some("Alerts Team <alerts@other.example>"), Some("rcpt@example.com")));
   }
 }

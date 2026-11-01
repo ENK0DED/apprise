@@ -55,7 +55,9 @@ impl MailerSend {
       return None;
     }
 
-    let from = format!("{}@{}", from_user, host);
+    // A YAML `from_email:` replaces the sender the URL gives (upstream
+    // passes it to the constructor)
+    let from = url.kwarg("from_email").map_or_else(|| format!("{}@{}", from_user, host), str::to_string);
     let Some(sender) = is_email(&from) else {
       tracing::warn!("Invalid MailerSend From email specified: {}", from);
       return None;
@@ -501,5 +503,20 @@ mod tests {
   async fn test_send_connection_error() {
     let svc = from_url("mailersend://abcd:user@example.com/to@example.com").unwrap();
     assert!(!crate::notify::with_test_base("http://127.0.0.1:9", svc.send(&ctx("t", "b"))).await.unwrap());
+  }
+
+  /// A YAML `from_email:` replaces the sender the URL gives, and so the
+  /// recipient it defaults to, as upstream's constructor argument does
+  /// (upstream: both alerts@other.example, uid 4632e02b).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_from_email_replaces_the_sender() {
+    let server = mock(202).await;
+    let doc = "urls:\n  - mailersend://mlsnabcd:noreply@example.com:\n      from_email: alerts@other.example\n";
+    let (a, uids) = crate::config::yaml::load_for_test(doc).await;
+    assert_eq!(uids, ["4632e02b"]);
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx("title", "body"))).await.is_success());
+    let sent = payloads(&server).await;
+    assert_eq!((&sent[0]["from"], &sent[0]["to"]), (&json!({ "email": "alerts@other.example" }), &json!([{ "email": "alerts@other.example" }])));
   }
 }

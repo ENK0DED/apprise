@@ -34,6 +34,9 @@ impl Ifttt {
       None => (host, url.path_parts.clone()),
     };
 
+    // A YAML `webhook_id:` replaces the URL's (upstream passes it to the
+    // constructor); the events stay as the URL gives them
+    let webhook_id = url.kwarg("webhook_id").map_or(webhook_id, str::to_string);
     let webhook_id = webhook_id.trim().to_string();
     if webhook_id.is_empty() {
       tracing::warn!("An invalid IFTTT Webhook ID was specified.");
@@ -259,5 +262,23 @@ mod tests {
     let details = Ifttt::static_details();
     assert_eq!(details.service_name, "IFTTT");
     assert_eq!(details.protocols, vec!["ifttt"]);
+  }
+
+  /// A YAML `webhook_id:` replaces the URL's, as upstream's constructor
+  /// argument does; the host written as `{webhook_id}@{event}` stays an
+  /// event (upstream: EventOne and EventTwo, both with key WebHookB).
+  #[cfg(feature = "yaml")]
+  #[tokio::test]
+  async fn test_yaml_webhook_id_replaces_the_urls() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+    let doc = "urls:\n  - ifttt://WebHookA@EventOne/EventTwo:\n      webhook_id: WebHookB\n";
+    let (a, _) = crate::config::yaml::load_for_test(doc).await;
+    let ctx = NotifyContext { title: "title".into(), body: "body".into(), ..Default::default() };
+    assert!(crate::notify::with_test_base(server.uri(), a.notify(&ctx)).await.is_success());
+    let mut paths: Vec<String> =
+      server.received_requests().await.unwrap().iter().filter(|r| r.method.as_str() == "POST").map(|r| r.url.path().to_string()).collect();
+    paths.sort();
+    assert_eq!(paths, ["/trigger/EventOne/with/key/WebHookB", "/trigger/EventTwo/with/key/WebHookB"]);
   }
 }

@@ -25,9 +25,15 @@ rewrites that place. Such a rule is only written when upstream's own test
 URLs agree: for every valid URL of the plugin in upstream's tests, and two
 sample values, the plugin built from the URL plus the setting (what YAML
 does) must equal the plugin built from the rewritten URL (what the port's
-loader does). The other settings are listed on stderr: those upstream also
-reads as a `?name=` argument (which the port's loader already sets) and
-those no rule can express.
+loader does).
+
+Where no position holds (Office 365's source is the host or `user@host`,
+a Slack setting can change the Slack mode), the setting goes to the plugin
+as the constructor argument it is upstream: the loader keeps it beside the
+URL (`ParsedUrl::kwargs`), and the plugin reads it after parsing the URL,
+where upstream's constructor gets it. A setting upstream also reads as the
+`?name=` URL argument of its name stays that argument. Every setting
+without a position is listed on stderr, with the reason.
 
 Run it with the Python of an environment where upstream Apprise is
 installed, from anywhere, giving upstream's `tests` directory:
@@ -262,6 +268,11 @@ def rewrite(raw: dict, url: str, rule, value, drop: tuple):
                 slash = value.endswith("/")
         else:
             new = list(value) if kind == "list" else [value]
+        # The value must land at the rule's place: counted on the new
+        # path, the bounds hold exactly its segments.
+        size = n - (e - s) + len(new)
+        if (resolve(start, size), resolve(end, size)) != (s, s + len(new)):
+            return None
         segments = segments[:s] + new + segments[e:]
     auth = ""
     if user:
@@ -518,23 +529,23 @@ def main() -> int:
             rows[(key, f"{variant}({rust_str(arg)})")].append(schema)
 
     # Settings a URL position carries, checked against upstream's tests.
+    # The others go to the plugin beside the URL: (class, key, constructor
+    # argument, schemas, why no position, `?key=` agreement or None).
     checked = collections.defaultdict(list)
     failed = set()
     report = []
+    beside = []
     for (cls, key), entries in sorted(
         unplaced.items(), key=lambda e: (e[0][0].__name__, e[0][1])
     ):
         schemas = [s for s, _, _ in entries]
         target, tokens = entries[0][1], entries[0][2]
-        label = f"{'/'.join(schemas)} {key}"
         if not tokens:
-            arg, total = check_arg(cls, key, target, samples.get(cls.__name__, []))
-            report.append(f"  {label}: in no URL template; ?{key}= upstream: {arg}/{total}")
+            beside.append((cls, key, target, schemas, "in no URL template", None))
             continue
         rule, why = position(schemas[0], cls, tokens[0])
         if rule is None:
-            arg, total = check_arg(cls, key, target, samples.get(cls.__name__, []))
-            report.append(f"  {label}: {why}; ?{key}= upstream: {arg}/{total}")
+            beside.append((cls, key, target, schemas, why, None))
             continue
         # A setting wins over the URL: the `?name=` of each setting for
         # this argument, and the arguments upstream's parse_url() reads
@@ -544,29 +555,40 @@ def main() -> int:
         drop = tuple(sorted(keys))
         placed, arg, total = check(cls, key, target, rule, samples.get(cls.__name__, []), drop)
         if total == 0:
-            report.append(f"  {label}: no test URL to check {rule} against")
+            beside.append((cls, key, target, schemas, f"no test URL to check {rule} against", None))
             continue
         if placed == total:
             checked[cls].append((key, target, rule, drop, schemas))
             continue
         failed.add(cls)
-        if arg == total:
-            report.append(f"  {label}: read as ?{key}= upstream ({arg}/{total})")
-            continue
-        report.append(f"  {label}: {rule} holds for {placed}/{total} test URLs, ?{key}= for {arg}/{total}")
+        beside.append((cls, key, target, schemas, f"{rule} holds for {placed}/{total} test URLs", (arg, total)))
 
     # A plugin where one position does not hold has URL forms its
     # templates do not show (Slack's workflow URLs); trust none there.
     positions = collections.defaultdict(set)
     for cls, entries in checked.items():
         for key, target, rule, drop, schemas in entries:
-            label = f"{'/'.join(schemas)} {key}"
             if cls in failed:
-                report.append(f"  {label}: {rule} holds, but another position of {cls.__name__} does not")
+                why = f"{rule} holds, but another position of {cls.__name__} does not"
+                beside.append((cls, key, target, schemas, why, None))
                 continue
             positions[(target, rule, drop)].update(schemas)
             for schema in schemas:
                 rows[(key, f"At({rust_str(target)})")].append(schema)
+
+    # Without a position, a setting upstream also reads as the URL argument
+    # of its name stays that argument (the default); the others are handed
+    # to the plugin as the constructor argument, as upstream does.
+    for cls, key, target, schemas, why, agreed in sorted(beside, key=lambda b: (b[0].__name__, b[1])):
+        label = f"{'/'.join(schemas)} {key}"
+        arg, total = agreed or check_arg(cls, key, target, samples.get(cls.__name__, []))
+        in_query = any(re.search(r"[?&]" + re.escape(key) + r"=", t) for t in cls.templates)
+        if in_query or (total and arg == total):
+            report.append(f"  {label}: {why}; read as ?{key}= upstream ({arg}/{total})")
+            continue
+        report.append(f"  {label}: {why}; ?{key}= upstream: {arg}/{total}; passed beside the URL")
+        for schema in schemas:
+            rows[(key, f"Kwarg({rust_str(target)})")].append(schema)
 
     lines = [
         "//! Where a YAML setting that names one of a service's URL tokens",
@@ -588,6 +610,10 @@ def main() -> int:
         "  /// The place in the URL of this constructor argument, which no URL",
         "  /// argument carries ([`url_position`]).",
         "  At(&'static str),",
+        "  /// This constructor argument, which neither a URL argument nor one",
+        "  /// place in the URL carries: the plugin gets it beside the URL",
+        "  /// (`ParsedUrl::kwargs`).",
+        "  Kwarg(&'static str),",
         "  /// Several URL values: only the URL can set them.",
         "  UrlOnly,",
         "}",
