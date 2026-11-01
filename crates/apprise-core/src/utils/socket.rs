@@ -164,6 +164,24 @@ pub fn tls_connector(verify: bool) -> tokio_rustls::TlsConnector {
   tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
 }
 
+/// Upgrade `stream` to TLS, checking the certificate against `server_name`
+/// (when `verify` is set) and giving up once the handshake takes longer than
+/// `timeout`: a server that never finishes the handshake cannot hold a send
+/// up for longer than the connect timeout (upstream
+/// `SocketTransport.start_tls()`).
+pub async fn start_tls<S>(stream: S, server_name: &str, verify: bool, timeout: Duration) -> std::io::Result<tokio_rustls::client::TlsStream<S>>
+where
+  S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+  use std::io::{Error, ErrorKind};
+  let name = rustls::pki_types::ServerName::try_from(server_name.to_string())
+    .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("invalid TLS server name: {}", e)))?;
+  match tokio::time::timeout(timeout, tls_connector(verify).connect(name, stream)).await {
+    Ok(result) => result.map_err(|e| Error::new(e.kind(), format!("TLS negotiation failed: {}", e))),
+    Err(_) => Err(Error::new(ErrorKind::TimedOut, "TLS handshake timed out")),
+  }
+}
+
 /// Certificate verifier behind `?verify=no`: every certificate is accepted.
 /// Handshake signatures are still checked so the session keys stay bound to
 /// the certificate the server presented.
@@ -277,6 +295,55 @@ mod tests {
     let cfg = TimeoutConfig::from_secs(0.0).unwrap();
     assert_eq!(cfg.connect_timeout(), Some(Duration::from_secs(0)));
     assert_eq!(cfg.read_timeout(), Some(Duration::from_secs(0)));
+  }
+
+  /// A server that accepts the connection and then stays silent cannot hold
+  /// the TLS handshake up past its timeout (upstream
+  /// `test_utils_socket_tls_handshake_timeout`).
+  #[tokio::test]
+  async fn test_start_tls_handshake_timeout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    // Hold every accepted connection open without a word until the test ends
+    let server = tokio::spawn(async move {
+      let mut held = Vec::new();
+      while let Ok((conn, _)) = listener.accept().await {
+        held.push(conn);
+      }
+    });
+    let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let started = std::time::Instant::now();
+    let err = start_tls(tcp, "localhost", false, Duration::from_millis(300)).await.unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    // We gave up after the timeout, well before a watchdog would
+    assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+    server.abort();
+  }
+
+  /// A completed handshake hands back the TLS stream, checked against the
+  /// name given; a name that is not a valid server name is refused.
+  #[tokio::test]
+  async fn test_start_tls() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+      let (conn, _) = listener.accept().await.unwrap();
+      let mut tls = test_tls_acceptor().accept(conn).await.unwrap();
+      tls.write_all(b"hi").await.unwrap();
+      tls.shutdown().await.unwrap();
+    });
+    let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut tls = start_tls(tcp, "localhost", false, Duration::from_secs(5)).await.unwrap();
+    let mut buf = Vec::new();
+    tls.read_to_end(&mut buf).await.unwrap();
+    assert_eq!(buf, b"hi");
+    server.await.unwrap();
+
+    // A name that can not be checked is refused before anything is sent
+    let (stream, _other) = tokio::io::duplex(64);
+    let err = start_tls(stream, "bad name!", false, Duration::from_secs(1)).await.unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
   }
 
   #[test]
