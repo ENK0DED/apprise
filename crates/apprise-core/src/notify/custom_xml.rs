@@ -199,7 +199,7 @@ impl Notify for Xml {
       tracing::info!("Sent XML {} notification.", self.method);
       Ok(true)
     } else {
-      tracing::warn!("Failed to send XML {} notification: error={}.", self.method, status.as_u16());
+      tracing::warn!("Failed to send XML {} notification: {}.", self.method, super::incident::status_detail(status.as_u16(), &[]));
       Err(NotifyError::ServiceError { status: status.as_u16(), body: resp.text().await.unwrap_or_default() })
     }
   }

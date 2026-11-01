@@ -249,7 +249,7 @@ impl Notify for Json {
       tracing::info!("Sent JSON {} notification.", self.method);
       Ok(true)
     } else {
-      tracing::warn!("Failed to send JSON {} notification: error={}.", self.method, status.as_u16());
+      tracing::warn!("Failed to send JSON {} notification: {}.", self.method, super::incident::status_detail(status.as_u16(), &[]));
       Err(NotifyError::ServiceError { status: status.as_u16(), body: resp.text().await.unwrap_or_default() })
     }
   }
@@ -541,6 +541,27 @@ mod tests {
         assert_eq!(body, "boom");
       }
       other => panic!("unexpected: {:?}", other),
+    }
+  }
+
+  /// A refused request is logged as upstream logs it: the status text
+  /// from HTML_LOOKUP when it has one, then the code.
+  #[tokio::test]
+  async fn test_failure_is_logged_with_its_status_text() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/500")).respond_with(ResponseTemplate::new(500)).mount(&server).await;
+    Mock::given(method("POST")).and(path("/418")).respond_with(ResponseTemplate::new(418)).mount(&server).await;
+    let port = server.address().port();
+    for (url, line) in [
+      (format!("json://localhost:{port}/500"), "Failed to send JSON POST notification: Internal server error., error=500."),
+      (format!("json://localhost:{port}/418"), "Failed to send JSON POST notification: error=418."),
+      (format!("xml://localhost:{port}/500"), "Failed to send XML POST notification: Internal server error., error=500."),
+      (format!("form://localhost:{port}/500"), "Failed to send Form POST notification: Internal server error., error=500."),
+    ] {
+      let svc = crate::notify::registry::from_url(&url).unwrap();
+      let (sent, logs) = crate::test_logs::capture(tracing::Level::WARN, svc.send(&ctx("t", "b"))).await;
+      assert!(sent.is_err(), "{url}");
+      assert!(logs.contains(line), "{url}: {logs}");
     }
   }
 

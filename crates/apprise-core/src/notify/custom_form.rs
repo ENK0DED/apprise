@@ -228,7 +228,7 @@ impl Notify for Form {
       tracing::info!("Sent Form {} notification.", self.method);
       Ok(true)
     } else {
-      tracing::warn!("Failed to send Form {} notification: error={}.", self.method, status.as_u16());
+      tracing::warn!("Failed to send Form {} notification: {}.", self.method, super::incident::status_detail(status.as_u16(), &[]));
       Err(NotifyError::ServiceError { status: status.as_u16(), body: resp.text().await.unwrap_or_default() })
     }
   }
