@@ -268,6 +268,11 @@ def rewrite(raw: dict, url: str, rule, value, drop: tuple):
                 slash = value.endswith("/")
         else:
             new = list(value) if kind == "list" else [value]
+        # The value must land at the rule's place: counted on the new
+        # path, the bounds hold exactly its segments.
+        size = n - (e - s) + len(new)
+        if (resolve(start, size), resolve(end, size)) != (s, s + len(new)):
+            return None
         segments = segments[:s] + new + segments[e:]
     auth = ""
     if user:

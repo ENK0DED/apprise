@@ -284,12 +284,20 @@ fn write_segments(parsed: &mut ParsedUrl, name: &str, start: Bound, end: Bound, 
   }
   let parts = &mut parsed.path_parts;
   let n = parts.len();
-  let at = |bound: Bound| match bound {
+  let at = |bound: Bound, len: usize| match bound {
     Bound::Start(i) => i as isize,
-    Bound::End(i) => n as isize - i as isize,
+    Bound::End(i) => len as isize - i as isize,
   };
-  let (s, e) = (at(start).max(0) as usize, at(end).clamp(0, n as isize) as usize);
-  if s > e {
+  let (s, e) = (at(start, n).max(0) as usize, at(end, n).clamp(0, n as isize) as usize);
+  // The setting must land at its place: counted on the new path, the
+  // bounds hold exactly its segments. A URL short of the segments around
+  // that place has no room for it (an official Notica URL, which has no
+  // path, for a `path`).
+  let fits = s <= e && {
+    let len = n - (e - s) + new.len();
+    (at(start, len), at(end, len)) == (s as isize, (s + new.len()) as isize)
+  };
+  if !fits {
     tracing::warn!("The URL has no place for the {} setting; ignoring it.", name);
     return false;
   }
@@ -1196,6 +1204,18 @@ urls:
     let p = one("urls:\n  - github://token@owner:\n      number: 5\n");
     assert_eq!((p.path.as_str(), p.raw.as_str()), ("", "github://token@owner"));
     assert_eq!(one("urls:\n  - gotify://localhost/a/aaaaaaaaaaaaaaa:\n      token: ''\n").path, "a/aaaaaaaaaaaaaaa");
+    // A place counted back from the end needs the segments that follow it:
+    // a path for an official Notica URL (upstream ignores it), a Gotify URL
+    // without its token or a Pinglet one without its namespace (upstream
+    // refuses both) has no room, while a missing token or namespace goes
+    // where it belongs (upstream: /acme/deploys)
+    for url in ["notica://aaaaaa", "gotify://localhost", "pinglet://abc123@localhost/deploys"] {
+      let p = one(&format!("urls:\n  - {url}:\n      path: /my/sub/\n"));
+      assert_eq!(p.raw, url);
+    }
+    assert_eq!(one("urls:\n  - pinglet://abc123@localhost/deploys:\n      namespace: acme\n").path, "acme/deploys");
+    assert_eq!(one("urls:\n  - gotify://localhost:\n      token: bbbbbbbbbbbbbbb\n").path, "bbbbbbbbbbbbbbb");
+    assert_eq!(one("urls:\n  - pinglet://abc123@localhost:\n      namespace: acme\n").path, "");
     // GoAlert tells its path from its keys by their form: the setting goes
     // to the plugin beside the URL, which stays as written
     let p = one("urls:\n  - goalert://localhost/11111111-2222-3333-4444-555555555555:\n      path: /sub\n");
